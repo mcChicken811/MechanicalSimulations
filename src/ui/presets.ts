@@ -138,6 +138,26 @@ function cogRailway(): Design {
 }
 
 /**
+ * A closed chain of n equal bars whose joints start on a circle of radius r (a regular n-gon),
+ * pinned to the ground at its top joint. Each link is L = 2 r sin(π/n) long.
+ */
+function ring(n: number, r: number): Design {
+  const centre: P = [0, 0.2];
+  const points = Array.from({ length: n }, (_, k) => {
+    const a = Math.PI / 2 + (2 * Math.PI * k) / n;
+    return pt(k, centre[0] + r * Math.cos(a), centre[1] + r * Math.sin(a), k === 0 ? 'fixed' : 'free');
+  });
+  return {
+    points,
+    links: bars(Array.from({ length: n }, (_, k) => [k, (k + 1) % n] as [number, number]), 0.1),
+    springs: [],
+    gears: [],
+    meshes: [],
+    rackMeshes: [],
+  };
+}
+
+/**
  * Peaucellier–Lipkin linkage (1864), the first planar linkage to draw an exact straight line.
  * The rhombus A–C–B–P (side s) and the arms O–A, O–B (length l) make P the inverse of C in a
  * circle about O: OC · OP = l² − s². C is held on a circle through O by the crank O₂–C, so P
@@ -314,6 +334,13 @@ export const presets: Preset[] = [
       gears: [],
       meshes: [], rackMeshes: [],
     }),
+  },
+  {
+    // A closed chain of 30 equal links, started as a regular 30-gon inscribed in a circle and
+    // hung from its top joint. Gravity collapses the ring into a hanging double strand.
+    name: 'Ring chain of 30 links',
+    group: 'Basics',
+    build: () => ring(30, 0.6),
   },
   {
     name: 'Mass on a spring (horizontal rail)',

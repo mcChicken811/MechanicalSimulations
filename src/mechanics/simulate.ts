@@ -12,6 +12,7 @@ export class NumericSystem {
   readonly totalMass: number;
 
   private readonly massFn: CompiledFn;
+  private readonly massBuf: Float64Array;
   private readonly forceFn: CompiledFn;
   private readonly phiFn: CompiledFn;
   private readonly phiQFn: CompiledFn;
@@ -46,7 +47,9 @@ export class NumericSystem {
       for (const c of inputs.coords) jac.push(x.diff(c));
       for (const c of inputs.coords) jac.push(y.diff(c));
     }
-    this.massFn = compile(d.M.flat(), inputs);
+    // M is symmetric: compile the upper triangle only, mass() mirrors it
+    this.massFn = compile(d.M.flatMap((row, i) => row.slice(i)), inputs);
+    this.massBuf = new Float64Array((this.n * (this.n + 1)) / 2);
     this.forceFn = compile(d.f, inputs);
     this.phiFn = compile(d.constraints.map((c) => c.phi), inputs);
     this.phiQFn = compile(d.phiQ.flat(), inputs);
@@ -73,7 +76,13 @@ export class NumericSystem {
   }
 
   mass(q: ArrayLike<number>, out: Float64Array) {
-    this.massFn(q, EMPTY, this.params, out);
+    const { n, massBuf: u } = this;
+    this.massFn(q, EMPTY, this.params, u);
+    for (let i = 0, k = 0; i < n; i++)
+      for (let j = i; j < n; j++, k++) {
+        out[i * n + j] = u[k];
+        out[j * n + i] = u[k];
+      }
   }
   /** f(q, q̇), including the spring forces −∂V_s/∂q. */
   force(q: ArrayLike<number>, qd: ArrayLike<number>, out: Float64Array) {
