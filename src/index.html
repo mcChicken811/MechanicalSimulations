@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 13L13 3' stroke='%233b6ea8' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <title>Linkage Lab: automatic Lagrangian mechanics</title>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+
+    <div id="hint"></div>
+
+    <nav id="toolbar" class="panel">
+      <div class="brand">Linkage Lab</div>
+
+      <div class="group" id="tools">
+        <button data-tool="select" title="Select and move joints (V)">
+          <svg viewBox="0 0 16 16"><path d="M3 2l9 5.5-4 1 2.5 4.5-1.8 1-2.5-4.5L3 12z" /></svg>Select<kbd>V</kbd>
+        </button>
+        <button data-tool="bar" title="Draw a bar (B)">
+          <svg viewBox="0 0 16 16"><path d="M3.5 12.5l9-9" class="s" /><circle cx="3.5" cy="12.5" r="2" /><circle cx="12.5" cy="3.5" r="2" /></svg>Draw bar<kbd>B</kbd>
+        </button>
+        <button data-tool="spring" title="Draw a spring (S)">
+          <svg viewBox="0 0 16 16"><path d="M1 8h2.2l1.4-4 1.8 8 1.8-8 1.8 8 1.8-8 1.4 4H15" class="s" /></svg>Draw spring<kbd>S</kbd>
+        </button>
+        <button data-tool="gear" title="Draw a gear: click a centre, drag the radius (G)">
+          <svg viewBox="0 0 16 16"><circle cx="5.5" cy="8" r="3.2" class="s" /><circle cx="11.5" cy="8" r="2.4" class="s" /><circle cx="5.5" cy="8" r="0.9" /><circle cx="11.5" cy="8" r="0.8" /></svg>Gears<kbd>G</kbd>
+        </button>
+        <button data-tool="fixed" title="Pin a joint to the ground (F)">
+          <svg viewBox="0 0 16 16"><path d="M8 3l4.5 7h-9z" /><path d="M2 12.5h12" class="s" /></svg>Pin to ground<kbd>F</kbd>
+        </button>
+        <button data-tool="lockX" title="Lock x: joint slides on a vertical rail (X)">
+          <svg viewBox="0 0 16 16"><path d="M8 1v14" class="s d" /><rect x="5" y="5" width="6" height="6" rx="1" /></svg>Lock x<kbd>X</kbd>
+        </button>
+        <button data-tool="lockY" title="Lock y: joint slides on a horizontal rail (Y)">
+          <svg viewBox="0 0 16 16"><path d="M1 8h14" class="s d" /><rect x="5" y="5" width="6" height="6" rx="1" /></svg>Lock y<kbd>Y</kbd>
+        </button>
+        <button data-tool="free" title="Make a joint free (N)">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" class="s" /></svg>Free joint<kbd>N</kbd>
+        </button>
+        <button data-tool="mass" title="Hang a mass on a joint, or place a free mass (M)">
+          <svg viewBox="0 0 16 16"><path d="M8 1.5v4" class="s" /><circle cx="8" cy="10" r="4" /></svg>Mass<kbd>M</kbd>
+        </button>
+        <button data-tool="lockGear" title="Lock a gear so it cannot turn (L)">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" class="s d" /><rect x="5.2" y="7.4" width="5.6" height="4.4" rx="0.8" /><path d="M6.4 7.4V6a1.6 1.6 0 0 1 3.2 0v1.4" class="s" /></svg>Lock gear<kbd>L</kbd>
+        </button>
+        <button data-tool="delete" title="Delete a joint or bar (D)">
+          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" class="s" /></svg>Delete<kbd>D</kbd>
+        </button>
+      </div>
+
+      <div class="group row">
+        <button id="play" class="primary" title="Play / pause (Space)">Play</button>
+        <button id="step" title="Advance one frame">Step</button>
+        <button id="reset" title="Stop and return to editing (R)">Reset</button>
+      </div>
+
+      <div class="group settings">
+        <label class="check"><input type="checkbox" id="gravity" checked /> Gravity (9.81 m/s²)</label>
+        <label class="check"><input type="checkbox" id="snap" checked /> Snap to 0.1 m grid</label>
+        <label class="slider">Air drag <output id="damping-out"></output><input type="range" id="damping" min="0" max="2" step="0.05" value="0" /></label>
+        <label class="slider">Pull stiffness <output id="stiffness-out"></output><input type="range" id="stiffness" min="5" max="400" step="5" value="80" /></label>
+        <label class="slider">Speed <output id="speed-out"></output><input type="range" id="speed" min="0.1" max="2" step="0.1" value="1" /></label>
+      </div>
+
+      <div class="group settings">
+        <label class="check" title="Viscous friction in every pin joint, rail and gear mesh. Dissipated energy heats the joint, which glows and cools by Newton's law."><input type="checkbox" id="friction" /> Friction &amp; heating</label>
+        <div id="friction-settings" hidden>
+          <label class="slider">Pin joints <output id="fpin-out"></output><input type="range" id="fpin" min="0" max="0.2" step="0.005" value="0.02" /></label>
+          <label class="slider">Gear teeth <output id="fmesh-out"></output><input type="range" id="fmesh" min="0" max="5" step="0.1" value="0.5" /></label>
+          <label class="slider">Rails <output id="frail-out"></output><input type="range" id="frail" min="0" max="5" step="0.1" value="0.5" /></label>
+          <label class="slider">Cooling time τ <output id="fcool-out"></output><input type="range" id="fcool" min="0.5" max="20" step="0.5" value="4" /></label>
+        </div>
+      </div>
+
+      <div class="group row">
+        <select id="preset" title="Load an example mechanism"><option value="">Examples…</option></select>
+      </div>
+      <div class="group row">
+        <button id="undo" title="Undo (Ctrl/Cmd+Z)">Undo</button>
+        <button id="fit" title="Fit the mechanism in view">Fit view</button>
+        <button id="clear" title="Delete everything">Clear</button>
+      </div>
+    </nav>
+
+    <aside id="eom-wrap" class="panel">
+      <header>
+        <h2>Equations of motion</h2>
+        <button id="eom-toggle" title="Collapse">–</button>
+      </header>
+      <div id="eom"></div>
+    </aside>
+
+    <div id="inspector" class="panel"></div>
+    <div id="status" class="panel"></div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

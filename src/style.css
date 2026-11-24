@@ -1,0 +1,386 @@
+:root {
+  --ink: #2b2d31;
+  --muted: #6f727a;
+  --line: #e2e2dc;
+  --panel: rgba(255, 255, 255, 0.96);
+  --accent: #e07b39;
+  --accent-soft: #fbeadf;
+  --primary: #3b6ea8;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #f6f6f3;
+}
+
+#canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  touch-action: none;
+}
+
+.panel {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(30, 32, 36, 0.08);
+  font-size: 13px;
+}
+
+/* ---- toolbar ---------------------------------------------------------- */
+#toolbar {
+  top: 12px;
+  left: 12px;
+  width: 212px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 2px 4px 8px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.group.row {
+  flex-direction: row;
+  gap: 6px;
+}
+
+.group.row > * {
+  flex: 1;
+}
+
+button,
+select {
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled),
+select:hover {
+  border-color: #c8c8c0;
+  background: #fafaf8;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #335f92;
+}
+
+#tools button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+
+#tools button.active {
+  background: var(--accent-soft);
+  border-color: #f1c8ad;
+}
+
+#tools svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: var(--ink);
+}
+
+#tools svg .s {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.6;
+}
+
+#tools svg .d {
+  stroke-dasharray: 2 1.5;
+}
+
+kbd {
+  margin-left: auto;
+  font: 11px ui-monospace, monospace;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.settings label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+}
+
+.settings label.slider {
+  flex-wrap: wrap;
+}
+
+.settings label.slider input {
+  width: 100%;
+  accent-color: var(--primary);
+}
+
+.settings output {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- equations panel ---------------------------------------------------- */
+#eom-wrap {
+  top: 12px;
+  right: 12px;
+  width: min(500px, calc(100vw - 260px));
+  max-height: calc(100vh - 230px);
+  display: flex;
+  flex-direction: column;
+}
+
+#eom-wrap header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+#eom-wrap h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+#eom-toggle {
+  padding: 0 8px;
+  line-height: 20px;
+}
+
+#eom-wrap.collapsed #eom {
+  display: none;
+}
+
+#eom-wrap.collapsed header {
+  border-bottom: none;
+}
+
+#eom {
+  overflow: auto;
+  padding: 4px 14px 12px;
+}
+
+#eom section {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+#eom h3 {
+  margin: 4px 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pill {
+  text-transform: none;
+  letter-spacing: 0;
+  background: var(--accent-soft);
+  color: #a4531f;
+  border-radius: 99px;
+  padding: 1px 8px;
+  font-weight: 600;
+}
+
+#eom .katex-display {
+  margin: 6px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+#eom .katex {
+  font-size: 1.02em;
+}
+
+.eq {
+  position: relative;
+  padding-left: 34px;
+}
+
+.eq-label {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reason {
+  color: var(--muted);
+  font-size: 11px;
+  margin: -2px 0 6px;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+details {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+summary {
+  cursor: pointer;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+table.params {
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+
+table.params td {
+  padding: 2px 12px 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.warnings {
+  color: #a4531f;
+  font-size: 12px;
+  padding-left: 18px;
+}
+
+.eom-empty,
+.eom-error {
+  color: var(--muted);
+  margin: 10px 0;
+}
+
+.eom-error {
+  color: #b23a3a;
+}
+
+/* ---- inspector, status, hint -------------------------------------------- */
+#inspector {
+  right: 12px;
+  bottom: 12px;
+  width: 260px;
+  padding: 12px 14px;
+}
+
+#inspector h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+#inspector .field {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+#inspector input,
+#inspector select {
+  font: inherit;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+#inspector .muted,
+#inspector li {
+  color: var(--muted);
+}
+
+#inspector ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+
+#status {
+  left: 236px;
+  bottom: 12px;
+  padding: 7px 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  max-width: calc(100vw - 530px);
+}
+
+#status b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+#status .err {
+  color: #b23a3a;
+}
+
+#hint {
+  position: fixed;
+  top: 14px;
+  left: 236px;
+  right: 528px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+#inspector p {
+  margin: 0;
+  line-height: 1.5;
+}
