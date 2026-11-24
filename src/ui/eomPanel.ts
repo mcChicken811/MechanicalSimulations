@@ -3,19 +3,55 @@ import { gearLabel, linkLabel, pointLabel } from '../mechanics/model';
 import type { Derivation } from '../mechanics/derive';
 import { constraintLatex, coordinatesLatex, energyLatex, equationLatex, generalFormLatex, potentialLatex, springLatex } from './eomLatex';
 
-const tex = (s: string, display = true) => katex.renderToString(s, { displayMode: display, throwOnError: false, strict: 'ignore' });
+const katexHtml = (s: string, display = true) => katex.renderToString(s, { displayMode: display, throwOnError: false, strict: 'ignore' });
 
-const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/**
+ * LaTeX longer than this is not typeset up front. A big mechanism (the 30-link chain) has
+ * equations of 17 kB and a kinetic energy of 170 kB, which typeset to tens of megabytes of HTML
+ * and freeze the page for seconds. Such an equation shows a placeholder that typesets on demand.
+ */
+const MAX_TEX = 4000;
+
+function tex(s: string, display = true): string {
+  if (s.length <= MAX_TEX) return katexHtml(s, display);
+  return `<div class="eq-long" data-tex="${esc(s)}"><span>Too long to show here (${Math.round(s.length / 1000)} kB of LaTeX).</span> <button class="show-tex">Show</button></div>`;
+}
+
+/** Let the Show buttons of long equations typeset them. Call once for the panel element. */
+export function enableLongEquations(el: HTMLElement) {
+  el.addEventListener('click', (e) => {
+    const button = (e.target as HTMLElement).closest('.show-tex');
+    const box = button?.closest<HTMLElement>('.eq-long');
+    if (!box) return;
+    box.outerHTML = katexHtml(box.dataset.tex ?? '');
+  });
+}
 
 export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: string | null, friction = false) {
-  if (error) {
-    el.innerHTML = `<p class="eom-error">Could not derive the equations: ${esc(error)}</p>`;
-    return;
+  const steps = eomPanelSteps(d, error, friction);
+  for (;;) {
+    const r = steps.next();
+    if (r.done) {
+      el.innerHTML = r.value;
+      return;
+    }
   }
-  if (!d || d.coords.length === 0) {
-    el.innerHTML = `<p class="eom-empty">Draw a bar to start. The equations of motion are derived automatically from the geometry.</p>`;
-    return;
-  }
+}
+
+/**
+ * Typeset the panel as a generator: it yields its progress (0 → 1) between equations, so the
+ * app can typeset a big mechanism a slice at a time, and returns the panel's HTML.
+ */
+export function* eomPanelSteps(d: Derivation | null, error: string | null, friction = false): Generator<number, string, void> {
+  if (error) return `<p class="eom-error">Could not derive the equations: ${esc(error)}</p>`;
+  if (!d || d.coords.length === 0)
+    return `<p class="eom-empty">Draw a bar to start. The equations of motion are derived automatically from the geometry.</p>`;
+  // the equations, constraints and springs are the slow part; the rest counts as two items
+  const total = d.coords.length + d.constraints.length + d.springs.length + 2;
+  let done = 0;
+  const step = () => ++done / total;
   const dof = d.coords.length - d.constraints.length;
   const parts: string[] = [];
 
@@ -25,9 +61,10 @@ export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: str
   parts.push('</section>');
 
   parts.push(`<section><h3>Equations of motion</h3>${tex(generalFormLatex(d, friction))}`);
-  d.coords.forEach((c, i) => {
+  for (const [i, c] of d.coords.entries()) {
     parts.push(`<div class="eq"><div class="eq-label">${tex(c.latex, false)}</div>${tex(equationLatex(d, i))}</div>`);
-  });
+    yield step();
+  }
   parts.push(
     `<p class="note">${tex('Q_{q_i}', false)} is the generalized force from your mouse pull, ${tex('Q = J^{\\mathsf T} F', false)}` +
       (d.constraints.length ? `, and ${tex('\\lambda_k', false)} are Lagrange multipliers.` : '.') +
@@ -69,19 +106,26 @@ export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: str
       `<p class="note">Springs add no constraint. Each adds ${tex('V_j = \\tfrac{1}{2} k_j (\\ell_j - \\ell_{0,j})^2', false)} to the potential energy, ` +
         `so equation ${tex('q_i', false)} gains ${tex('-\\partial V_j/\\partial q_i = -k_j\\left(1 - \\ell_{0,j}/\\ell_j\\right)\\tfrac{1}{2}\\,\\partial(\\ell_j^2)/\\partial q_i', false)}.</p>`,
     );
-    d.springs.forEach((_, j) => parts.push(`<div class="eq">${tex(springLatex(d, j))}</div>`));
+    for (let j = 0; j < d.springs.length; j++) {
+      parts.push(`<div class="eq">${tex(springLatex(d, j))}</div>`);
+      yield step();
+    }
     parts.push('</section>');
   }
 
   if (d.constraints.length) {
     parts.push('<section><h3>Constraints</h3>');
-    d.constraints.forEach((c, k) => parts.push(`<div class="eq">${tex(constraintLatex(d, k))}<div class="reason">${esc(c.reason)}</div></div>`));
+    for (const [k, c] of d.constraints.entries()) {
+      parts.push(`<div class="eq">${tex(constraintLatex(d, k))}<div class="reason">${esc(c.reason)}</div></div>`);
+      yield step();
+    }
     parts.push('</section>');
   }
 
   parts.push(
     `<details><summary>Energies</summary>${tex(energyLatex('T', d.T))}${tex(potentialLatex(d))}<p class="note">V up to an additive constant.</p></details>`,
   );
+  yield step();
 
   parts.push('<details><summary>Parameters</summary><table class="params">');
   for (const p of d.params) parts.push(`<tr><td>${tex(p.latex, false)}</td><td>${Number.isInteger(p.value) ? p.value : p.value.toFixed(3)} ${esc(p.unit)}</td></tr>`);
@@ -89,5 +133,6 @@ export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: str
 
   if (d.warnings.length) parts.push(`<ul class="warnings">${d.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`);
 
-  el.innerHTML = parts.join('');
+  yield 1;
+  return parts.join('');
 }

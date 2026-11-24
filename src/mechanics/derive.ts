@@ -138,6 +138,18 @@ export interface DeriveOptions {
 }
 
 export function deriveEquations(design: Design, opts: DeriveOptions): Derivation {
+  const steps = deriveSteps(design, opts);
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+/**
+ * The derivation as a generator: it yields its progress (0 → 1) between pieces of work, so the
+ * app can run it a slice at a time and show a progress bar, and returns the Derivation.
+ */
+export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<number, Derivation, void> {
   const warnings: string[] = [];
   const pointById = new Map(design.points.map((p) => [p.id, p]));
   const links = design.links.filter((l) => l.a !== l.b && pointById.has(l.a) && pointById.has(l.b));
@@ -465,9 +477,14 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
   const dot = (u: [Poly, Poly], v: [Poly, Poly]) => u[0].mul(v[0]).add(u[1].mul(v[1]));
 
   // ---- energies ------------------------------------------------------------
+  yield 0.05;
+  const bodies = links.length + gears.length + pointMass.size;
+  let bodiesDone = 0;
+  const bodyDone = () => 0.05 + (0.2 * ++bodiesDone) / bodies;
   let T = Poly.zero;
   let V = Poly.zero;
   for (const l of links) {
+    yield bodyDone();
     const ra = positions.get(l.a)!;
     const rb = positions.get(l.b)!;
     const va = velocity(ra);
@@ -477,6 +494,7 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
     if (g) V = V.add(m.mul(g).scale(0.5).mul(ra[1].add(rb[1])));
   }
   for (const gr of gears) {
+    yield bodyDone();
     if (!gearAngle.has(gr.id)) continue;
     const rc = positions.get(gr.center)!;
     const vc = velocity(rc);
@@ -490,18 +508,21 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
     if (g) V = V.add(m.mul(g).mul(rc[1]));
   }
   for (const [pid, m] of pointMass) {
+    yield bodyDone();
     const r = positions.get(pid)!;
     const v = velocity(r);
     T = T.add(m.scale(0.5).mul(dot(v, v)));
     if (g) V = V.add(m.mul(g).mul(r[1]));
   }
   T = trigSimplify(T);
+  yield 0.3;
   // Terms of V that do not depend on q are an irrelevant additive constant.
   V = Poly.fromTerms([...trigSimplify(V).terms.values()].filter((t) => qsDepend(Poly.fromTerms([t]))));
 
   // ---- springs ---------------------------------------------------------------
   const springTerms: SpringTerm[] = [];
-  for (const s of springs) {
+  for (const [si, s] of springs.entries()) {
+    yield 0.3 + (0.05 * si) / springs.length;
     const lab = springLabel(s.id);
     const k = `k${s.id}`;
     const rest = `l0${s.id}`;
@@ -527,6 +548,7 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
   const M: Poly[][] = [];
   const f: Poly[] = [];
   for (let i = 0; i < n; i++) {
+    yield 0.35 + (0.5 * i) / n;
     M.push(qds.map((qd) => trigSimplify(p[i].diff(qd))));
     let fi = L.diff(qs[i]);
     for (let j = 0; j < n; j++) if (p[i].dependsOn(qs[j])) fi = fi.sub(p[i].diff(qs[j]).mul(Poly.sym(qds[j])));
@@ -561,12 +583,17 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
   };
   for (const c of movableKept) if (!c.rackDistance) independent(c.phi);
   const kept = movableKept.filter((c) => !c.rackDistance || independent(c.phi));
-  const phiQ = kept.map((c) => qs.map((q) => trigSimplify(c.phi.diff(q))));
-  const gamma = phiQ.map((row) => {
+  const phiQ: Poly[][] = [];
+  const gamma: Poly[] = [];
+  for (const [k, c] of kept.entries()) {
+    yield 0.85 + (0.15 * k) / kept.length;
+    const row = qs.map((q) => trigSimplify(c.phi.diff(q)));
     let phiDot = Poly.zero;
     row.forEach((d, j) => (phiDot = phiDot.add(d.mul(Poly.sym(qds[j])))));
-    return trigSimplify(timeDerivative(phiDot, qs, qds).scale(-1));
-  });
+    phiQ.push(row);
+    gamma.push(trigSimplify(timeDerivative(phiDot, qs, qds).scale(-1)));
+  }
+  yield 1;
 
   if (n > 0 && kept.length >= n) warnings.push('The mechanism has as many constraints as coordinates, so it may be locked.');
 

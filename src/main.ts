@@ -1,9 +1,9 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
-import { deriveEquations, type Derivation } from './mechanics/derive';
+import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
 import { cloneDesign, emptyDesign, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { defaultFriction, NumericSystem, Simulator, type Heat } from './mechanics/simulate';
-import { renderEomPanel } from './ui/eomPanel';
+import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
@@ -91,22 +91,124 @@ function designChanged(opts: { keepInspector?: boolean } = {}) {
 }
 
 // ---- derivation --------------------------------------------------------------
+// Deriving and typesetting a big mechanism takes a while (a 30-link chain: about a second), so
+// both run as generators, a slice at a time, and the equations panel shows a green fill
+// meanwhile. The new equations appear only once both are done.
+const SLICE_MS = 12; // work per slice, so the page keeps repainting
+const PROGRESS_DELAY_MS = 150; // quick jobs swap the panel without showing progress
+const DERIVE_SHARE = 0.7; // part of the bar for deriving; the rest is typesetting
+const eomProgress = $<HTMLDivElement>('#eom-progress');
+const eomFill = $<HTMLDivElement>('#eom-progress .fill');
+const eomProgressText = $<HTMLSpanElement>('#eom-progress .label');
+enableLongEquations(eomEl);
 let deriveTimer = 0;
+let jobToken = 0; // starting a job bumps it, which cancels the job before
+let jobStart = 0;
+let deriving = false;
+
 function scheduleDerive() {
   clearTimeout(deriveTimer);
-  deriveTimer = window.setTimeout(derive, 40);
+  deriveTimer = window.setTimeout(deriveInBackground, 40);
 }
 
-function derive() {
+const deriveOptions = () => ({ gravity: settings.gravity ? GRAVITY : 0 });
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Run a generator a slice at a time. It stops quietly if another job has started since. */
+function runSliced<T>(steps: Generator<number, T, void>, token: number, progress: (f: number) => void, done: (v: T) => void, fail: (e: unknown) => void) {
+  const tick = () => {
+    if (token !== jobToken) return;
+    const end = performance.now() + SLICE_MS;
+    try {
+      for (;;) {
+        const r = steps.next();
+        if (r.done) return done(r.value);
+        if (performance.now() > end) {
+          progress(r.value);
+          setTimeout(tick, 0);
+          return;
+        }
+      }
+    } catch (e) {
+      fail(e);
+    }
+  };
+  tick();
+}
+
+function newJob(): number {
   clearTimeout(deriveTimer);
+  jobStart = performance.now();
+  return ++jobToken;
+}
+
+/** Fill the panel with green up to fraction f, once the job has run for a moment. */
+function showProgress(f: number, what: string) {
+  if (performance.now() - jobStart < PROGRESS_DELAY_MS) return;
+  eomEl.hidden = true;
+  eomProgress.hidden = false;
+  eomFill.style.height = `${(100 * Math.min(Math.max(f, 0), 1)).toFixed(1)}%`;
+  eomProgressText.textContent = `${what}… ${Math.round(100 * f)}%`;
+}
+
+function hideProgress() {
+  eomProgress.hidden = true;
+  eomEl.hidden = false;
+}
+
+function deriveInBackground() {
+  const token = newJob();
+  deriving = true;
+  const snapshot = cloneDesign(design); // the design may change while this runs
+  const finish = (d: Derivation | null, err: string | null) => {
+    deriving = false;
+    derivation = d;
+    deriveError = err;
+    typeset(token, DERIVE_SHARE);
+  };
+  runSliced(
+    deriveSteps(snapshot, deriveOptions()),
+    token,
+    (f) => showProgress(DERIVE_SHARE * f, "Deriving Lagrange's equations"),
+    (d) => finish(d, null),
+    (e) => finish(null, errorText(e)),
+  );
+}
+
+/** Derive right away (Play needs the equations now), then typeset the panel in the background. */
+function derive() {
+  const token = newJob();
+  deriving = false;
   try {
-    derivation = deriveEquations(design, { gravity: settings.gravity ? GRAVITY : 0 });
+    derivation = deriveEquations(design, deriveOptions());
     deriveError = null;
   } catch (e) {
     derivation = null;
-    deriveError = e instanceof Error ? e.message : String(e);
+    deriveError = errorText(e);
   }
-  renderEomPanel(eomEl, derivation, deriveError, friction.enabled);
+  typeset(token, 0);
+}
+
+/** Typeset the current derivation into the panel; the bar runs from `from` to 100 %. */
+function typeset(token: number, from: number) {
+  runSliced(
+    eomPanelSteps(derivation, deriveError, friction.enabled),
+    token,
+    (f) => showProgress(from + (1 - from) * f, 'Typesetting the equations'),
+    (html) => {
+      eomEl.innerHTML = html;
+      hideProgress();
+    },
+    (e) => {
+      eomEl.textContent = `Could not typeset the equations: ${errorText(e)}`;
+      hideProgress();
+    },
+  );
+}
+
+/** Re-typeset after a display option changed; a derivation still running will typeset when done. */
+function retypeset() {
+  if (!deriving) typeset(newJob(), 0);
 }
 
 // ---- simulation ----------------------------------------------------------------
@@ -744,7 +846,7 @@ const frictionPanel = $<HTMLDivElement>('#friction-settings');
 frictionBox.addEventListener('change', () => {
   friction.enabled = frictionBox.checked;
   frictionPanel.hidden = !friction.enabled;
-  renderEomPanel(eomEl, derivation, deriveError, friction.enabled);
+  retypeset();
 });
 function bindFriction(id: string, key: 'pin' | 'mesh' | 'rail' | 'coolingTime', fmt: (v: number) => string) {
   const input = $<HTMLInputElement>(`#${id}`);
@@ -1108,7 +1210,7 @@ function frame(now: number) {
 window.addEventListener('resize', resize);
 resize();
 fitView();
-derive();
+deriveInBackground();
 refreshControls();
 requestAnimationFrame(frame);
 
