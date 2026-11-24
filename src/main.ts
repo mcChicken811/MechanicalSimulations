@@ -46,7 +46,8 @@ let simError: string | null = null;
 let grab: { a: number; b: number; s: number; gear?: { id: number; u: number; v: number } } | null = null;
 let mouseWorld: Vec = [0, 0];
 const undoStack: Design[] = [];
-const settings = { gravity: true, snap: true, damping: 0, stiffness: 80, speed: 1 };
+const LABELS_KEY = 'linkage-lab-labels';
+const settings = { gravity: true, snap: true, labels: localStorage.getItem(LABELS_KEY) !== 'off', damping: 0, stiffness: 80, speed: 1 };
 const friction = defaultFriction();
 let simHeat: Heat = { joints: new Map(), meshes: new Map(), racks: new Map() };
 
@@ -766,6 +767,12 @@ $<HTMLInputElement>('#gravity').addEventListener('change', (e) => {
   else derive();
 });
 $<HTMLInputElement>('#snap').addEventListener('change', (e) => (settings.snap = (e.target as HTMLInputElement).checked));
+const labelsBox = $<HTMLInputElement>('#labels');
+labelsBox.checked = settings.labels;
+labelsBox.addEventListener('change', () => {
+  settings.labels = labelsBox.checked;
+  localStorage.setItem(LABELS_KEY, settings.labels ? 'on' : 'off'); // remembered between visits
+});
 
 const eomWrap = $<HTMLElement>('#eom-wrap');
 $<HTMLButtonElement>('#eom-toggle').addEventListener('click', (e) => {
@@ -1092,6 +1099,7 @@ function frame(now: number) {
     heat: sim ? simHeat : null,
     grab: grabScene,
     simulating: !!sim,
+    labels: settings.labels,
   });
   renderStatus();
   requestAnimationFrame(frame);

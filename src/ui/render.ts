@@ -27,7 +27,12 @@ export interface Scene {
   heat?: Heat | null;
   grab: { at: Vec; to: Vec; force: Vec } | null;
   simulating: boolean;
+  /** Draw the names of joints, bars, racks, springs and gears, and mass tags (default true). */
+  labels?: boolean;
 }
+
+/** Set from the scene at the start of every frame. */
+let showLabels = true;
 
 const C = {
   bg: '#f6f6f3',
@@ -49,6 +54,7 @@ export function barColor(id: number): string {
 }
 
 export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, s: Scene) {
+  showLabels = s.labels !== false;
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
   drawGrid(ctx, w, h, v);
@@ -184,7 +190,7 @@ function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = C.ink;
-  ctx.fillText(linkLabel(l.id), mx + nx * 18, my + ny * 18);
+  if (showLabels) ctx.fillText(linkLabel(l.id), mx + nx * 18, my + ny * 18);
   ctx.restore();
 }
 
@@ -358,7 +364,7 @@ function drawRack(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink, of
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = C.ink;
-  ctx.fillText(linkLabel(l.id), mx + f.n[0] * off, my - f.n[1] * off);
+  if (showLabels) ctx.fillText(linkLabel(l.id), mx + f.n[0] * off, my - f.n[1] * off);
   ctx.restore();
 }
 
@@ -382,7 +388,7 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = color;
-    ctx.fillText(`g${gearLabel(g.id)}`, sc[0] - 14, sc[1] + 20);
+    if (showLabels) ctx.fillText(`g${gearLabel(g.id)}`, sc[0] - 14, sc[1] + 20);
     ctx.restore();
     if (g.locked) drawPadlock(ctx, [sc[0] - 20, sc[1] - 20]);
   }
@@ -474,7 +480,7 @@ function drawSpring(ctx: CanvasRenderingContext2D, v: View, s: Scene, sp: DSprin
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = C.spring;
-  ctx.fillText(`k${springLabel(sp.id)}`, mx + nx * 20, my + ny * 20);
+  if (showLabels) ctx.fillText(`k${springLabel(sp.id)}`, mx + nx * 20, my + ny * 20);
   ctx.restore();
 }
 
@@ -575,6 +581,7 @@ function drawJoint(ctx: CanvasRenderingContext2D, v: View, s: Scene, p: DPoint) 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'bottom';
   ctx.fillStyle = C.ink;
+  if (!showLabels) return;
   ctx.fillText(pointLabel(p.id), c[0] + r + 4, c[1] - r - 2);
   if (p.mass > 0) {
     ctx.font = '11px system-ui, sans-serif';
