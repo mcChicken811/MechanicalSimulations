@@ -1,4 +1,5 @@
-import { gearLabel, linkLabel, pointLabel, springLabel, type Design, type DGear, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import { gearLabel, GEAR_MODULE, linkLabel, pointLabel, rackPitch, springLabel, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import type { Heat } from '../mechanics/simulate';
 
 export interface View {
   scale: number; // pixels per metre
@@ -18,11 +19,12 @@ export interface Scene {
   pos: (id: number) => Vec;
   selection: Selection | null;
   hover: Selection | null;
-  preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear'; meshWith?: number | null } | null;
+  /** A part being drawn; `meshAt` marks where it will mesh, `side` is a rack's tooth side. */
+  preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear' | 'rack'; meshAt?: Vec | null; side?: 1 | -1 } | null;
   /** Current rotation of a gear (0 while editing). */
   gearAngle: (id: number) => number;
   /** Temperature rise (K) of joints and gear meshes from friction, while simulating. */
-  heat?: { joints: Map<number, number>; meshes: Map<number, number> } | null;
+  heat?: Heat | null;
   grab: { at: Vec; to: Vec; force: Vec } | null;
   simulating: boolean;
 }
@@ -53,9 +55,13 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
 
   for (const p of s.design.points) if (p.kind === 'lockX' || p.kind === 'lockY') drawRail(ctx, w, h, v, p);
 
-  drawGears(ctx, v, s);
+  const phases = toothPhases(s.design);
+  drawGears(ctx, v, s, phases.gears);
   for (const sp of s.design.springs) drawSpring(ctx, v, s, sp);
-  for (const l of s.design.links) drawBar(ctx, v, s, l);
+  for (const l of s.design.links) {
+    if (l.rack) drawRack(ctx, v, s, l, phases.racks.get(l.id) ?? 0);
+    else drawBar(ctx, v, s, l);
+  }
   if (s.preview) {
     const a = toScreen(v, s.preview.from);
     const b = toScreen(v, s.preview.to);
@@ -70,15 +76,19 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
       ctx.beginPath();
       ctx.arc(a[0], a[1], Math.hypot(b[0] - a[0], b[1] - a[1]), 0, Math.PI * 2);
       ctx.stroke();
-      if (s.preview.meshWith !== null && s.preview.meshWith !== undefined) {
-        ctx.setLineDash([]);
-        dot(ctx, b, 4, C.accent, C.accent, 0); // the mesh point
-      }
+    } else if (s.preview.kind === 'rack') {
+      ctx.globalAlpha = 0.8;
+      rackShape(ctx, v, s.preview.from, s.preview.to, s.preview.side ?? 1, Math.PI * GEAR_MODULE, 0);
+      ctx.lineWidth = 1.5;
+      ctx.fillStyle = 'rgba(224,123,57,0.15)';
+      ctx.fill();
+      ctx.stroke();
     } else {
       ctx.lineWidth = 3;
       ctx.setLineDash([8, 6]);
       line(ctx, a, b);
     }
+    if (s.preview.meshAt) dot(ctx, toScreen(v, s.preview.meshAt), 4, C.accent, C.accent, 0); // where it meshes
     ctx.restore();
     dot(ctx, b, 5, '#fff', C.accent);
   }
@@ -203,44 +213,156 @@ function zigzag(ctx: CanvasRenderingContext2D, a: Vec, b: Vec, coils = 7, width 
   ctx.stroke();
 }
 
-/**
- * Tooth phase of every gear in the design configuration, chosen so that each meshing pair
- * interlocks on its line of centres (a tooth of one gear in a gap of the other). Meshes
- * are visited breadth-first; the tooth-ratio constraint then keeps them interlocked.
- */
-function toothPhases(d: Design): Map<number, number> {
-  const phase = new Map<number, number>();
-  const at = (g: DGear): Vec => {
-    const p = d.points.find((q) => q.id === g.center)!;
-    return [p.x, p.y];
-  };
-  for (const root of d.gears) {
-    if (phase.has(root.id)) continue;
-    phase.set(root.id, 0);
-    const queue = [root];
-    while (queue.length) {
-      const ga = queue.shift()!;
-      for (const m of d.meshes) {
-        const otherId = m.a === ga.id ? m.b : m.b === ga.id ? m.a : null;
-        const gb = d.gears.find((x) => x.id === otherId);
-        if (!gb || phase.has(gb.id)) continue;
-        const [ca, cb] = [at(ga), at(gb)];
-        const psi = Math.atan2(cb[1] - ca[1], cb[0] - ca[0]);
-        const pa = (2 * Math.PI) / ga.teeth;
-        const pb = (2 * Math.PI) / gb.teeth;
-        const t = (psi - phase.get(ga.id)!) / pa;
-        const f = t - Math.round(t); // where gear a's nearest tooth sits, in pitches from the contact line
-        phase.set(gb.id, psi + Math.PI + pb / 2 - f * pb);
-        queue.push(gb);
-      }
-    }
-  }
-  return phase;
+/** Where a rack lies: its start, direction e, left normal n, length and angle. */
+function rackFrame(a: Vec, b: Vec) {
+  const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-9;
+  const e: Vec = [(b[0] - a[0]) / L, (b[1] - a[1]) / L];
+  return { a, e, n: [-e[1], e[0]] as Vec, L, angle: Math.atan2(e[1], e[0]) };
 }
 
-function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene) {
-  if (!s.design.gears.length) return;
-  const phases = toothPhases(s.design);
+/** A gear centre c relative to a rack: ξ along it, and the side (±1) it is on. */
+function onRack(f: ReturnType<typeof rackFrame>, c: Vec) {
+  const r: Vec = [c[0] - f.a[0], c[1] - f.a[1]];
+  const h = r[0] * f.n[0] + r[1] * f.n[1];
+  return { xi: r[0] * f.e[0] + r[1] * f.e[1], side: h >= 0 ? 1 : -1 };
+}
+
+/**
+ * Tooth phase of every gear, and tooth offset along every rack, in the design configuration,
+ * chosen so that each meshing pair interlocks at its pitch point (a tooth of one in a gap of
+ * the other). Meshes are visited breadth-first; the mesh constraints then keep them interlocked.
+ *
+ * A gear tooth at angle α from the direction of the contact point reaches the rack, as the gear
+ * rolls, at ξ + s R α along it. A rack's teeth sit at offset + k p from its joint a.
+ */
+function toothPhases(d: Design): { gears: Map<number, number>; racks: Map<number, number> } {
+  const phase = new Map<number, number>();
+  const offset = new Map<number, number>();
+  const at = (id: number): Vec => {
+    const p = d.points.find((q) => q.id === id)!;
+    return [p.x, p.y];
+  };
+  const gearById = new Map(d.gears.map((g) => [g.id, g]));
+  const rackById = new Map(d.links.filter((l) => l.rack).map((l) => [l.id, l]));
+  type Node = { kind: 'gear' | 'rack'; id: number };
+  const visit = (root: Node) => {
+    const queue = [root];
+    while (queue.length) {
+      const node = queue.shift()!;
+      if (node.kind === 'gear') {
+        const ga = gearById.get(node.id)!;
+        for (const m of d.meshes) {
+          const gb = gearById.get(m.a === ga.id ? m.b : m.b === ga.id ? m.a : -1);
+          if (!gb || phase.has(gb.id)) continue;
+          const [ca, cb] = [at(ga.center), at(gb.center)];
+          const psi = Math.atan2(cb[1] - ca[1], cb[0] - ca[0]);
+          const pa = (2 * Math.PI) / ga.teeth;
+          const pb = (2 * Math.PI) / gb.teeth;
+          const t = (psi - phase.get(ga.id)!) / pa;
+          const f = t - Math.round(t); // where gear a's nearest tooth sits, in pitches from the contact line
+          phase.set(gb.id, psi + Math.PI + pb / 2 - f * pb);
+          queue.push({ kind: 'gear', id: gb.id });
+        }
+        for (const m of d.rackMeshes) {
+          const r = m.gear === ga.id ? rackById.get(m.rack) : undefined;
+          if (!r || offset.has(r.id)) continue;
+          const f = rackFrame(at(r.a), at(r.b));
+          const { xi, side } = onRack(f, at(ga.center));
+          const alpha = phase.get(ga.id)! - f.angle + (side * Math.PI) / 2;
+          offset.set(r.id, xi + side * ga.radius * alpha - rackPitch(d, r.id) / 2); // a rack gap meets the tooth
+          queue.push({ kind: 'rack', id: r.id });
+        }
+      } else {
+        const r = rackById.get(node.id)!;
+        const f = rackFrame(at(r.a), at(r.b));
+        for (const m of d.rackMeshes) {
+          const g = m.rack === r.id ? gearById.get(m.gear) : undefined;
+          if (!g || phase.has(g.id)) continue;
+          const { xi, side } = onRack(f, at(g.center));
+          const tooth = offset.get(r.id)! + rackPitch(d, r.id) / 2; // a gap of the rack
+          phase.set(g.id, (tooth - xi) / (side * g.radius) + f.angle - (side * Math.PI) / 2);
+          queue.push({ kind: 'gear', id: g.id });
+        }
+      }
+    }
+  };
+  for (const g of d.gears) if (!phase.has(g.id) && d.points.some((p) => p.id === g.center)) (phase.set(g.id, 0), visit({ kind: 'gear', id: g.id }));
+  for (const r of rackById.values()) if (!offset.has(r.id)) (offset.set(r.id, 0), visit({ kind: 'rack', id: r.id }));
+  return { gears: phase, racks: offset };
+}
+
+/**
+ * Outline of a rack from a to b (world), its pitch line on ab: teeth of pitch p on side `side`
+ * centred at offset + k p from a, and the body on the other side. Leaves the path open for fill/stroke.
+ */
+function rackShape(ctx: CanvasRenderingContext2D, v: View, a: Vec, b: Vec, side: number, p: number, offset: number) {
+  const f = rackFrame(a, b);
+  const m = p / Math.PI; // module
+  const tip = side * m;
+  const root = -side * 1.25 * m;
+  const back = -side * (1.25 * m + Math.max(0.6 * m, 0.025)); // far edge of the body
+  const world = (u: number, h: number) => toScreen(v, [a[0] + f.e[0] * u + f.n[0] * h, a[1] + f.e[1] * u + f.n[1] * h]);
+  const profile: [number, number][] = [[-0.5, root], [-0.3, root], [-0.16, tip], [0.16, tip], [0.3, root]];
+  const pts: Vec[] = [world(0, back), world(0, root)];
+  const k0 = Math.floor(-offset / p) - 1;
+  const k1 = Math.ceil((f.L - offset) / p) + 1;
+  for (let k = k0; k <= k1; k++)
+    for (const [frac, h] of profile) {
+      const u = offset + (k + frac) * p;
+      if (u > 0 && u < f.L) pts.push(world(u, h));
+    }
+  pts.push(world(f.L, root), world(f.L, back));
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  ctx.closePath();
+}
+
+/** A rack: a toothed bar. Its joints sit on the pitch line (dashed). */
+function drawRack(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink, offset: number) {
+  const A = s.pos(l.a);
+  const B = s.pos(l.b);
+  const side = l.rack ?? 1;
+  const selected = s.selection?.kind === 'link' && s.selection.id === l.id;
+  const hovered = s.hover?.kind === 'link' && s.hover.id === l.id;
+  const color = barColor(l.id);
+  ctx.save();
+  ctx.lineJoin = 'round';
+  rackShape(ctx, v, A, B, side, rackPitch(s.design, l.id), offset);
+  if (selected || hovered) {
+    ctx.strokeStyle = C.accent;
+    ctx.globalAlpha = selected ? 0.45 : 0.25;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.35;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#1f2125';
+  ctx.stroke();
+  const a = toScreen(v, A);
+  const b = toScreen(v, B);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 4]);
+  line(ctx, a, b);
+  ctx.setLineDash([]);
+  // label on the body side
+  const f = rackFrame(A, B);
+  const m = rackPitch(s.design, l.id) / Math.PI;
+  const off = -side * (1.25 * m + Math.max(0.6 * m, 0.025)) * v.scale - side * 12;
+  const [mx, my] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  ctx.font = '600 12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = C.ink;
+  ctx.fillText(linkLabel(l.id), mx + f.n[0] * off, my - f.n[1] * off);
+  ctx.restore();
+}
+
+function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map<number, number>) {
   for (const g of s.design.gears) {
     if (!s.design.points.some((p) => p.id === g.center)) continue;
     const c = s.pos(g.center);
@@ -413,6 +535,15 @@ function drawHeat(ctx: CanvasRenderingContext2D, v: View, s: Scene, heat: NonNul
     const d = Math.hypot(cb[0] - ca[0], cb[1] - ca[1]) || 1;
     const t = ga.radius / d; // the pitch point, where the teeth rub
     glow(ctx, toScreen(v, [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t]), dT);
+  }
+  for (const [id, dT] of heat.racks) {
+    const m = s.design.rackMeshes.find((x) => x.id === id);
+    const g = m && s.design.gears.find((x) => x.id === m.gear);
+    const r = m && s.design.links.find((x) => x.id === m.rack);
+    if (!g || !r) continue;
+    const f = rackFrame(s.pos(r.a), s.pos(r.b));
+    const { xi } = onRack(f, s.pos(g.center)); // the pitch point is the foot of the perpendicular
+    glow(ctx, toScreen(v, [f.a[0] + f.e[0] * xi, f.a[1] + f.e[1] * xi]), dT);
   }
   ctx.restore();
 }

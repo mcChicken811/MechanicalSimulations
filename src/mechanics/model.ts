@@ -28,6 +28,11 @@ export interface DLink {
   a: number;
   b: number;
   mass: number;
+  /**
+   * If set, the bar is a rack: a straight toothed bar whose pitch line runs through its two
+   * joints. The teeth are on its left (+1) or right (−1), looking from joint a to joint b.
+   */
+  rack?: 1 | -1;
 }
 
 /**
@@ -69,16 +74,29 @@ export interface DMesh {
   b: number;
 }
 
+/**
+ * A gear meshing with a rack. The gear's pitch circle rolls on the rack's pitch line without
+ * slipping, which turns rotation into translation: ξ + s R (φ − θ_rack) = const, ξ being
+ * where the gear centre sits along the rack and s the side of the rack the gear is on.
+ * The gear centre also stays on the pitch line's parallel at distance R.
+ */
+export interface DRackMesh {
+  id: number;
+  gear: number;
+  rack: number;
+}
+
 export interface Design {
   points: DPoint[];
   links: DLink[];
   springs: DSpring[];
   gears: DGear[];
   meshes: DMesh[];
+  rackMeshes: DRackMesh[];
 }
 
 export function emptyDesign(): Design {
-  return { points: [], links: [], springs: [], gears: [], meshes: [] };
+  return { points: [], links: [], springs: [], gears: [], meshes: [], rackMeshes: [] };
 }
 
 export function pointLabel(id: number): string {
@@ -105,6 +123,18 @@ export function teethForRadius(radius: number): number {
   return Math.max(6, Math.round((2 * radius) / GEAR_MODULE));
 }
 
+/**
+ * Tooth pitch (m) of a rack: the circular pitch 2πR/N of the first gear meshing with it,
+ * so their teeth interlock, or π × module when nothing meshes with it yet.
+ */
+export function rackPitch(d: Design, rackId: number): number {
+  for (const m of d.rackMeshes) {
+    const g = m.rack === rackId && d.gears.find((x) => x.id === m.gear);
+    if (g) return (2 * Math.PI * g.radius) / g.teeth;
+  }
+  return Math.PI * GEAR_MODULE;
+}
+
 export function springLabel(id: number): string {
   return `${id + 1}`;
 }
@@ -116,5 +146,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })) };
 }

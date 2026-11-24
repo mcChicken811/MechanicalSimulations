@@ -147,6 +147,7 @@ export interface Grab {
  *   pin joints:  R = ½ c_pin Σ over pairs of bodies at the joint (ω_i − ω_k)²   (N·m·s)
  *   rails:       R = ½ c_rail v²                                            (N·s/m)
  *   gear teeth:  R = ½ c_mesh v_pitch²,  v_pitch = R_a (φ̇_a − θ̇_c)            (N·s/m)
+ *                (for a rack, v_pitch = R (φ̇ − θ̇_rack), the speed along the rack)
  * Each joint and mesh has a temperature rise ΔT obeying Newton's law of cooling,
  *   C dΔT/dt = P − (C/τ) ΔT.
  */
@@ -159,6 +160,13 @@ export interface FrictionSettings {
   coolingTime: number;
   /** Heat capacity C of each joint or mesh (J/K). */
   heatCapacity: number;
+}
+
+/** Temperature rise (K) by joint id, gear-mesh id and rack-mesh id. */
+export interface Heat {
+  joints: Map<number, number>;
+  meshes: Map<number, number>;
+  racks: Map<number, number>;
 }
 
 export const defaultFriction = (): FrictionSettings => ({ enabled: false, pin: 0.02, rail: 0.5, mesh: 0.5, coolingTime: 4, heatCapacity: 0.02 });
@@ -438,13 +446,11 @@ export class Simulator {
     }
   }
 
-  /** Temperature rise (K) of every joint keyed by joint id, and of every mesh keyed by mesh id. */
-  heat(): { joints: Map<number, number>; meshes: Map<number, number> } {
+  /** Temperature rise (K) of every joint keyed by joint id, and of every gear or rack mesh keyed by mesh id. */
+  heat(): Heat {
     const d = this.sys.derivation;
-    return {
-      joints: new Map(d.joints.map((j, i) => [j.id, this.jointHeat[i]])),
-      meshes: new Map(d.meshes.map((m, i) => [m.id, this.meshHeat[i]])),
-    };
+    const of = (kind: 'gear' | 'rack') => new Map(d.meshes.flatMap((m, i) => (m.kind === kind ? [[m.id, this.meshHeat[i]] as [number, number]] : [])));
+    return { joints: new Map(d.joints.map((j, i) => [j.id, this.jointHeat[i]])), meshes: of('gear'), racks: of('rack') };
   }
 
   /** Remove constraint drift: Newton-project q onto Φ = 0 and q̇ onto Φ_q q̇ = 0. */

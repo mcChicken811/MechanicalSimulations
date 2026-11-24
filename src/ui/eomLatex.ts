@@ -111,6 +111,19 @@ export function constraintLatex(d: Derivation, k: number): string {
     const lhs = [side(Na, ta), side(Nb, tb)].filter((x): x is string => x !== null).join(' + ') || '0';
     return `\\Phi_{${k + 1}} = ${lhs} - ${polyLatex(C)} = 0`;
   }
+  if (c.rack) {
+    const { xi, sR, rel, C } = c.rack;
+    const parts = termLatexList(xi);
+    if (!rel.isZero()) {
+      const neg = sR.terms.size === 1 && [...sR.terms.values()][0].coef < 0;
+      const single = rel.terms.size === 1 && [...rel.terms.values()][0].coef === 1;
+      const r = polyLatex(neg ? sR.scale(-1) : sR);
+      parts.push(`${neg ? '-' : '+'} ${r}${single ? `\\,${polyLatex(rel)}` : `\\left(${polyLatex(rel)}\\right)`}`);
+    }
+    parts.push(`- ${polyLatex(C)}`);
+    const L = lines(parts, 3);
+    return `\\begin{aligned}\\Phi_{${k + 1}} &= ${L[0]}${L.slice(1).map((l) => ` \\\\ &\\quad ${l}`).join('')} = 0\\end{aligned}`;
+  }
   const parts = termLatexList(c.phi);
   const L = lines(parts, 4);
   return `\\begin{aligned}\\Phi_{${k + 1}} &= ${L[0]}${L.slice(1).map((l) => ` \\\\ &\\quad ${l}`).join('')} = 0\\end{aligned}`;

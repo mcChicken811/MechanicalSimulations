@@ -14,7 +14,7 @@ function doublePendulum(): Design {
     ],
     springs: [],
     gears: [],
-    meshes: [],
+    meshes: [], rackMeshes: [],
     links: [
       { id: 0, a: 0, b: 1, mass: 2 },
       { id: 1, a: 1, b: 2, mass: 1 },
@@ -32,7 +32,7 @@ function fourBar(): Design {
     ],
     springs: [],
     gears: [],
-    meshes: [],
+    meshes: [], rackMeshes: [],
     links: [
       { id: 0, a: 0, b: 1, mass: 1 },
       { id: 1, a: 1, b: 2, mass: 1 },
@@ -50,7 +50,7 @@ function sliderCrank(): Design {
     ],
     springs: [],
     gears: [],
-    meshes: [],
+    meshes: [], rackMeshes: [],
     links: [
       { id: 0, a: 0, b: 1, mass: 1 },
       { id: 1, a: 1, b: 2, mass: 1 },
@@ -129,7 +129,7 @@ describe('deriveEquations', () => {
         ],
         springs: [],
         gears: [],
-        meshes: [],
+        meshes: [], rackMeshes: [],
         links: [{ id: 0, a: 0, b: 1, mass: 1 }],
       },
       { gravity: G },
@@ -160,7 +160,7 @@ describe('springs', () => {
       links: [],
       springs: [{ id: 0, a: 0, b: 1, k, rest: 0.5 }],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     };
     const der = deriveEquations(design, { gravity: G });
     expect(der.coords.map((c) => c.kind)).toEqual(['x']);
@@ -182,7 +182,7 @@ describe('springs', () => {
       links: [{ id: 0, a: 0, b: 1, mass: 1 }],
       springs: [{ id: 0, a: 1, b: 2, k: 30, rest: 0.4 }],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     };
     const sys = new NumericSystem(deriveEquations(design, { gravity: G }));
     const q = Float64Array.from([-0.9]);
@@ -202,7 +202,7 @@ describe('springs', () => {
       links: [],
       springs: [{ id: 0, a: 0, b: 1, k: 60, rest: 0.6 }],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     };
     const { der, maxDrift, scale } = runAndMeasureEnergyDrift(design, 3, [1, 0]);
     expect(der.coords.map((c) => c.kind)).toEqual(['x', 'y']);
@@ -219,7 +219,7 @@ describe('springs', () => {
       links: [{ id: 0, a: 0, b: 1, mass: 1 }],
       springs: [{ id: 0, a: 1, b: 2, k: 10, rest: 0.5 }],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     };
     const der = deriveEquations(design, { gravity: G });
     expect(der.coords).toHaveLength(1);
@@ -245,7 +245,7 @@ describe('gears', () => {
   const gear = (id: number, center: number, radius: number, teeth: number, mass: number, locked = false) => ({ id, center, radius, teeth, mass, locked });
 
   it('a free-spinning gear is a rigid disk: I = ½ m R²', () => {
-    const design: Design = { points: [P(0, 0, 0, 'fixed')], links: [], springs: [], gears: [gear(0, 0, 0.3, 20, 2)], meshes: [] };
+    const design: Design = { points: [P(0, 0, 0, 'fixed')], links: [], springs: [], gears: [gear(0, 0, 0.3, 20, 2)], meshes: [], rackMeshes: [] };
     const der = deriveEquations(design, { gravity: G });
     expect(der.coords.map((c) => c.sym)).toEqual(['ph0']);
     expect(der.M[0][0].evaluate({ mg0: 2, R0: 0.3 })).toBeCloseTo(0.5 * 2 * 0.09, 12);
@@ -258,7 +258,7 @@ describe('gears', () => {
       links: [],
       springs: [],
       gears: [gear(0, 0, 0.2, 13, 1)],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     };
     const der = deriveEquations(design, { gravity: G });
     expect(der.coords).toHaveLength(1);
@@ -274,7 +274,7 @@ describe('gears', () => {
       links: [],
       springs: [],
       gears: [gear(0, 0, 0.2, 16, 0.5), gear(1, 1, 0.3, 24, 1)],
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     };
     const { der, sim, maxDrift, maxPhi, scale } = runAndMeasureEnergyDrift(design, 2, [3, 0]);
     expect(der.coords.length - der.constraints.length).toBe(1);
@@ -290,7 +290,7 @@ describe('gears', () => {
       links: [{ id: 0, a: 0, b: 1, mass: 1 }],
       springs: [],
       gears: [gear(0, 0, 0.3, 30, 1, true), gear(1, 1, 0.15, 15, 0.5)],
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     };
     const { der, sim, maxPhi, maxDrift, scale } = runAndMeasureEnergyDrift(design, 2, [2, 0]);
     expect(der.coords.map((c) => c.sym)).toEqual(['th0', 'ph1']);
@@ -320,7 +320,7 @@ describe('friction and heating', () => {
     links: [{ id: 0, a: 0, b: 1, mass: 3 }],
     springs: [],
     gears: [],
-    meshes: [],
+    meshes: [], rackMeshes: [],
   });
 
   it('a pivot gives the torque −c θ̇ (Rayleigh R = ½ c θ̇²)', () => {
@@ -376,7 +376,7 @@ describe('friction and heating', () => {
         { id: 0, center: 0, radius: 0.2, teeth: 16, mass: 1, locked: false },
         { id: 1, center: 1, radius: 0.3, teeth: 24, mass: 1, locked: false },
       ],
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     };
     const sim = new Simulator(new NumericSystem(deriveEquations(gears, { gravity: 0 })));
     sim.friction = { ...sim.friction, enabled: true, pin: 0, mesh: 2 };
@@ -395,7 +395,7 @@ describe('friction and heating', () => {
       links: [{ id: 0, a: 0, b: 1, mass: 1 }],
       springs: [],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     };
     const s2 = new Simulator(new NumericSystem(deriveEquations(cart, { gravity: G })));
     s2.friction = { ...s2.friction, enabled: true, pin: 0, rail: 1 };
@@ -406,7 +406,7 @@ describe('friction and heating', () => {
 
 describe('masses placed on their own', () => {
   it('a lone mass is a particle in free fall', () => {
-    const design: Design = { points: [{ id: 0, x: 0.3, y: 1, kind: 'free', mass: 1 }], links: [], springs: [], gears: [], meshes: [] };
+    const design: Design = { points: [{ id: 0, x: 0.3, y: 1, kind: 'free', mass: 1 }], links: [], springs: [], gears: [], meshes: [], rackMeshes: [] };
     const der = deriveEquations(design, { gravity: G });
     expect(der.coords.map((c) => c.kind)).toEqual(['x', 'y']);
     const sim = new Simulator(new NumericSystem(der));
@@ -414,5 +414,99 @@ describe('masses placed on their own', () => {
     sim.accelerations(sim.q, sim.qd, a);
     expect(a[0]).toBeCloseTo(0, 12);
     expect(a[1]).toBeCloseTo(-G, 12);
+  });
+});
+
+describe('racks', () => {
+  const gear = (id: number, center: number, radius: number, teeth: number, mass: number, locked = false) => ({ id, center, radius, teeth, mass, locked });
+
+  it('a pinion on a fixed axle drives a rack on rails: Δx = R Δφ', () => {
+    // pinion R = 0.3 at the origin with a 1 kg weight pinned 0.2 m out; rack below it on two y-locked sliders
+    const design: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: -1, y: -0.3, kind: 'lockY', mass: 0 },
+        { id: 2, x: 1, y: -0.3, kind: 'lockY', mass: 0 },
+        { id: 3, x: 0.2, y: 0, kind: 'free', mass: 1, gear: 0 },
+      ],
+      links: [{ id: 0, a: 1, b: 2, mass: 2, rack: 1 }],
+      springs: [],
+      gears: [gear(0, 0, 0.3, 20, 1)],
+      meshes: [],
+      rackMeshes: [{ id: 0, gear: 0, rack: 0 }],
+    };
+    const der = deriveEquations(design, { gravity: G });
+    expect(der.coords.map((c) => c.sym)).toEqual(['ph0', 'x1', 'th0']);
+    // y lock on the far slider, and rolling; the rails already hold the rack at distance R
+    expect(der.constraints.map((c) => !!c.rack)).toEqual([false, true]);
+    expect(der.constraints.some((c) => c.rackDistance)).toBe(false);
+
+    const sim = new Simulator(new NumericSystem(der));
+    const acc = new Float64Array(3);
+    sim.accelerations(sim.q, sim.qd, acc);
+    const I = 0.5 * 1 * 0.09 + 1 * 0.04 + 2 * 0.09; // disk + weight + rack mass reflected through R
+    expect(acc[0]).toBeCloseTo((-1 * G * 0.2) / I, 8);
+    expect(acc[1]).toBeCloseTo(0.3 * acc[0], 8);
+
+    const { sim: s2, maxDrift, maxPhi, scale } = runAndMeasureEnergyDrift(design, 2);
+    expect(maxPhi).toBeLessThan(1e-9);
+    expect(maxDrift / scale).toBeLessThan(1e-6);
+    expect(s2.q[1] - -1).toBeCloseTo(0.3 * s2.q[0], 9);
+    expect(Math.abs(s2.q[0])).toBeGreaterThan(0.1);
+  });
+
+  it('a gear on a free axle rolls down a fixed inclined rack: a = g sin α / (1 + I/mR²)', () => {
+    const al = Math.PI / 6;
+    const R = 0.2;
+    const e = [Math.cos(al), Math.sin(al)];
+    const n = [-Math.sin(al), Math.cos(al)];
+    const c = [1.2 * e[0] + R * n[0], 1.2 * e[1] + R * n[1]];
+    const design: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 2 * e[0], y: 2 * e[1], kind: 'fixed', mass: 0 },
+        { id: 2, x: c[0], y: c[1], kind: 'free', mass: 0 },
+      ],
+      links: [{ id: 0, a: 0, b: 1, mass: 1, rack: 1 }],
+      springs: [],
+      gears: [gear(0, 2, R, 13, 1)],
+      meshes: [],
+      rackMeshes: [{ id: 0, gear: 0, rack: 0 }],
+    };
+    const der = deriveEquations(design, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(1);
+    expect(der.constraints.filter((k) => k.rackDistance)).toHaveLength(1);
+    const { sim, maxPhi, maxDrift, scale } = runAndMeasureEnergyDrift(design, 0.5);
+    expect(maxPhi).toBeLessThan(1e-9);
+    expect(maxDrift / scale).toBeLessThan(1e-6);
+    const pos = sim.jointPositions().get(2)!;
+    const along = (pos[0] - c[0]) * e[0] + (pos[1] - c[1]) * e[1];
+    expect(along).toBeCloseTo(-0.5 * ((G * Math.sin(al)) / 1.5) * 0.25, 6);
+    // rolling down to the left on top of the rack turns the gear anticlockwise: Δξ = −R Δφ
+    const phi = sim.q[der.coords.findIndex((k) => k.sym === 'ph0')];
+    expect(phi).toBeCloseTo(-along / R, 6);
+  });
+
+  it('rack teeth friction heats the mesh', () => {
+    const design: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: -1, y: -0.3, kind: 'lockY', mass: 0 },
+        { id: 2, x: 1, y: -0.3, kind: 'lockY', mass: 0 },
+        { id: 3, x: 0.2, y: 0, kind: 'free', mass: 1, gear: 0 },
+      ],
+      links: [{ id: 0, a: 1, b: 2, mass: 2, rack: 1 }],
+      springs: [],
+      gears: [gear(0, 0, 0.3, 20, 1)],
+      meshes: [],
+      rackMeshes: [{ id: 0, gear: 0, rack: 0 }],
+    };
+    const sim = new Simulator(new NumericSystem(deriveEquations(design, { gravity: G })));
+    sim.friction = { ...sim.friction, enabled: true, pin: 0, rail: 0, mesh: 2 };
+    const e0 = sim.energy();
+    for (let i = 0; i < 1000; i++) sim.step(1e-3);
+    const e = sim.energy();
+    expect(sim.heat().racks.get(0)!).toBeGreaterThan(0);
+    expect(e.T + e.V + sim.dissipated).toBeCloseTo(e0.T + e0.V, 6);
   });
 });

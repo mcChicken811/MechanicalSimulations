@@ -35,8 +35,9 @@ export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: str
   );
 
   if (friction) {
+    const racks = new Set(d.meshes.filter((m) => m.kind === 'rack').map((m) => m.b));
     const bodies = (j: Derivation['joints'][number]) => [
-      ...j.bars.map((b) => `bar ${linkLabel(b.link)}`),
+      ...j.bars.map((b) => `${racks.has(b.link) ? 'rack' : 'bar'} ${linkLabel(b.link)}`),
       ...j.gears.map((g) => `g${gearLabel(g)}`),
       ...(j.ground ? [j.rail ? 'slider' : 'ground'] : []),
     ];
@@ -56,7 +57,7 @@ export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: str
     const rows = [
       ...pinJoints.map((j) => `<li>joint ${pointLabel(j.id)}: ${esc(bodies(j).join(' ↔ '))}</li>`),
       ...rails.map((j) => `<li>joint ${pointLabel(j.id)}: slides on its rail</li>`),
-      ...d.meshes.map((m) => `<li>teeth of g${gearLabel(m.a)} and g${gearLabel(m.b)}</li>`),
+      ...d.meshes.map((m) => `<li>teeth of g${gearLabel(m.a)} and ${m.kind === 'rack' ? `rack ${linkLabel(m.b)}` : `g${gearLabel(m.b)}`}</li>`),
     ];
     parts.push(rows.length ? `<ul class="note">${rows.join('')}</ul>` : '<p class="note">No joint joins two bodies yet.</p>');
     parts.push('</section>');

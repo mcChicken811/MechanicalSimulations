@@ -24,6 +24,11 @@ function circleIntersect(c1: P, r1: number, c2: P, r2: number, pick: (u: P, v: P
   return pick([mx - (H * dy) / D, my + (H * dx) / D], [mx + (H * dy) / D, my - (H * dx) / D]);
 }
 const upper = (u: P, v: P) => (u[1] > v[1] ? u : v);
+const nearest = (ref: P) => (u: P, v: P) => (Math.hypot(u[0] - ref[0], u[1] - ref[1]) < Math.hypot(v[0] - ref[0], v[1] - ref[1]) ? u : v);
+const rotateAbout = (c: P, p: P, a: number): P => [
+  c[0] + (p[0] - c[0]) * Math.cos(a) - (p[1] - c[1]) * Math.sin(a),
+  c[1] + (p[0] - c[0]) * Math.sin(a) + (p[1] - c[1]) * Math.cos(a),
+];
 const lower = (u: P, v: P) => (u[1] < v[1] ? u : v);
 const outer = (u: P, v: P) => (u[0] < v[0] ? u : v);
 
@@ -59,7 +64,76 @@ function jansenLeg(crankAngle = Math.PI / 2): Design {
     links: bars([[0, 1], [1, 2], [7, 2], [2, 3], [7, 3], [1, 4], [7, 4], [3, 5], [4, 5], [4, 6], [5, 6]], 0.2),
     springs: [],
     gears: [],
+    meshes: [], rackMeshes: [],
+  };
+}
+
+/**
+ * Rack-and-pinion steering, seen from above. The steering-column pinion moves the rack
+ * sideways on its rails; tie rods push the steering arms, turning each wheel's knuckle about
+ * its kingpin. The arms point inwards (Ackermann geometry), so the inner wheel turns more.
+ * Two pre-tensioned springs stand in for the self-centring of the tyres. The rack starts
+ * shifted 6 cm to the right, so the wheels start turned and swing back through centre.
+ */
+function steering(shift = 0.06): Design {
+  const R = 0.25;
+  const A0: P = [-0.45, 0];
+  const B0: P = [0.45, 0];
+  const side = (s: 1 | -1) => {
+    const K: P = [0.85 * s, 0.3]; // kingpin
+    const C0: P = [0.72 * s, 0.05]; // steering arm end, centred
+    const W0: P = [0.85 * s, 0.65]; // front of the wheel
+    const end: P = s < 0 ? A0 : B0;
+    const arm = Math.hypot(C0[0] - K[0], C0[1] - K[1]);
+    const tie = Math.hypot(C0[0] - end[0], C0[1] - end[1]);
+    const C = circleIntersect(K, arm, [end[0] + shift, end[1]], tie, nearest(C0));
+    const turn = Math.atan2(C[1] - K[1], C[0] - K[0]) - Math.atan2(C0[1] - K[1], C0[0] - K[0]);
+    return { K, C, W: rotateAbout(K, W0, turn) };
+  };
+  const L = side(-1);
+  const Rt = side(1);
+  return {
+    points: [
+      pt(0, 0, R, 'fixed'), // steering column
+      pt(1, A0[0] + shift, 0, 'lockY'),
+      pt(2, B0[0] + shift, 0, 'lockY'),
+      pt(3, ...L.K, 'fixed'),
+      pt(4, ...L.C),
+      pt(5, ...L.W),
+      pt(6, ...Rt.K, 'fixed'),
+      pt(7, ...Rt.C),
+      pt(8, ...Rt.W),
+      pt(9, -0.45, -0.4, 'fixed'),
+      pt(10, 0.45, -0.4, 'fixed'),
+    ],
+    //               rack          tie rods                  left knuckle: arm, wheel, brace      right knuckle
+    links: [{ id: 0, a: 1, b: 2, mass: 1, rack: 1 }, ...barsM([[1, 4, 0.2], [2, 7, 0.2], [3, 4, 0.3], [3, 5, 2], [4, 5, 0.1], [6, 7, 0.3], [6, 8, 2], [7, 8, 0.1]]).map((l) => ({ ...l, id: l.id + 1 }))],
+    springs: [spring(0, 1, 9, 60, 0.25), spring(1, 2, 10, 60, 0.25)],
+    gears: [gear(0, 0, R, 1)],
     meshes: [],
+    rackMeshes: [{ id: 0, gear: 0, rack: 0 }],
+  };
+}
+
+/**
+ * A rack railway (Riggenbach, Marsh, Abt…): on a slope too steep for wheel friction, the
+ * car's cog wheels engage a toothed rack laid between the rails. Here two cog wheels joined
+ * by the chassis roll on a 20° rack; the haulage cable is a spring to the top station.
+ */
+function cogRailway(): Design {
+  const al = (20 * Math.PI) / 180;
+  const R = 0.15;
+  const A: P = [-1.2, -0.7];
+  const e: P = [Math.cos(al), Math.sin(al)];
+  const n: P = [-e[1], e[0]];
+  const along = (xi: number, h = 0): P => [A[0] + e[0] * xi + n[0] * h, A[1] + e[1] * xi + n[1] * h];
+  return {
+    points: [pt(0, ...A, 'fixed'), pt(1, ...along(2.6), 'fixed'), pt(2, ...along(1.3, R)), pt(3, ...along(0.8, R)), pt(4, ...along(2.6, R), 'fixed')],
+    links: [{ id: 0, a: 0, b: 1, mass: 1, rack: 1 }, { id: 1, a: 3, b: 2, mass: 2 }],
+    springs: [spring(0, 2, 4, 40, 0.75)],
+    gears: [gear(0, 2, R, 0.5), gear(1, 3, R, 0.5)],
+    meshes: [],
+    rackMeshes: [{ id: 0, gear: 0, rack: 0 }, { id: 1, gear: 1, rack: 0 }],
   };
 }
 
@@ -90,7 +164,7 @@ function peaucellier(): Design {
     // a spring along the line pulls P towards its centre, so it oscillates on a perfectly straight path
     springs: [spring(0, 5, 6, 40, 0)],
     gears: [],
-    meshes: [],
+    meshes: [], rackMeshes: [],
   };
 }
 
@@ -114,7 +188,7 @@ export const presets: Preset[] = [
       links: barsM([[0, 1, 1.5], [1, 3, 0.3], [1, 4, 0.1], [2, 3, 0.2]]),
       springs: [],
       gears: [gear(0, 2, 0.14, 4), gear(1, 3, 0.14, 0.4)], // sun gear on the heavy flywheel shaft, planet on the rod
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     }),
   },
   {
@@ -138,7 +212,7 @@ export const presets: Preset[] = [
       links: barsM([[2, 4, 0.4], [3, 4, 0.5], [3, 5, 0.6], [4, 5, 0.6]]),
       springs: [spring(0, 5, 6, 40, 1.2)],
       gears: [gear(0, 0, 0.25, 1.5), gear(1, 1, 0.1, 0.3)],
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     }),
   },
   {
@@ -152,10 +226,12 @@ export const presets: Preset[] = [
       links: barsM([[1, 2, 0.3]]),
       springs: [spring(0, 2, 3, 60, 0.65)],
       gears: [gear(0, 0, 0.15, 2), gear(1, 4, 0.3, 0.6)], // crankshaft gear with flywheel mass, camshaft gear
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     }),
   },
   { name: 'Peaucellier–Lipkin straight-line linkage', group: 'Famous mechanisms', build: () => peaucellier() },
+  { name: 'Rack-and-pinion steering (top view)', group: 'Famous mechanisms', build: () => steering() },
+  { name: 'Cog railway car on a rack incline', group: 'Famous mechanisms', build: () => cogRailway() },
   {
     // Watt's linkage locates an axle sideways: the midpoint of the centre link moves on a
     // nearly straight vertical line. The body (fixed here) carries the axle on two coil springs;
@@ -167,7 +243,7 @@ export const presets: Preset[] = [
       links: barsM([[0, 1, 0.3], [1, 2, 3], [2, 3, 0.3]]),
       springs: [spring(0, 1, 4, 120, 0.62), spring(1, 2, 5, 120, 0.62)],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -181,18 +257,18 @@ export const presets: Preset[] = [
       links: [],
       springs: [spring(0, 1, 2, 40, 0.3), spring(1, 1, 3, 40, 0.3)],
       gears: [gear(0, 0, 0.3, 1)],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
     name: 'Simple pendulum',
     group: 'Basics',
-    build: () => ({ points: [pt(0, 0, 0.8, 'fixed'), pt(1, 0.8, 0.4, 'free', 1)], links: bars([[0, 1]], 0.2), springs: [], gears: [], meshes: [] }),
+    build: () => ({ points: [pt(0, 0, 0.8, 'fixed'), pt(1, 0.8, 0.4, 'free', 1)], links: bars([[0, 1]], 0.2), springs: [], gears: [], meshes: [], rackMeshes: [] }),
   },
   {
     name: 'Double pendulum',
     group: 'Basics',
-    build: () => ({ points: [pt(0, 0, 0.8, 'fixed'), pt(1, 0.7, 1.0), pt(2, 1.3, 0.6)], links: bars([[0, 1], [1, 2]]), springs: [], gears: [], meshes: [] }),
+    build: () => ({ points: [pt(0, 0, 0.8, 'fixed'), pt(1, 0.7, 1.0), pt(2, 1.3, 0.6)], links: bars([[0, 1], [1, 2]]), springs: [], gears: [], meshes: [], rackMeshes: [] }),
   },
   {
     name: 'Triple pendulum',
@@ -201,13 +277,13 @@ export const presets: Preset[] = [
       points: [pt(0, -0.4, 0.9, 'fixed'), pt(1, 0.2, 0.9), pt(2, 0.7, 0.9), pt(3, 1.1, 0.9)],
       links: bars([[0, 1], [1, 2], [2, 3]]), springs: [],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
     name: 'Cart-pole (y-locked cart)',
     group: 'Basics',
-    build: () => ({ points: [pt(0, 0, 0.2, 'lockY', 2), pt(1, 0.5, -0.6, 'free', 0.5)], links: bars([[0, 1]], 0.3), springs: [], gears: [], meshes: [] }),
+    build: () => ({ points: [pt(0, 0, 0.2, 'lockY', 2), pt(1, 0.5, -0.6, 'free', 0.5)], links: bars([[0, 1]], 0.3), springs: [], gears: [], meshes: [], rackMeshes: [] }),
   },
   {
     name: 'Slider-crank',
@@ -216,7 +292,7 @@ export const presets: Preset[] = [
       points: [pt(0, -0.9, 0, 'fixed'), pt(1, -0.6, 0.4), pt(2, 0.6, 0, 'lockY', 1)],
       links: bars([[0, 1], [1, 2]]), springs: [],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -226,7 +302,7 @@ export const presets: Preset[] = [
       points: [pt(0, -0.8, -0.3, 'fixed'), pt(1, -0.6, 0.4), pt(2, 0.5, 0.6), pt(3, 0.6, -0.3, 'fixed')],
       links: bars([[0, 1], [1, 2], [2, 3]]), springs: [],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -236,7 +312,7 @@ export const presets: Preset[] = [
       points: [pt(0, -1, 0.8, 'fixed'), pt(1, -0.7, 0.3), pt(2, 0, 0.1), pt(3, 0.6, 0.2), pt(4, 1, 0.8, 'fixed')],
       links: bars([[0, 1], [1, 2], [2, 3], [3, 4]], 0.5), springs: [],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -247,7 +323,7 @@ export const presets: Preset[] = [
       links: [],
       springs: [spring(0, 0, 1, 40, 0.8)],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -258,7 +334,7 @@ export const presets: Preset[] = [
       links: [],
       springs: [spring(0, 0, 1, 60, 0.6)],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -269,7 +345,7 @@ export const presets: Preset[] = [
       links: bars([[0, 1]]),
       springs: [spring(0, 1, 2, 30, 0.4)],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -280,7 +356,7 @@ export const presets: Preset[] = [
       links: bars([[0, 1], [1, 2], [2, 3]]),
       springs: [spring(0, 1, 4, 80, 0.5), spring(1, 2, 4, 80, 0.5)],
       gears: [],
-      meshes: [],
+      meshes: [], rackMeshes: [],
     }),
   },
   {
@@ -293,7 +369,7 @@ export const presets: Preset[] = [
       links: bars([[2, 4], [3, 4]], 0.4),
       springs: [],
       gears: [gear(0, 0, 0.36, 1), gear(1, 1, 0.36, 1)],
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     }),
   },
   {
@@ -305,7 +381,7 @@ export const presets: Preset[] = [
       links: bars([[0, 1], [2, 3]], 0.3),
       springs: [],
       gears: [gear(0, 0, 0.3, 1, true), gear(1, 1, 0.15, 0.5)],
-      meshes: [{ id: 0, a: 0, b: 1 }],
+      meshes: [{ id: 0, a: 0, b: 1 }], rackMeshes: [],
     }),
   },
   {
@@ -317,12 +393,26 @@ export const presets: Preset[] = [
       links: bars([[3, 4]], 0.2),
       springs: [],
       gears: [gear(0, 0, 0.15, 0.3), gear(1, 1, 0.24, 0.6), gear(2, 2, 0.36, 0.9)],
-      meshes: [{ id: 0, a: 0, b: 1 }, { id: 1, a: 1, b: 2 }],
+      meshes: [{ id: 0, a: 0, b: 1 }, { id: 1, a: 1, b: 2 }], rackMeshes: [],
+    }),
+  },
+  {
+    // A vertical rack on two x-locked guides, standing on a spring, meshes with a heavy pinion
+    // on a fixed axle: the rack bobs up and down and the pinion turns back and forth.
+    name: 'Rack and pinion on a spring',
+    group: 'Basics',
+    build: () => ({
+      points: [pt(0, 0, 0.2, 'fixed'), pt(1, 0.25, -0.4, 'lockX'), pt(2, 0.25, 0.8, 'lockX'), pt(3, 0.25, -0.9, 'fixed')],
+      links: [{ id: 0, a: 1, b: 2, mass: 1, rack: 1 }],
+      springs: [spring(0, 1, 3, 60, 0.5)],
+      gears: [gear(0, 0, 0.25, 1.5)],
+      meshes: [],
+      rackMeshes: [{ id: 0, gear: 0, rack: 0 }],
     }),
   },
   {
     name: 'Pendulum on a vertical rail',
     group: 'Basics',
-    build: () => ({ points: [pt(0, 0, 0.6, 'lockX', 1), pt(1, 0.6, 0.3)], links: bars([[0, 1]]), springs: [], gears: [], meshes: [] }),
+    build: () => ({ points: [pt(0, 0, 0.6, 'lockX', 1), pt(1, 0.6, 0.3)], links: bars([[0, 1]]), springs: [], gears: [], meshes: [], rackMeshes: [] }),
   },
 ];

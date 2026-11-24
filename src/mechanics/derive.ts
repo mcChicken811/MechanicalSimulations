@@ -23,6 +23,11 @@
  * 8. Two gears in mesh add N_a(φ_a − θ_c) + N_b(φ_b − θ_c) = C, θ_c being the direction of
  *    the line of centres (constant, a carrier bar, or a common gear). A carrier bar whose
  *    angle is not a coordinate gets an explicit angle θ and r_b − r_a = L(cos θ, sin θ).
+ * 9. A rack is a bar with teeth; its pitch line runs through its two joints. A gear meshing
+ *    with it rolls on that line: with e the rack direction, n = k × e, ξ = (r_c − r_a)·e and
+ *    s = ±1 the side the gear is on, rolling without slip gives ξ + s R (φ − θ_rack) = C, and
+ *    the centre stays at (r_c − r_a)·n = s R. The second constraint is dropped when the rest
+ *    of the mechanism already enforces it (a rack on rails meshing with a pinion on an axle).
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
 import { gearLabel, linkLabel, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
@@ -54,6 +59,10 @@ export interface Constraint {
   loop?: { dx: Poly; dy: Poly; L: Poly; bar: number };
   /** For gear meshes Φ = N_a(θ_a − θ_c) + N_b(θ_b − θ_c) − C, kept for display. */
   gear?: { Na: Poly; Nb: Poly; ta: Poly; tb: Poly; tc: Poly; C: Poly };
+  /** For a rack mesh Φ = ξ + sR (φ − θ_rack) − C, kept for display. */
+  rack?: { xi: Poly; sR: Poly; rel: Poly; C: Poly };
+  /** A rack's centre-distance constraint, dropped when the mechanism already enforces it. */
+  rackDistance?: boolean;
 }
 
 /** A spring's contribution V = ½ k (ℓ − ℓ₀)², ℓ = √D. */
@@ -87,9 +96,13 @@ export interface JointBodies {
   rail: 'x' | 'y' | null;
 }
 
-/** A gear mesh, for tooth friction: ∂v/∂q̇ of the pitch-line speed v = R_a(φ̇_a − θ̇_c). */
+/**
+ * A gear mesh, for tooth friction: ∂v/∂q̇ of the pitch-line speed v = R_a(φ̇_a − θ̇_c).
+ * For a rack mesh (kind 'rack'), a is the gear, b the rack, and v = R(φ̇ − θ̇_rack).
+ */
 export interface MeshInfo {
   id: number;
+  kind: 'gear' | 'rack';
   a: number;
   b: number;
   pitchGrad: Poly[];
@@ -351,7 +364,13 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
     return thP;
   };
 
-  const meshParts: { id: number; a: number; b: number; v: Poly }[] = [];
+  const initialEnv = () => {
+    const env: Record<string, number> = {};
+    for (const c of coords) env[c.sym] = c.initial;
+    for (const p of params) env[p.sym] = p.value;
+    return env;
+  };
+  const meshParts: { id: number; kind: MeshInfo['kind']; a: number; b: number; v: Poly }[] = [];
   for (const mesh of design.meshes ?? []) {
     const ga = gearById.get(mesh.a);
     const gb = gearById.get(mesh.b);
@@ -379,16 +398,64 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
     const ta = gearAngle.get(ga.id)!;
     const tb = gearAngle.get(gb.id)!;
     const expr = Na.mul(ta.sub(tc)).add(Nb.mul(tb.sub(tc)));
-    const env: Record<string, number> = {};
-    for (const c of coords) env[c.sym] = c.initial;
-    for (const p of params) env[p.sym] = p.value;
-    const C = param(`Cm${mesh.id}`, `C_{${gearLabel(mesh.a)}${gearLabel(mesh.b)}}`, expr.evaluate(env), 'rad');
+    const C = param(`Cm${mesh.id}`, `C_{${gearLabel(mesh.a)}${gearLabel(mesh.b)}}`, expr.evaluate(initialEnv()), 'rad');
     constraints.push({
       phi: expr.sub(C),
       reason: `gears ${lab} mesh (${ga.teeth} : ${gb.teeth} teeth)`,
       gear: { Na, Nb, ta, tb, tc, C },
     });
-    meshParts.push({ id: mesh.id, a: ga.id, b: gb.id, v: gearRadius.get(ga.id)!.mul(ta.sub(tc)) });
+    meshParts.push({ id: mesh.id, kind: 'gear', a: ga.id, b: gb.id, v: gearRadius.get(ga.id)!.mul(ta.sub(tc)) });
+  }
+
+  // ---- racks ----------------------------------------------------------------
+  for (const rm of design.rackMeshes ?? []) {
+    const gr = gearById.get(rm.gear);
+    const rack = links.find((l) => l.id === rm.rack && l.rack);
+    if (!gr || !rack || !gearAngle.has(gr.id)) continue;
+    const gl = gearLabel(gr.id);
+    const rl = linkLabel(rack.id);
+    const lab = `gear g${gl} and rack ${rl}`;
+    // Rack direction e and angle θ_rack (zero when the rack cannot turn: it is then absorbed in C).
+    const [dx, dy] = relative(rack);
+    let ex: Poly;
+    let ey: Poly;
+    let th = Poly.zero;
+    if (!movable(dx) && !movable(dy)) {
+      const a = pointById.get(rack.a)!;
+      const b = pointById.get(rack.b)!;
+      const L0 = Math.hypot(b.x - a.x, b.y - a.y);
+      ex = Poly.const((b.x - a.x) / L0);
+      ey = Poly.const((b.y - a.y) / L0);
+    } else {
+      th = angleOf(rack);
+      const sym = barAngle.get(rack.id)!;
+      ex = Poly.cos([[sym, 1]]);
+      ey = Poly.sin([[sym, 1]]);
+    }
+    const [ax, ay] = positions.get(rack.a)!;
+    const [cx, cy] = positions.get(gr.center)!;
+    const rx = cx.sub(ax);
+    const ry = cy.sub(ay);
+    const xi = rx.mul(ex).add(ry.mul(ey)); // position of the gear centre along the rack
+    const h = ry.mul(ex).sub(rx.mul(ey)); // its distance from the pitch line, (r_c − r_a)·n
+    const h0 = h.evaluate(initialEnv());
+    if (Math.abs(h0) < 1e-9) {
+      warnings.push(`${lab[0].toUpperCase()}${lab.slice(1)}: the gear centre lies on the rack's pitch line, so they cannot mesh. The mesh was ignored.`);
+      continue;
+    }
+    const side = h0 > 0 ? 1 : -1;
+    const R = gearRadius.get(gr.id)!;
+    if (movable(h)) {
+      // Drawn tangent: the centre stays R from the pitch line. Otherwise keep the drawn distance.
+      const target = Math.abs(Math.abs(h0) - gr.radius) < 1e-6 ? R.scale(side) : param(`hr${rm.id}`, `h_{${gl},${rl}}`, h0, 'm');
+      constraints.push({ phi: h.sub(target), reason: `${lab}: the gear centre keeps its distance from the rack's pitch line`, rackDistance: true });
+    }
+    const rel = gearAngle.get(gr.id)!.sub(th);
+    const sR = R.scale(side);
+    const expr = xi.add(sR.mul(rel));
+    const C = param(`Cr${rm.id}`, `C_{${gl},${rl}}`, expr.evaluate(initialEnv()), 'm');
+    constraints.push({ phi: expr.sub(C), reason: `${lab} mesh: the pitch circle rolls along the rack without slipping`, rack: { xi, sR, rel, C } });
+    meshParts.push({ id: rm.id, kind: 'rack', a: gr.id, b: rack.id, v: R.mul(rel) });
   }
 
   const qs = coords.map((c) => c.sym);
@@ -467,12 +534,33 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
   }
 
   // ---- constraints -----------------------------------------------------------
-  const kept: Constraint[] = [];
+  const movableKept: Constraint[] = [];
   for (const c of constraints) {
     const phi = trigSimplify(c.phi);
-    if (qs.some((q) => phi.dependsOn(q))) kept.push({ ...c, phi });
-    else warnings.push(`${c.reason}: it cannot move, so the constraint was dropped`);
+    if (qs.some((q) => phi.dependsOn(q))) movableKept.push({ ...c, phi });
+    // (a rack pinned at both ends is the usual stationary rack, so that needs no warning)
+    else if (!links.find((l) => l.id === c.loop?.bar)?.rack) warnings.push(`${c.reason}: it cannot move, so the constraint was dropped`);
   }
+  // A rack's distance constraint is often enforced already, e.g. by rails holding the rack and a
+  // fixed axle holding the pinion. Keep it only if its gradient at the start is independent of
+  // the other constraints', since a redundant constraint would make the equations singular.
+  const env0 = initialEnv();
+  const basis: number[][] = [];
+  const independent = (phi: Poly): boolean => {
+    const r = qs.map((q) => phi.diff(q).evaluate(env0));
+    const norm0 = Math.hypot(...r);
+    if (norm0 < 1e-12) return false;
+    for (const b of basis) {
+      const d = r.reduce((s, x, i) => s + x * b[i], 0);
+      for (let i = 0; i < r.length; i++) r[i] -= d * b[i];
+    }
+    const norm = Math.hypot(...r);
+    if (norm < 1e-8 * norm0) return false;
+    basis.push(r.map((x) => x / norm));
+    return true;
+  };
+  for (const c of movableKept) if (!c.rackDistance) independent(c.phi);
+  const kept = movableKept.filter((c) => !c.rackDistance || independent(c.phi));
   const phiQ = kept.map((c) => qs.map((q) => trigSimplify(c.phi.diff(q))));
   const gamma = phiQ.map((row) => {
     let phiDot = Poly.zero;
@@ -503,7 +591,7 @@ export function deriveEquations(design: Design, opts: DeriveOptions): Derivation
       ground: p.kind !== 'free' || (gearsAt.get(p.id) ?? []).some((gid) => gearById.get(gid)!.locked),
       rail: p.kind === 'lockX' ? 'y' : p.kind === 'lockY' ? 'x' : null,
     })),
-    meshes: meshParts.map(({ id, a, b, v }) => ({ id, a, b, pitchGrad: qs.map((q) => v.diff(q)) })),
+    meshes: meshParts.map(({ id, kind, a, b, v }) => ({ id, kind, a, b, pitchGrad: qs.map((q) => v.diff(q)) })),
     activeLinks: links.map((l) => l.id),
     warnings,
   };

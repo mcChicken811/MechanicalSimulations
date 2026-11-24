@@ -1,9 +1,9 @@
 # MechanicalSimulations
 
-**Linkage Lab** is a browser app for building planar mechanisms out of bars, springs and gears. It derives their equations of motion automatically with Lagrangian mechanics and simulates them in real time.
+**Linkage Lab** is a browser app for building planar mechanisms out of bars, springs, gears and racks. It derives their equations of motion automatically with Lagrangian mechanics and simulates them in real time.
 
 - You draw the mechanism. The app picks generalized coordinates, builds the kinetic and potential energy symbolically, and shows Lagrange's equations, M(q) q̈ = f(q, q̇) + Q + Φ_qᵀλ, as typeset math.
-- Closed loops, locked axes and meshing gears become constraints, handled with Lagrange multipliers.
+- Closed loops, locked axes, meshing gears and rack-and-pinion pairs become constraints, handled with Lagrange multipliers.
 - The equations are integrated with 4th-order Runge–Kutta (RK4) with a 1 ms step. While it runs, you can drag any part to pull on it.
 - Optional joint and gear friction turns energy into heat, which you see as joints glowing.
 
@@ -57,18 +57,21 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 |---|:-:|---|
 | Select | V | Click a part to edit it in the inspector (bottom right). Drag joints to reshape the mechanism. |
 | Draw bar | B | Drag, or click twice. Start or end on an existing joint to pin bars together. |
+| Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Lock its joints on rails (X or Y) to make it slide. |
 | Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector. |
-| Gears | G | Click a centre, then drag out the radius. If the gear touches another gear, it snaps into mesh with it. |
+| Gears | G | Click a centre, then drag out the radius. If the gear touches another gear or a rack, it snaps into mesh with it. |
 | Pin to ground | F | Click a joint to fix it in place. Click again to free it. |
 | Lock x / Lock y | X / Y | The joint slides on a vertical or horizontal rail. |
 | Free joint | N | Removes a joint's constraint. |
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
 | Lock gear | L | Click a gear to stop it turning. Click again to unlock it. |
-| Delete | D | Click a joint, bar, spring or gear to delete it. |
+| Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
 Bars and springs that start or end on a gear are pinned to the gear and turn with it.
 
-The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, and which gears mesh.
+A rack is a rigid body like a bar, with the same mass and inertia, and bars attach to its two end joints. A gear meshing with it rolls along its pitch line without slipping, which turns rotation into sliding: the gear centre's position ξ along the rack and its rotation φ satisfy ξ + R(φ − θ_rack) = const. Its centre also stays a distance R from the rack. You can tick **Toothed** in a bar's inspector to turn it into a rack, or untick it to turn a rack back into a bar.
+
+The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, and which gears and racks mesh.
 
 Other controls:
 - Undo with Ctrl/Cmd+Z.
@@ -93,7 +96,7 @@ Tick **Friction & heating** to add viscous friction in pin joints, rails and gea
 ### Limitations
 
 - Everything is in a plane, and bars are uniform rigid rods.
-- Gears are external spur gears. There are no ring gears, racks or contact between parts.
+- Gears are external spur gears and straight racks. There are no ring gears, and parts do not collide with each other.
 - Springs have no mass, and friction is viscous (proportional to speed).
 - Nothing is motor-driven. Mechanisms move under gravity, springs and your pulls.
 
