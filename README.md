@@ -9,6 +9,18 @@
 
 The method behind the equation generation is described in [docs/eom-automation-report.md](docs/eom-automation-report.md).
 
+## How to run
+
+You only need Git and a web browser:
+
+```bash
+git clone https://github.com/mcChicken811/MechanicalSimulations.git
+```
+
+Then open `MechanicalSimulations/dist/index.html` in your browser, for example by double-clicking it. That's all: the page is one self-contained file and needs no install, server or internet connection.
+
+To change the code, follow the installation steps below.
+
 ## Installation
 
 You need [Node.js](https://nodejs.org/) **22.12 or newer**, which includes npm.
@@ -25,7 +37,7 @@ npm install
 npm run build
 ```
 
-This writes one self-contained file, `dist/index.html`. The scripts, styles and math fonts are all inside it. Open it directly in a browser by double-clicking it; it needs no server and no internet connection, so you can copy it anywhere. Run `npm run build` again after changing the source.
+This writes one self-contained file, `dist/index.html`, which is committed to the repository so that it works straight after cloning. The scripts, styles and math fonts are all inside it. Open it directly in a browser by double-clicking it; it needs no server and no internet connection, so you can copy it anywhere. Run `npm run build` again after changing the source.
 
 `src/index.html` is the source page and won't work if you open it directly, because browsers can't run the TypeScript it loads.
 
