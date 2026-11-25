@@ -291,14 +291,14 @@ function humanLeg(hipExt = (15 * Math.PI) / 180, kneeFlex = (40 * Math.PI) / 180
     links: barsM([
       [0, 1, 0.866 * thighM], // femur
       [1, 2, 0.01], // femoral link (intercondylar roof)
-      [3, 1, 0.01], // ACL
-      [4, 2, 0.01], // PCL
+      [3, 1, 0.002], // ACL
+      [4, 2, 0.002], // PCL
       [3, 4, 0.01], // tibial link (plateau)
       [3, 5, 0.866 * shankM], // tibia
       [5, 6, 0.25 * footM], // foot: ankle to heel
       [6, 7, 0.75 * footM], // foot: sole
-      [1, 8, 0.01], // femur, to the capsule attachment
-      [4, 9, 0.01], // tibia, to the capsule attachment
+      [1, 8, 0.002], // femur, to the capsule attachment
+      [4, 9, 0.002], // tibia, to the capsule attachment
     ]),
     springs: [{ id: 0, a: 8, b: 9, k: 2e5, rest: capRest, tensionOnly: true }], // posterior capsule
     gears: [],
@@ -313,6 +313,133 @@ function humanLeg(hipExt = (15 * Math.PI) / 180, kneeFlex = (40 * Math.PI) / 180
       { id: 5, a: { kind: 'link', id: 5 }, b: { kind: 'link', id: 9 } },
     ],
   };
+}
+
+/**
+ * A whole human hand, flattened into the plane of the palm (palm towards you, hanging from
+ * the wrist): the "planar hand" of grasping and robotics papers. Every digit bends at each of
+ * its joints, but within the drawing plane: the fingers curl towards the thumb and the thumb
+ * towards the fingers, as they would to pinch. Literature it is built from:
+ *
+ * - Bone lengths and widths: Table II of Cerruti, Chablat, Gouaillier & Sakka, "Design method
+ *   for an anthropomorphic hand able to gesture and grasp", IEEE ICRA 2015 (arXiv:1504.01151),
+ *   derived there from human hand proportions (Davidoff & Freivalds 1993; Chao et al. 1989).
+ * - Knuckles: their Table III positions and angles of the finger bases (MCP joints) in the
+ *   palm, on Isobe's arc about the middle finger's MCP joint.
+ * - Size: their hand (wrist to middle fingertip 127.5 mm, for a child-sized robot) is scaled
+ *   to a 19 cm adult hand. They assume bone proportions are the same at any hand size.
+ * - Thumb: the metacarpal leaves the palm at their 45°, 12 mm from the wrist. Its base sits on
+ *   the radial edge of the wrist, 20 mm from the midline, because in this flattened view their
+ *   base (under the palm) would lie on top of the palm.
+ * - Masses: as in Tsakonas et al., Healthc. Technol. Lett. 13 (2026) e70078. Each phalanx is a
+ *   uniform cylinder of the width above, and the palm a block 30 mm thick, all at Dempster's hand
+ *   density of 1.16 g/cm³. That gives 0.55 kg (palm 0.30 kg): a little heavy next to Winter's
+ *   0.6% of body mass (0.42 kg at 70 kg), as full-width cylinders overestimate the fingers.
+ * - Joint stops: each joint's volar plate is a tension-only spring on the flexion side, which
+ *   goes taut when the joint straightens. It runs from the bone before the joint (for the
+ *   knuckles, a point on the metacarpal 35 mm back, in line with the finger). Stiffness
+ *   10 N/mm, and 40 N/mm at the finger knuckles, which carry a whole finger's momentum. Passive hyperextension allowed: MCP 20°, DIP and thumb
+ *   IP 5–10°, PIP and thumb MCP 0°. The wrist's collateral ligaments limit its side tilt to 20°
+ *   radial and 30° ulnar. Flexion is not limited.
+ * - Start: the fingers in a relaxed cascade, each more bent than the one before, from index to
+ *   little. Tissue damping comes from the preset's air drag.
+ */
+function humanHand(): Design {
+  const s = 0.19 / 0.1275; // scale from their hand to a 19 cm hand
+  const mm = (v: number) => (v / 1000) * s;
+  const rho = 1160; // kg/m³
+  const deg = Math.PI / 180;
+  // their hand frame: x along the hand from the wrist, y towards the index; drawing: X = −y, Y = −x
+  const fromTheirs = (x: number, y: number): P => [-mm(y), -mm(x)];
+  const dirOf = (alpha: number): number => Math.atan2(-Math.cos(alpha * deg), -Math.sin(alpha * deg));
+  const cylinder = (len: number, width: number) => Math.PI * rho * (mm(width) / 2) ** 2 * mm(len);
+
+  const points: DPoint[] = [];
+  const links: { id: number; a: number; b: number; mass: number }[] = [];
+  const springs: DSpring[] = [];
+  const joins: { id: number; a: { kind: 'link'; id: number }; b: { kind: 'link'; id: number } }[] = [];
+  const add = (p: P, kind: PointKind = 'free') => {
+    points.push(pt(points.length, p[0], p[1], kind));
+    return points.length - 1;
+  };
+  const bar = (a: number, b: number, mass: number) => {
+    links.push({ id: links.length, a, b, mass });
+    return links.length - 1;
+  };
+  const join = (a: number, b: number) => joins.push({ id: joins.length, a: { kind: 'link', id: a }, b: { kind: 'link', id: b } });
+  const at = (id: number): P => [points[id].x, points[id].y];
+  const unit = (a: number): P => [Math.cos(a), Math.sin(a)];
+
+  // palm: the wrist (held) and the bases of the five digits, one rigid body
+  const wrist = add([0, 0], 'fixed');
+  const fingers = [
+    { base: [59.3, 18.1], alpha: 7.03, len: [26.4, 17.1, 16.8], width: [15, 14, 13], flex: [20, 30, 15] }, // index
+    { base: [60.5, 0], alpha: 0, len: [29.7, 19.1, 18.2], width: [15, 14, 13], flex: [25, 35, 15] }, // middle
+    { base: [56.1, -17.2], alpha: -5.1, len: [26.9, 18.5, 18.1], width: [15, 14, 13], flex: [30, 40, 20] }, // ring
+    { base: [46.1, -31.1], alpha: -7.27, len: [21.4, 13.1, 15.7], width: [13, 12, 11], flex: [35, 45, 20] }, // little
+  ];
+  const thumb = { base: [12, 20], alpha: 45, len: [30.8, 22.6, 20.7], width: [25, 16, 16], flex: [0, 10, 10] };
+  const palmMass = mm(60.5) * mm(18.1 + 31.1 + 15) * 0.03 * rho;
+  const palmBars: number[] = [];
+  const digitBase = (d: typeof thumb) => add(fromTheirs(d.base[0], d.base[1]));
+  const bases = [thumb, ...fingers].map((d) => digitBase(d));
+  for (const b of bases) palmBars.push(bar(wrist, b, palmMass / bases.length));
+  for (const b of palmBars.slice(1)) join(palmBars[0], b);
+
+  // A digit: a chain of three bones from its base, each joint bent by its flexion angle
+  // (fingers curl clockwise, towards the thumb; the thumb anticlockwise, towards the fingers),
+  // with a volar plate across each joint.
+  const digit = (d: typeof thumb, base: number, behind: number, sign: 1 | -1, hyper: number[]) => {
+    let dir = dirOf(d.alpha); // direction of the straight digit
+    let zero = dir; // direction of the next bone when its joint is straight
+    let joint = base;
+    let prevStart = behind; // a point of the bone before the joint, on the digit's line
+    d.len.forEach((len, k) => {
+      dir += sign * d.flex[k] * deg;
+      const end = add([at(joint)[0] + mm(len) * Math.cos(dir), at(joint)[1] + mm(len) * Math.sin(dir)]);
+      const bone = bar(joint, end, cylinder(len, d.width[k]));
+      // volar plate: from the bone before the joint to a point on this bone, 30% along it and
+      // half its width to the flexion side, taut when the joint is hyperextended by hyper[k]
+      const off = (u: number): P => {
+        const [ux, uy] = unit(u);
+        const [nx, ny] = unit(u + (sign * Math.PI) / 2);
+        const [jx, jy] = at(joint);
+        return [jx + 0.3 * mm(len) * ux + (mm(d.width[k]) / 2) * nx, jy + 0.3 * mm(len) * uy + (mm(d.width[k]) / 2) * ny];
+      };
+      const q = add(off(dir));
+      join(bone, bar(joint, q, 0.001));
+      const straight = off(zero - sign * hyper[k] * deg);
+      const p0 = at(prevStart);
+      springs.push({ id: springs.length, a: prevStart, b: q, k: k === 0 && behind !== wrist ? 4e4 : 1e4, rest: Math.hypot(straight[0] - p0[0], straight[1] - p0[1]), tensionOnly: true });
+      prevStart = joint;
+      joint = end;
+      zero = dir;
+    });
+  };
+  digit(thumb, bases[0], wrist, 1, [0, 0, 10]);
+  fingers.forEach((f, i) => {
+    // a point on the finger's metacarpal, 35 mm back from the knuckle along the finger's line,
+    // fixed in the palm: the MCP volar plate pulls from here
+    const [bx, by] = at(bases[i + 1]);
+    const u = dirOf(f.alpha);
+    const mc = add([bx - mm(35) * Math.cos(u), by - mm(35) * Math.sin(u)]);
+    join(palmBars[0], bar(mc, bases[i + 1], 0.001));
+    digit(f, bases[i + 1], mc, -1, [20, 0, 5]);
+  });
+
+  // wrist collateral ligaments, from the forearm to the radial and ulnar edges of the palm
+  const radial = add([-mm(25), mm(10)], 'fixed');
+  const ulnar = add([mm(25), mm(10)], 'fixed');
+  const taut = (anchor: number, palmPoint: number, tilt: number) => {
+    const p = rotateAbout([0, 0], at(palmPoint), tilt);
+    const a = at(anchor);
+    return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  };
+  // ulnar tilt turns the hand anticlockwise (fingers towards +X), radial tilt clockwise
+  springs.push({ id: springs.length, a: radial, b: bases[0], k: 5e4, rest: taut(radial, bases[0], 30 * deg), tensionOnly: true });
+  springs.push({ id: springs.length, a: ulnar, b: bases[4], k: 5e4, rest: taut(ulnar, bases[4], -20 * deg), tensionOnly: true });
+
+  return { points, links, springs, gears: [], meshes: [], rackMeshes: [], joins };
 }
 
 /**
@@ -394,6 +521,8 @@ export interface Preset {
   build: () => Design;
   /** Seen from above, so loading it turns gravity off (other presets turn it back on). */
   topView?: boolean;
+  /** Air drag (1/s) to set when loading it, standing in for tissue damping (others set 0). */
+  drag?: number;
 }
 
 export const presets: Preset[] = [
@@ -456,6 +585,7 @@ export const presets: Preset[] = [
   { name: 'Trapezoid (Ackermann) steering linkage (top view)', group: 'Famous mechanisms', build: () => trapezoidSteering(), topView: true },
   { name: 'Cog railway car on a rack incline', group: 'Famous mechanisms', build: () => cogRailway() },
   { name: 'Human leg swing with a four-bar knee (O\'Connor 1989)', group: 'Famous mechanisms', build: () => humanLeg() },
+  { name: 'Human hand, flattened (Cerruti et al. 2015 proportions)', group: 'Famous mechanisms', build: () => humanHand(), drag: 2 },
   {
     // Watt's linkage locates an axle sideways: the midpoint of the centre link moves on a
     // nearly straight vertical line. The body (fixed here) carries the axle on two coil springs;

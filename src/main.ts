@@ -1116,6 +1116,9 @@ presetSel.addEventListener('change', () => {
   multi = null;
   settings.gravity = !p.topView; // a top view lies in the horizontal plane
   $<HTMLInputElement>('#gravity').checked = settings.gravity;
+  const drag = $<HTMLInputElement>('#damping');
+  drag.value = String(p.drag ?? 0); // tissue damping for the presets that ask for it
+  drag.dispatchEvent(new Event('input'));
   designChanged();
   fitView();
 });
@@ -1526,12 +1529,15 @@ function fitView() {
   const top = 50;
   const bottom = H - 70;
   const pts = design.points.map((p) => [p.x, p.y] as Vec);
-  if (!pts.length) pts.push([0, 0]);
+  const empty = !pts.length;
+  if (empty) pts.push([0, 0]);
   const xs = pts.map((p) => p[0]);
   const ys = pts.map((p) => p[1]);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-  const scale = Math.min((right - left) / Math.max(x1 - x0 + 1.2, 1), (bottom - top) / Math.max(y1 - y0 + 1.2, 1));
-  view.scale = Math.min(300, Math.max(60, scale));
+  // a margin in proportion to the mechanism, so a hand fills the view as a crane would
+  const fit = (px: number, span: number) => px / (Math.max(span, 0.1) * 1.3 + 0.04);
+  const scale = empty ? 170 : Math.min(fit(right - left, x1 - x0), fit(bottom - top, y1 - y0));
+  view.scale = Math.min(20000, Math.max(25, scale));
   view.ox = (left + right) / 2 - ((x0 + x1) / 2) * view.scale;
   view.oy = (top + bottom) / 2 + ((y0 + y1) / 2) * view.scale;
 }

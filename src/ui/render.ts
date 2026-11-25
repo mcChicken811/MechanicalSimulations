@@ -326,11 +326,13 @@ function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
     line(ctx, a, b);
     ctx.globalAlpha = 1;
   }
+  // very light bars (under 5 g: ligaments, tendon anchors) are drawn thin
+  const thin = l.mass < 0.005;
   ctx.strokeStyle = '#1f2125';
-  ctx.lineWidth = 13;
+  ctx.lineWidth = thin ? 5.5 : 13;
   line(ctx, a, b);
   ctx.strokeStyle = linkColor(l.id);
-  ctx.lineWidth = 10;
+  ctx.lineWidth = thin ? 3.5 : 10;
   line(ctx, a, b);
   // label
   const mx = (a[0] + b[0]) / 2;

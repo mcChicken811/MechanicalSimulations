@@ -15,6 +15,14 @@ The examples include a **human leg swing** built from the biomechanics literatur
 
 The sources and every assumption are listed in the comment above `humanLeg` in `src/ui/presets.ts`.
 
+There is also a **whole human hand**, flattened into the plane of the palm as in planar grasping models. All five digits bend at every joint, but within the drawing plane: the fingers curl towards the thumb and the thumb towards the fingers.
+- **Bones:** phalanx lengths and widths, and the knuckle positions on the palm, from Cerruti et al. (IEEE ICRA 2015), scaled to a 19 cm hand.
+- **Masses:** each phalanx is a cylinder and the palm a block, at Dempster's hand density (the method of Tsakonas et al., 2026).
+- **Joint stops:** each joint has a volar plate, a tension-only spring that stops it bending backwards. The wrist's collateral ligaments limit its sideways tilt.
+- **Damping:** loading the hand sets the air drag to 2 s⁻¹ to stand in for soft-tissue damping. Other examples set it back to 0.
+
+The sources and every assumption are in the comment above `humanHand`. Bars lighter than 5 g, such as ligaments and the anchor tabs for the volar plates, are drawn thin.
+
 The method behind the equation generation is described in [docs/eom-automation-report.md](docs/eom-automation-report.md).
 
 ## How to run

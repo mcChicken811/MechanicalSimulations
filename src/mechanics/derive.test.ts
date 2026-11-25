@@ -769,3 +769,37 @@ describe('human leg preset', () => {
     expect(s.constraintError()).toBeLessThan(1e-9);
   });
 });
+
+describe('human hand preset', () => {
+  it('has 16 degrees of freedom, and its volar plates stop the finger joints bending backwards', async () => {
+    const { presets } = await import('../ui/presets');
+    const design = presets.find((p) => p.name.startsWith('Human hand'))!.build();
+    const der = deriveEquations(design, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(16); // wrist + 5 digits × 3 joints
+    expect(der.warnings).toEqual([]);
+    const s = new Simulator(new NumericSystem(der));
+    s.damping = 2; // the preset's tissue damping
+    // each finger's PIP joint: the angle between its proximal and middle phalanges (flexion > 0)
+    const bonesOf = (start: number) => {
+      const out = [];
+      let j = start;
+      for (let k = 0; k < 3; k++) {
+        const l = design.links.find((x) => x.a === j && x.mass > 0.002)!;
+        out.push(l);
+        j = l.b;
+      }
+      return out;
+    };
+    const fingers = design.links.slice(1, 5).map((l) => bonesOf(l.b));
+    const dir = (p: Map<number, [number, number]>, l: { a: number; b: number }) => Math.atan2(p.get(l.b)![1] - p.get(l.a)![1], p.get(l.b)![0] - p.get(l.a)![0]);
+    const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+    let least = Infinity;
+    for (let i = 0; i < 1500; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const p = s.jointPositions();
+      for (const f of fingers) least = Math.min(least, -wrap(dir(p, f[1]) - dir(p, f[0]))); // fingers curl clockwise
+    }
+    expect((least * 180) / Math.PI).toBeGreaterThan(-8); // PIP plates allow 0°; a few degrees of give
+    expect(s.constraintError()).toBeLessThan(1e-9);
+  }, 20000);
+});
