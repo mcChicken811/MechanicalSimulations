@@ -48,7 +48,6 @@ const C = {
   force: '#d64545',
   spring: '#5b6b7d',
   angle: '#6a4fb3',
-  join: '#1f8a70',
   gear: ['#c99a3b', '#8f9aa6', '#7fa36b', '#b07aa1', '#5f97b8'],
   bars: ['#3b6ea8', '#4c8f6a', '#8a5aa8', '#b0763a', '#3a8f99', '#a8475a'],
 };
@@ -57,8 +56,45 @@ export function barColor(id: number): string {
   return C.bars[id % C.bars.length];
 }
 
+/** Colours of joined bodies, by `link:id` / `gear:id`; set from the scene every frame. */
+let groupColors = new Map<string, string>();
+const linkColor = (id: number) => groupColors.get(`link:${id}`) ?? barColor(id);
+const gearColor = (id: number) => groupColors.get(`gear:${id}`) ?? C.gear[id % C.gear.length];
+
+/**
+ * Bodies joined into one, directly or through others, share one colour: that of the group's
+ * lowest-numbered bar, or of its lowest-numbered gear if it has no bars.
+ */
+function joinColors(d: Design): Map<string, string> {
+  const parent = new Map<string, string>();
+  const find = (k: string): string => {
+    const p = parent.get(k) ?? k;
+    if (p === k) return k;
+    const root = find(p);
+    parent.set(k, root);
+    return root;
+  };
+  const key = (r: { kind: 'link' | 'gear'; id: number }) => `${r.kind}:${r.id}`;
+  for (const j of d.joins ?? []) parent.set(find(key(j.a)), find(key(j.b)));
+  const groups = new Map<string, { kind: 'link' | 'gear'; id: number }[]>();
+  for (const j of d.joins ?? [])
+    for (const r of [j.a, j.b]) {
+      const g = groups.get(find(key(r))) ?? [];
+      if (!g.some((x) => x.kind === r.kind && x.id === r.id)) g.push(r);
+      groups.set(find(key(r)), g);
+    }
+  const out = new Map<string, string>();
+  for (const members of groups.values()) {
+    const bars = members.filter((m) => m.kind === 'link').map((m) => m.id);
+    const color = bars.length ? barColor(Math.min(...bars)) : C.gear[Math.min(...members.map((m) => m.id)) % C.gear.length];
+    for (const m of members) out.set(key(m), color);
+  }
+  return out;
+}
+
 export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, s: Scene) {
   showLabels = s.labels !== false;
+  groupColors = joinColors(s.design);
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
   drawGrid(ctx, w, h, v);
@@ -103,7 +139,6 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     dot(ctx, b, 5, '#fff', C.accent);
   }
   for (const fa of s.design.angles ?? []) drawFixedAngle(ctx, v, s, fa.a, fa.b);
-  for (const j of s.design.joins ?? []) drawJoin(ctx, v, s, j.a, j.b);
   if (s.trail) drawTrail(ctx, v, s.trail);
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
@@ -159,39 +194,6 @@ function drawFixedAngle(ctx: CanvasRenderingContext2D, v: View, s: Scene, aId: n
       d = Math.min(d, Math.PI - d); // the angle between the two lines
       ctx.fillText(`∠ ${Math.round((d * 180) / Math.PI)}°`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 10);
     }
-  }
-  ctx.restore();
-}
-
-/**
- * Two bodies joined into one: a dashed bracket between their centres (a bar's midpoint, a
- * gear's centre) with a square at each end, like a weld symbol.
- */
-function drawJoin(ctx: CanvasRenderingContext2D, v: View, s: Scene, a: { kind: 'link' | 'gear'; id: number }, b: { kind: 'link' | 'gear'; id: number }) {
-  const centre = (ref: { kind: 'link' | 'gear'; id: number }): Vec | null => {
-    if (ref.kind === 'gear') {
-      const g = s.design.gears.find((x) => x.id === ref.id);
-      return g ? toScreen(v, s.pos(g.center)) : null;
-    }
-    const l = s.design.links.find((x) => x.id === ref.id);
-    if (!l) return null;
-    const [p, q] = [toScreen(v, s.pos(l.a)), toScreen(v, s.pos(l.b))];
-    return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
-  };
-  const [ca, cb] = [centre(a), centre(b)];
-  if (!ca || !cb) return;
-  ctx.save();
-  ctx.strokeStyle = C.join;
-  ctx.fillStyle = C.join;
-  ctx.lineWidth = 2;
-  ctx.setLineDash([6, 4]);
-  line(ctx, ca, cb);
-  ctx.setLineDash([]);
-  for (const [x, y] of [ca, cb]) {
-    ctx.fillRect(x - 4, y - 4, 8, 8);
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x - 4, y - 4, 8, 8);
   }
   ctx.restore();
 }
@@ -298,7 +300,7 @@ function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
   ctx.strokeStyle = '#1f2125';
   ctx.lineWidth = 13;
   line(ctx, a, b);
-  ctx.strokeStyle = barColor(l.id);
+  ctx.strokeStyle = linkColor(l.id);
   ctx.lineWidth = 10;
   line(ctx, a, b);
   // label
@@ -451,7 +453,7 @@ function drawRack(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink, of
   const side = l.rack ?? 1;
   const selected = s.selection?.kind === 'link' && s.selection.id === l.id;
   const hovered = s.hover?.kind === 'link' && s.hover.id === l.id;
-  const color = barColor(l.id);
+  const color = linkColor(l.id);
   ctx.save();
   ctx.lineJoin = 'round';
   rackShape(ctx, v, A, B, side, rackPitch(s.design, l.id), offset);
@@ -494,7 +496,7 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     if (!s.design.points.some((p) => p.id === g.center)) continue;
     const c = s.pos(g.center);
     const sc = toScreen(v, c);
-    const color = C.gear[g.id % C.gear.length];
+    const color = gearColor(g.id);
     const selected = s.selection?.kind === 'gear' && s.selection.id === g.id;
     const hovered = s.hover?.kind === 'gear' && s.hover.id === g.id;
     const angle = s.gearAngle(g.id);
