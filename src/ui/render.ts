@@ -48,6 +48,7 @@ const C = {
   force: '#d64545',
   spring: '#5b6b7d',
   angle: '#6a4fb3',
+  join: '#1f8a70',
   gear: ['#c99a3b', '#8f9aa6', '#7fa36b', '#b07aa1', '#5f97b8'],
   bars: ['#3b6ea8', '#4c8f6a', '#8a5aa8', '#b0763a', '#3a8f99', '#a8475a'],
 };
@@ -102,6 +103,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     dot(ctx, b, 5, '#fff', C.accent);
   }
   for (const fa of s.design.angles ?? []) drawFixedAngle(ctx, v, s, fa.a, fa.b);
+  for (const j of s.design.joins ?? []) drawJoin(ctx, v, s, j.a, j.b);
   if (s.trail) drawTrail(ctx, v, s.trail);
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
@@ -157,6 +159,39 @@ function drawFixedAngle(ctx: CanvasRenderingContext2D, v: View, s: Scene, aId: n
       d = Math.min(d, Math.PI - d); // the angle between the two lines
       ctx.fillText(`∠ ${Math.round((d * 180) / Math.PI)}°`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 10);
     }
+  }
+  ctx.restore();
+}
+
+/**
+ * Two bodies joined into one: a dashed bracket between their centres (a bar's midpoint, a
+ * gear's centre) with a square at each end, like a weld symbol.
+ */
+function drawJoin(ctx: CanvasRenderingContext2D, v: View, s: Scene, a: { kind: 'link' | 'gear'; id: number }, b: { kind: 'link' | 'gear'; id: number }) {
+  const centre = (ref: { kind: 'link' | 'gear'; id: number }): Vec | null => {
+    if (ref.kind === 'gear') {
+      const g = s.design.gears.find((x) => x.id === ref.id);
+      return g ? toScreen(v, s.pos(g.center)) : null;
+    }
+    const l = s.design.links.find((x) => x.id === ref.id);
+    if (!l) return null;
+    const [p, q] = [toScreen(v, s.pos(l.a)), toScreen(v, s.pos(l.b))];
+    return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+  };
+  const [ca, cb] = [centre(a), centre(b)];
+  if (!ca || !cb) return;
+  ctx.save();
+  ctx.strokeStyle = C.join;
+  ctx.fillStyle = C.join;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  line(ctx, ca, cb);
+  ctx.setLineDash([]);
+  for (const [x, y] of [ca, cb]) {
+    ctx.fillRect(x - 4, y - 4, 8, 8);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x - 4, y - 4, 8, 8);
   }
   ctx.restore();
 }

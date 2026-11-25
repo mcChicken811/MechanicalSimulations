@@ -618,3 +618,104 @@ describe('fixed angles', () => {
     expect(Math.abs(e1.T + e1.V - e0.T - e0.V)).toBeLessThan(1e-6);
   });
 });
+
+describe('joined bodies', () => {
+  const sim = (d: Design) => new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+  const total = (s: Simulator) => {
+    const e = s.energy();
+    return e.T + e.V;
+  };
+
+  it('a gear joined to the bar on its axle turns with it, adding its inertia', () => {
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+      ],
+      links: [{ id: 0, a: 0, b: 1, mass: 1 }],
+      springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 0, radius: 0.5, teeth: 33, mass: 4, locked: false }],
+      joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'gear', id: 0 } }],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(1);
+    expect(der.constraints.filter((c) => c.joined === 0)).toHaveLength(1); // the shared axle already holds x and y
+    const s = new Simulator(new NumericSystem(der));
+    // released horizontal: θ̈ = −(m g L/2) / (m L²/3 + ½ M R²) at the start
+    const I = 1 / 3 + 0.5 * 4 * 0.25;
+    const h = 1e-3;
+    s.step(h);
+    const th = s.q[der.coords.findIndex((c) => c.sym === 'th0')];
+    expect(th).toBeCloseTo(-0.5 * (G * 0.5 / I) * h * h, 9);
+    const ph = s.q[der.coords.findIndex((c) => c.sym === 'ph0')];
+    expect(ph).toBeCloseTo(th, 12);
+  });
+
+  it('a floating bar joined to a pendulum keeps its place on it', () => {
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+        { id: 2, x: 0.2, y: -0.3, kind: 'free', mass: 0 },
+        { id: 3, x: 0.8, y: -0.5, kind: 'free', mass: 0 },
+      ],
+      links: [
+        { id: 0, a: 0, b: 1, mass: 1 },
+        { id: 1, a: 2, b: 3, mass: 2 },
+      ],
+      springs: [], gears: [], meshes: [], rackMeshes: [],
+      joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 1 } }],
+    };
+    const s = sim(d);
+    const e0 = total(s);
+    const dist = (p: Map<number, [number, number]>, i: number, j: number) => Math.hypot(p.get(i)![0] - p.get(j)![0], p.get(i)![1] - p.get(j)![1]);
+    const p0 = s.jointPositions();
+    for (let i = 0; i < 2000; i++) s.step(1e-3);
+    const p = s.jointPositions();
+    expect(Math.hypot(p.get(1)![0] - 1, p.get(1)![1])).toBeGreaterThan(0.1); // it swung
+    for (const [i, j] of [[0, 2], [0, 3], [1, 2], [1, 3]]) expect(dist(p, i, j)).toBeCloseTo(dist(p0, i, j), 9);
+    expect(Math.abs(total(s) - e0)).toBeLessThan(1e-6);
+  });
+
+  it('warns when the bodies already move as one', () => {
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+        { id: 2, x: 0.5, y: -0.8, kind: 'free', mass: 0 },
+      ],
+      links: [
+        { id: 0, a: 0, b: 1, mass: 1 },
+        { id: 1, a: 1, b: 2, mass: 1 },
+        { id: 2, a: 2, b: 0, mass: 1 },
+      ],
+      springs: [], gears: [], meshes: [], rackMeshes: [],
+      joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 1 } }],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(1);
+    expect(der.warnings.some((w) => w.includes('already move as one body'))).toBe(true);
+  });
+
+  it('joins a gear to a rack, so the pair slides and turns as one', () => {
+    // a free gear and a rack lying apart, joined: one free rigid body under gravity
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'free', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+        { id: 2, x: 0.5, y: 0.4, kind: 'free', mass: 0 },
+      ],
+      links: [{ id: 0, a: 0, b: 1, mass: 1, rack: 1 }],
+      springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 2, radius: 0.2, teeth: 13, mass: 1, locked: false }],
+      joins: [{ id: 0, a: { kind: 'gear', id: 0 }, b: { kind: 'link', id: 0 } }],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(3);
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 500; i++) s.step(1e-3);
+    const p = s.jointPositions();
+    // free fall: everything drops ½ g t², nothing turns
+    for (const [id, y0] of [[0, 0], [1, 0], [2, 0.4]] as const) expect(p.get(id)![1]).toBeCloseTo(y0 - 0.5 * G * 0.25, 6);
+  });
+});

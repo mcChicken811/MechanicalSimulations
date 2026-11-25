@@ -97,6 +97,31 @@ export interface DAngle {
   b: number;
 }
 
+/** A rigid body of the design: a bar (racks included) or a gear. */
+export interface DBodyRef {
+  kind: 'link' | 'gear';
+  id: number;
+}
+
+/**
+ * Two rigid bodies joined into one: neither turns nor moves relative to the other. Body b's
+ * reference point (a bar's joint a, a gear's centre) stays where it was drawn in body a's
+ * frame, and the two turn together.
+ */
+export interface DJoin {
+  id: number;
+  a: DBodyRef;
+  b: DBodyRef;
+}
+
+export const sameBody = (x: DBodyRef, y: DBodyRef) => x.kind === y.kind && x.id === y.id;
+
+/** "bar 3", "rack 2" or "gear g1". */
+export function bodyName(d: Design, ref: DBodyRef): string {
+  if (ref.kind === 'gear') return `gear g${gearLabel(ref.id)}`;
+  return `${d.links.find((l) => l.id === ref.id)?.rack ? 'rack' : 'bar'} ${linkLabel(ref.id)}`;
+}
+
 export interface Design {
   points: DPoint[];
   links: DLink[];
@@ -106,10 +131,12 @@ export interface Design {
   rackMeshes: DRackMesh[];
   /** Fixed angles between bars (absent in designs saved before they existed). */
   angles?: DAngle[];
+  /** Bodies joined into one (absent in designs saved before joins existed). */
+  joins?: DJoin[];
 }
 
 export function emptyDesign(): Design {
-  return { points: [], links: [], springs: [], gears: [], meshes: [], rackMeshes: [], angles: [] };
+  return { points: [], links: [], springs: [], gears: [], meshes: [], rackMeshes: [], angles: [], joins: [] };
 }
 
 /**
@@ -180,5 +207,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })) };
 }

@@ -1,13 +1,13 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { cloneDesign, drawnAngle, emptyDesign, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, cloneDesign, drawnAngle, emptyDesign, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { defaultFriction, NumericSystem, Simulator, type Heat } from './mechanics/simulate';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'angle' | PointKind | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'angle' | 'join' | PointKind | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -65,6 +65,8 @@ function loadDesign(): Design | null {
     d.meshes = d.meshes.filter((m) => d.gears.some((g) => g.id === m.a) && d.gears.some((g) => g.id === m.b));
     if (!Array.isArray(d.angles)) d.angles = []; // saved before fixed angles existed
     d.angles = d.angles.filter((a) => a.a !== a.b && d.links.some((l) => l.id === a.a) && d.links.some((l) => l.id === a.b));
+    if (!Array.isArray(d.joins)) d.joins = []; // saved before joins existed
+    d.joins = d.joins.filter((j) => bodyExists(d, j.a) && bodyExists(d, j.b));
     if (!Array.isArray(d.rackMeshes)) d.rackMeshes = [];
     d.rackMeshes = d.rackMeshes.filter((m) => d.gears.some((g) => g.id === m.gear) && d.links.some((l) => l.id === m.rack && l.rack));
     return d;
@@ -569,6 +571,7 @@ function sideOfRack(rack: DLink, g: DGear): 1 | -1 {
 }
 
 function removeOrphans() {
+  design.joins = joinsOf(design).filter((j) => bodyExists(design, j.a) && bodyExists(design, j.b));
   design.angles = anglesOf(design).filter((a) => design.links.some((l) => l.id === a.a) && design.links.some((l) => l.id === a.b));
   design.rackMeshes = design.rackMeshes.filter((m) => design.gears.some((g) => g.id === m.gear) && design.links.some((l) => l.id === m.rack && l.rack));
   design.points = design.points.filter(
@@ -593,6 +596,65 @@ function toggleAngle(a: number, b: number) {
   if (found) design.angles = anglesOf(design).filter((x) => x !== found);
   else anglesOf(design).push({ id: nextId(anglesOf(design)), a, b });
   designChanged();
+}
+
+// ---- joined bodies ---------------------------------------------------------------
+function bodyExists(d: Design, ref: DBodyRef): boolean {
+  return ref.kind === 'gear' ? d.gears.some((g) => g.id === ref.id) : d.links.some((l) => l.id === ref.id);
+}
+const joinsOf = (d: Design) => (d.joins ??= []);
+/** The first body clicked with the Join tool, waiting for the second. */
+let joinFirst: DBodyRef | null = null;
+
+const findJoin = (a: DBodyRef, b: DBodyRef) => joinsOf(design).find((j) => (sameBody(j.a, a) && sameBody(j.b, b)) || (sameBody(j.a, b) && sameBody(j.b, a)));
+
+/** Join two bodies into one, or separate them if they are already joined. */
+function toggleJoin(a: DBodyRef, b: DBodyRef) {
+  pushUndo();
+  const found = findJoin(a, b);
+  if (found) design.joins = joinsOf(design).filter((j) => j !== found);
+  else joinsOf(design).push({ id: nextId(joinsOf(design)), a: { ...a }, b: { ...b } });
+  designChanged();
+}
+
+/** The bar, rack or gear under the cursor (bars first, as they are drawn over gears). */
+function bodyAt(w: Vec): DBodyRef | null {
+  const l = linkAt(w);
+  if (l) return { kind: 'link', id: l.id };
+  const g = gearAt(w);
+  return g ? { kind: 'gear', id: g.id } : null;
+}
+
+const bodySelection = (ref: DBodyRef): Selection => (ref.kind === 'gear' ? { kind: 'gear', id: ref.id } : { kind: 'link', id: ref.id });
+
+/** Inspector rows listing a body's joins, with a picker to join it to another body. */
+function joinsHtml(ref: DBodyRef, disabled: string): string {
+  const mine = joinsOf(design).filter((j) => sameBody(j.a, ref) || sameBody(j.b, ref));
+  const other = (j: { a: DBodyRef; b: DBodyRef }) => (sameBody(j.a, ref) ? j.b : j.a);
+  const choices: DBodyRef[] = [
+    ...design.links.map((l): DBodyRef => ({ kind: 'link', id: l.id })),
+    ...design.gears.map((g): DBodyRef => ({ kind: 'gear', id: g.id })),
+  ].filter((x) => !sameBody(x, ref) && !findJoin(ref, x));
+  return `
+    <div class="field"><span>One body with</span><span>${
+      mine.map((j) => `${bodyName(design, other(j))} <button data-unjoin="${j.id}" title="Separate these bodies" ${disabled}>×</button>`).join('<br>') || '<span class="muted">none</span>'
+    }</span></div>
+    ${choices.length ? `<label class="field">Join to<select id="i-join" ${disabled}><option value="">choose a body…</option>${choices.map((x) => `<option value="${x.kind}:${x.id}">${bodyName(design, x)}</option>`).join('')}</select></label>` : ''}`;
+}
+
+function bindJoinControls(ref: DBodyRef) {
+  inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unjoin]').forEach((b) =>
+    b.addEventListener('click', () => {
+      pushUndo();
+      design.joins = joinsOf(design).filter((j) => j.id !== Number(b.dataset.unjoin));
+      designChanged();
+    }),
+  );
+  inspectorEl.querySelector<HTMLSelectElement>('#i-join')?.addEventListener('change', (e) => {
+    const [kind, id] = (e.target as HTMLSelectElement).value.split(':');
+    const target: DBodyRef = { kind: kind === 'gear' ? 'gear' : 'link', id: Number(id) };
+    if (id !== undefined && bodyExists(design, target)) toggleJoin(ref, target);
+  });
 }
 
 function deleteSelection(sel: Selection | null) {
@@ -731,6 +793,23 @@ canvas.addEventListener('pointerdown', (e) => {
       refreshControls();
       break;
     }
+    case 'join': {
+      const hit = bodyAt(w);
+      if (!hit) {
+        joinFirst = null;
+        selection = null;
+      } else if (!joinFirst || sameBody(joinFirst, hit) || !bodyExists(design, joinFirst)) {
+        joinFirst = joinFirst && sameBody(joinFirst, hit) ? null : hit; // the same body again cancels
+        selection = joinFirst ? bodySelection(hit) : null;
+      } else {
+        const first = joinFirst;
+        joinFirst = null;
+        selection = bodySelection(hit);
+        toggleJoin(first, hit);
+      }
+      refreshControls();
+      break;
+    }
     case 'lockGear': {
       const pid = pointAt(w);
       const g = (pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w);
@@ -824,7 +903,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', a: 'angle', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', a: 'angle', j: 'join', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -856,6 +935,7 @@ toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.t
 function setTool(t: Tool) {
   tool = t;
   angleFirst = null;
+  joinFirst = null;
   drawing = null;
   refreshControls();
 }
@@ -976,6 +1056,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear to lock it so it cannot turn. Click again to unlock it.',
   angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
+  join: 'Click two bodies (bars, racks or gears) to join them into one. Click the same pair again to separate them.',
 };
 
 function refreshControls() {
@@ -991,7 +1072,9 @@ function refreshControls() {
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
     : tool === 'angle' && angleFirst !== null
       ? `Now click the bar whose angle to bar ${linkLabel(angleFirst)} should stay fixed (or bar ${linkLabel(angleFirst)} again to cancel).`
-      : hints[tool];
+      : tool === 'join' && joinFirst
+        ? `Now click the body to join to ${bodyName(design, joinFirst)} (or ${bodyName(design, joinFirst)} again to cancel).`
+        : hints[tool];
   renderInspector();
 }
 
@@ -1051,6 +1134,7 @@ function renderInspector() {
         <label class="field">Mass (kg)<input id="i-mass" type="number" min="0.01" step="0.1" value="${l.mass}" ${disabled}></label>
         <div class="field"><span>Length</span><span>${linkLength(design, l).toFixed(3)} m</span></div>
         ${anglesHtml}
+        ${joinsHtml({ kind: 'link', id: l.id }, disabled)}
         <label class="field">Toothed<span><input id="i-rack" type="checkbox" ${l.rack ? 'checked' : ''} ${disabled}> rack</span></label>
         ${
           l.rack
@@ -1073,6 +1157,7 @@ function renderInspector() {
         designChanged();
       });
       bindField('#i-side', (v) => (l.rack = v === '-1' ? -1 : 1));
+      bindJoinControls({ kind: 'link', id: l.id });
       inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unangle]').forEach((b) =>
         b.addEventListener('click', () => {
           pushUndo();
@@ -1154,7 +1239,9 @@ function renderInspector() {
               ].join('')}</select></label>`
             : ''
         }
+        ${joinsHtml({ kind: 'gear', id: g.id }, disabled)}
         <p class="muted">Uniform disk, I = ½mR² = ${I.toFixed(4)} kg·m². Bars drawn on it are pinned to it.</p>`;
+      bindJoinControls({ kind: 'gear', id: g.id });
       bindField('#i-r', (v) => (g.radius = Math.max(0.03, Number(v) || 0.03)));
       bindField('#i-n', (v) => (g.teeth = Math.min(300, Math.max(6, Math.round(Number(v) || 6)))));
       bindField('#i-m', (v) => (g.mass = Math.max(0.01, Number(v) || 0.01)));

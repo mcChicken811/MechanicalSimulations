@@ -3,7 +3,7 @@
 **Linkage Lab** is a browser app for building planar mechanisms out of bars, springs, gears and racks. It derives their equations of motion automatically with Lagrangian mechanics and simulates them in real time.
 
 - You draw the mechanism. The app picks generalized coordinates, builds the kinetic and potential energy symbolically, and shows Lagrange's equations, M(q) q̈ = f(q, q̇) + Q + Φ_qᵀλ, as typeset math.
-- Closed loops, locked axes, meshing gears, rack-and-pinion pairs and fixed angles between bars become constraints, handled with Lagrange multipliers.
+- Closed loops, locked axes, meshing gears, rack-and-pinion pairs, fixed angles between bars and joined bodies become constraints, handled with Lagrange multipliers.
 - The equations are integrated with 4th-order Runge–Kutta (RK4) with a 1 ms step. While it runs, you can drag any part to pull on it.
 - Optional joint and gear friction turns energy into heat, which you see as joints glowing.
 
@@ -78,6 +78,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
 | Lock gear | L | Click a gear to stop it turning. Click again to unlock it. |
 | Fix angle | A | Click one bar, then another, to hold the angle between them at its drawn value. Click the same pair again to free it. |
+| Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body. Click the same pair again to separate them. |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
 Bars and springs that start or end on a gear are pinned to the gear and turn with it.
@@ -86,7 +87,9 @@ A rack is a rigid body like a bar, with the same mass and inertia, and bars atta
 
 A fixed angle adds the constraint θ_b − θ_a = α, with α the angle as drawn. Two bars that share a joint are welded there into one rigid piece, for example an L-shaped or bent arm. A purple double arc at the joint shows the angle in degrees. Bars that don't touch are joined by a dashed line and stay at their drawn angle to each other wherever they move. If the mechanism already holds that angle, as for two sides of a rigid triangle, the constraint is dropped with a warning, because a duplicate would make the equations singular.
 
-The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, and which bars have a fixed angle.
+Joining two bodies makes them one rigid body: they can no longer turn or move relative to each other. This works for any pair of bars, racks and gears, whether or not they touch. Examples are a crank arm fixed to a gear, a pinion fixed to a rack, or a bent lever made of two bars. A green dashed line with a square at each end links the joined bodies. Each body has a frame: a bar's frame is its first joint and its angle, and a gear's frame is its centre and its rotation. Joining body b to body a then adds up to three constraints: θ_b − θ_a = α, and r_b − r_a = Rot(θ_a)(u, v), with α, u and v taken from the drawing. Constraints the mechanism already enforces are left out automatically. For example, a gear joined to a bar on its own axle only needs to turn with the bar. If all three are already enforced, a warning says the bodies already move as one.
+
+The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, and which bars have a fixed angle, and which bodies are joined.
 
 Other controls:
 - Undo with Ctrl/Cmd+Z.

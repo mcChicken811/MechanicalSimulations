@@ -32,9 +32,14 @@
  *    angle is not a coordinate gets an explicit one, as for gears. The constraint is dropped,
  *    with a warning, when the mechanism already holds that angle (say, two sides of a rigid
  *    triangle), since a redundant constraint would make the equations singular.
+ * 11. Joining two bodies into one (bars, racks, gears) fixes body b in body a's frame:
+ *    with θ the bodies' angles and r their reference points (a bar's joint a, a gear's
+ *    centre), θ_b − θ_a = α and r_b − r_a = Rot(θ_a)(u, v), the constants taken from the
+ *    drawing. Equations the mechanism already enforces (bodies sharing a joint need only
+ *    the first) are dropped by the same independence test.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
-import { drawnAngle, gearLabel, linkLabel, sharedJoint, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
+import { bodyName, drawnAngle, gearLabel, linkLabel, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
 
 export interface Coordinate {
   sym: string;
@@ -69,6 +74,8 @@ export interface Constraint {
   rackDistance?: boolean;
   /** A fixed angle between bars a and b, dropped (with a warning) when already enforced. */
   fixedAngle?: { a: number; b: number };
+  /** One of the (up to three) equations of a join, by join id; dropped when already enforced. */
+  joined?: number;
 }
 
 /** A spring's contribution V = ½ k (ℓ − ℓ₀)², ℓ = √D. */
@@ -495,6 +502,52 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     constraints.push({ phi: rel.sub(alpha), reason: `the angle ${where}between ${lab} is fixed (${deg}°)`, fixedAngle: { a: la.id, b: lb.id } });
   }
 
+  // ---- joined bodies -------------------------------------------------------------
+  /** A body's angle (and its coordinate symbol, null if it cannot turn) and reference point. */
+  const bodyFrame = (ref: DBodyRef): { angle: Poly; sym: string | null; at: [Poly, Poly] } | null => {
+    if (ref.kind === 'link') {
+      const l = links.find((x) => x.id === ref.id);
+      if (!l) return null;
+      const angle = angleOf(l);
+      return { angle, sym: barAngle.get(l.id) ?? null, at: positions.get(l.a)! };
+    }
+    const gr = gearById.get(ref.id);
+    if (!gr || !gearAngle.has(gr.id)) return null;
+    return { angle: gearAngle.get(gr.id)!, sym: gr.locked ? null : `ph${gr.id}`, at: positions.get(gr.center)! };
+  };
+  const joinNames = new Map<number, string>();
+  for (const j of design.joins ?? []) {
+    if (sameBody(j.a, j.b)) continue;
+    const A = bodyFrame(j.a);
+    const B = bodyFrame(j.b);
+    if (!A || !B) continue;
+    const lab = `${bodyName(design, j.a)} and ${bodyName(design, j.b)}`;
+    joinNames.set(j.id, lab);
+    const env = initialEnv();
+    const cos = A.sym ? Poly.cos([[A.sym, 1]]) : Poly.const(1);
+    const sin = A.sym ? Poly.sin([[A.sym, 1]]) : Poly.zero;
+    const dx = B.at[0].sub(A.at[0]);
+    const dy = B.at[1].sub(A.at[1]);
+    // where B's reference point sits in A's frame, from the drawing
+    const [c0, s0, dx0, dy0] = [cos, sin, dx, dy].map((e) => e.evaluate(env));
+    const constant = (sym: string, latex: string, value: number, unit: string) => (Math.abs(value) < 1e-12 ? Poly.zero : param(sym, latex, value, unit));
+    const u = constant(`ju${j.id}`, `u_{\\mathrm{J}${j.id + 1}}`, c0 * dx0 + s0 * dy0, 'm');
+    const v = constant(`jv${j.id}`, `v_{\\mathrm{J}${j.id + 1}}`, -s0 * dx0 + c0 * dy0, 'm');
+    const rel = B.angle.sub(A.angle);
+    const alpha = constant(`ja${j.id}`, `\\alpha_{\\mathrm{J}${j.id + 1}}`, rel.evaluate(env), 'rad');
+    const parts: [Poly, string][] = [
+      [rel.sub(alpha), 'they turn together'],
+      [dx.sub(u.mul(cos)).add(v.mul(sin)), 'x'],
+      [dy.sub(u.mul(sin)).sub(v.mul(cos)), 'y'],
+    ];
+    const moving = parts.filter(([phi]) => movable(phi));
+    if (!moving.length) {
+      warnings.push(`${lab[0].toUpperCase()}${lab.slice(1)} cannot move, so joining them has no effect.`);
+      continue;
+    }
+    for (const [phi, what] of moving) constraints.push({ phi, reason: `${lab} are one body (${what})`, joined: j.id });
+  }
+
   const qs = coords.map((c) => c.sym);
   const qsDepend = (e: Poly) => qs.some((q) => e.dependsOn(q));
   const qds = coords.map((c) => c.vel);
@@ -607,7 +660,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     return true;
   };
   // Fixed angles get the same test: welding two sides of a rigid triangle adds nothing.
-  const optional = (c: Constraint) => c.rackDistance || c.fixedAngle;
+  const optional = (c: Constraint) => c.rackDistance || c.fixedAngle || c.joined !== undefined;
   for (const c of movableKept) if (!optional(c)) independent(c.phi);
   const kept = movableKept.filter((c) => {
     if (!optional(c)) return true;
@@ -615,6 +668,9 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     if (c.fixedAngle) warnings.push(`${c.reason[0].toUpperCase()}${c.reason.slice(1)}, but the mechanism already holds that angle, so the constraint was dropped.`);
     return false;
   });
+  for (const [id, lab] of joinNames)
+    if (movableKept.some((c) => c.joined === id) && !kept.some((c) => c.joined === id))
+      warnings.push(`${lab[0].toUpperCase()}${lab.slice(1)} already move as one body, so joining them adds nothing.`);
   const phiQ: Poly[][] = [];
   const gamma: Poly[] = [];
   for (const [k, c] of kept.entries()) {
