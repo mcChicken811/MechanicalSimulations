@@ -1333,7 +1333,7 @@ function renderStatus() {
     return;
   }
   const { T, V } = sim.energy();
-  const F = Math.hypot(...sim.appliedForce);
+  const F = Math.hypot(...grabPull);
   const phi = sim.constraintError();
   statusEl.innerHTML =
     `${running ? 'Running' : 'Paused'} · t = <b>${sim.t.toFixed(2)} s</b> · E = T + V = <b>${(T + V).toFixed(4)} J</b>` +
@@ -1372,6 +1372,8 @@ function fitView() {
 
 // ---- main loop ------------------------------------------------------------------
 let last = performance.now();
+/** The grab spring's pull on the grabbed point this frame (N), shown by the arrow and status bar. */
+let grabPull: Vec = [0, 0];
 function frame(now: number) {
   const dt = Math.min((now - last) / 1000, 1 / 20);
   last = now;
@@ -1380,12 +1382,16 @@ function frame(now: number) {
   if (sim && running) advance(dt * settings.speed);
 
   let grabScene = null;
+  grabPull = [0, 0];
   if (sim && grab) {
     const a = pos(grab.a);
     const b = pos(grab.b);
     const gr = grab.gear && design.gears.find((x) => x.id === grab!.gear!.id);
     const at: Vec = gr ? gearPoint(gr, grab.gear!.u, grab.gear!.v) : [a[0] + (b[0] - a[0]) * grab.s, a[1] + (b[1] - a[1]) * grab.s];
-    grabScene = { at, to: mouseWorld, force: running ? sim.appliedForce : ([0, 0] as Vec) };
+    // the arrow is the spring's pull, k (cursor − point): it lies along the dashed line by construction
+    const k = settings.stiffness;
+    grabPull = running ? [k * (mouseWorld[0] - at[0]), k * (mouseWorld[1] - at[1])] : [0, 0];
+    grabScene = { at, to: mouseWorld, force: grabPull };
   }
   drawScene(ctx, W, H, view, {
     design,

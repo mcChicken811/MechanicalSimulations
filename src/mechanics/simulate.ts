@@ -187,7 +187,7 @@ export class Simulator {
   /** Mass-proportional drag coefficient c (1/s): Q_drag = −c M q̇. */
   damping = 0;
   grab: Grab | null = null;
-  /** Force currently applied by the grab spring (N), for display. */
+  /** Total force of the grab, spring pull plus damping (N). */
   appliedForce: [number, number] = [0, 0];
   friction: FrictionSettings = defaultFriction();
   /** Temperature rise (K) of every joint (derivation.joints order) and mesh (derivation.meshes order). */
@@ -395,6 +395,10 @@ export class Simulator {
       vx += J(0, j) * qd[j];
       vy += J(1, j) * qd[j];
     }
+    // The spring pulls the point towards the cursor; the damper steadies it like a firm hand,
+    // resisting its motion in every direction (damping only along the line to the cursor
+    // leaves held mechanisms swinging for seconds). The app's arrow shows the pull alone,
+    // since the damper opposes the point's velocity, which is rarely along that line.
     const c = 2 * 0.5 * Math.sqrt(g.stiffness * Math.max(sys.totalMass, 1e-3));
     const Fx = g.stiffness * (g.target[0] - rx) - c * vx;
     const Fy = g.stiffness * (g.target[1] - ry) - c * vy;
