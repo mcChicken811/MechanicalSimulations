@@ -1,0 +1,66 @@
+import { describe, expect, it } from 'vitest';
+import { presets } from '../ui/presets';
+import { deriveEquations } from './derive';
+import { allParts, emptyParts, extractParts, fragmentCentre, partsInBox, pasteParts } from './fragment';
+import type { Design } from './model';
+
+const build = (name: string) => presets.find((p) => p.name.startsWith(name))!.build();
+const dof = (d: Design) => {
+  const der = deriveEquations(d, { gravity: 9.81 });
+  return { dof: der.coords.length - der.constraints.length, constraints: der.constraints.length, warnings: der.warnings };
+};
+
+describe('copy and paste', () => {
+  it('a pasted copy of a whole mechanism keeps all its constraints', () => {
+    // gears, gear pins and a mesh; add a fixed angle and a join so every kind is covered
+    const d = build("Watt's sun");
+    d.angles = [{ id: 0, a: 1, b: 3 }];
+    d.joins = [{ id: 0, a: { kind: 'gear', id: 1 }, b: { kind: 'link', id: 2 } }];
+    const before = dof(d);
+    const frag = extractParts(d, allParts(d));
+    const pasted = pasteParts(d, frag, 3, 0);
+    expect(pasted.points.size).toBe(frag.points.length);
+    // ids are fresh, and every reference points into the copy
+    expect(new Set(d.points.map((p) => p.id)).size).toBe(d.points.length);
+    expect(new Set(d.links.map((l) => l.id)).size).toBe(d.links.length);
+    for (const l of d.links.filter((x) => pasted.links.has(x.id))) expect(pasted.points.has(l.a) && pasted.points.has(l.b)).toBe(true);
+    for (const p of d.points.filter((x) => pasted.points.has(x.id) && x.gear !== undefined)) expect(pasted.gears.has(p.gear!)).toBe(true);
+    expect(d.meshes).toHaveLength(2);
+    expect(d.angles).toHaveLength(2);
+    expect(d.joins).toHaveLength(2);
+    // two independent copies: twice the constraints and degrees of freedom
+    const after = dof(d);
+    expect(after.constraints).toBe(2 * before.constraints);
+    expect(after.dof).toBe(2 * before.dof);
+  });
+
+  it('leaves behind constraints to parts that were not copied', () => {
+    const d = build("Watt's sun");
+    // the planet gear's pin joint (4) without the planet gear itself, plus the rod to it
+    const s = emptyParts();
+    s.links.add(1).add(2); // rod and rod strut
+    const frag = extractParts(d, s);
+    expect(frag.gears).toHaveLength(0);
+    expect(frag.meshes).toHaveLength(0);
+    expect(frag.points.every((p) => p.gear === undefined)).toBe(true);
+  });
+
+  it('selects what lies inside a box, and pastes centred where asked', () => {
+    const d = build('Double pendulum');
+    const xs = d.points.map((p) => p.x);
+    const ys = d.points.map((p) => p.y);
+    const parts = partsInBox(d, [Math.min(...xs) - 0.01, Math.min(...ys) - 0.01], [Math.max(...xs) + 0.01, Math.max(...ys) + 0.01]);
+    expect(parts.points.size).toBe(d.points.length);
+    expect(parts.links.size).toBe(d.links.length);
+    // a box around one joint only takes no bars
+    const one = partsInBox(d, [d.points[0].x - 0.01, d.points[0].y - 0.01], [d.points[0].x + 0.01, d.points[0].y + 0.01]);
+    expect([one.points.size, one.links.size]).toEqual([1, 0]);
+    const frag = extractParts(d, parts);
+    const c = fragmentCentre(frag);
+    const pasted = pasteParts(d, frag, 5 - c[0], 2 - c[1]);
+    const copy = extractParts(d, pasted);
+    const c2 = fragmentCentre(copy);
+    expect(c2[0]).toBeCloseTo(5, 12);
+    expect(c2[1]).toBeCloseTo(2, 12);
+  });
+});

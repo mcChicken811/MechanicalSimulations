@@ -1,4 +1,5 @@
 import { gearLabel, GEAR_MODULE, linkLabel, pointLabel, rackPitch, sharedJoint, springLabel, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
 
 export interface View {
@@ -29,8 +30,18 @@ export interface Scene {
   simulating: boolean;
   /** Draw the names of joints, bars, racks, springs and gears, and mass tags (default true). */
   labels?: boolean;
+  /** Parts chosen together (box selection, a paste), highlighted like the selection. */
+  multi?: PartSet | null;
+  /** The selection box being dragged, in world coordinates. */
+  box?: { from: Vec; to: Vec } | null;
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
+}
+
+const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const;
+/** Whether a part is the selection or one of the parts chosen together. */
+function isSelected(s: Scene, kind: Selection['kind'], id: number): boolean {
+  return (s.selection?.kind === kind && s.selection.id === id) || !!s.multi?.[partsKey[kind]].has(id);
 }
 
 /** Set from the scene at the start of every frame. */
@@ -143,6 +154,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
   if (s.grab) drawGrab(ctx, v, s.grab);
+  if (s.box) drawBox(ctx, v, s.box);
 }
 
 /**
@@ -195,6 +207,19 @@ function drawFixedAngle(ctx: CanvasRenderingContext2D, v: View, s: Scene, aId: n
       ctx.fillText(`∠ ${Math.round((d * 180) / Math.PI)}°`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 10);
     }
   }
+  ctx.restore();
+}
+
+/** The selection box: a dashed rectangle with a light fill. */
+function drawBox(ctx: CanvasRenderingContext2D, v: View, b: { from: Vec; to: Vec }) {
+  const [a, c] = [toScreen(v, b.from), toScreen(v, b.to)];
+  ctx.save();
+  ctx.fillStyle = 'rgba(224,123,57,0.08)';
+  ctx.strokeStyle = C.accent;
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([5, 4]);
+  ctx.fillRect(Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.abs(c[0] - a[0]), Math.abs(c[1] - a[1]));
+  ctx.strokeRect(Math.min(a[0], c[0]) + 0.5, Math.min(a[1], c[1]) + 0.5, Math.abs(c[0] - a[0]), Math.abs(c[1] - a[1]));
   ctx.restore();
 }
 
@@ -286,7 +311,7 @@ function drawRail(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, 
 function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
   const a = toScreen(v, s.pos(l.a));
   const b = toScreen(v, s.pos(l.b));
-  const selected = s.selection?.kind === 'link' && s.selection.id === l.id;
+  const selected = isSelected(s, 'link', l.id);
   const hovered = s.hover?.kind === 'link' && s.hover.id === l.id;
   ctx.save();
   ctx.lineCap = 'round';
@@ -451,7 +476,7 @@ function drawRack(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink, of
   const A = s.pos(l.a);
   const B = s.pos(l.b);
   const side = l.rack ?? 1;
-  const selected = s.selection?.kind === 'link' && s.selection.id === l.id;
+  const selected = isSelected(s, 'link', l.id);
   const hovered = s.hover?.kind === 'link' && s.hover.id === l.id;
   const color = linkColor(l.id);
   ctx.save();
@@ -497,7 +522,7 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     const c = s.pos(g.center);
     const sc = toScreen(v, c);
     const color = gearColor(g.id);
-    const selected = s.selection?.kind === 'gear' && s.selection.id === g.id;
+    const selected = isSelected(s, 'gear', g.id);
     const hovered = s.hover?.kind === 'gear' && s.hover.id === g.id;
     const angle = s.gearAngle(g.id);
     drawGear(ctx, v, c, g.radius, g.teeth, phases.get(g.id)! + angle, color, selected || hovered, g.locked);
@@ -580,7 +605,7 @@ function drawGear(ctx: CanvasRenderingContext2D, v: View, c: Vec, r: number, tee
 function drawSpring(ctx: CanvasRenderingContext2D, v: View, s: Scene, sp: DSpring) {
   const a = toScreen(v, s.pos(sp.a));
   const b = toScreen(v, s.pos(sp.b));
-  const selected = s.selection?.kind === 'spring' && s.selection.id === sp.id;
+  const selected = isSelected(s, 'spring', sp.id);
   const hovered = s.hover?.kind === 'spring' && s.hover.id === sp.id;
   ctx.save();
   if (selected || hovered) {
@@ -683,7 +708,7 @@ function drawJoint(ctx: CanvasRenderingContext2D, v: View, s: Scene, p: DPoint) 
     p.gear !== undefined ||
     s.design.gears.some((g) => g.center === p.id);
   const c = toScreen(v, s.pos(p.id));
-  const selected = s.selection?.kind === 'point' && s.selection.id === p.id;
+  const selected = isSelected(s, 'point', p.id);
   const hovered = s.hover?.kind === 'point' && s.hover.id === p.id;
 
   if (p.kind === 'fixed') drawGround(ctx, c);

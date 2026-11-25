@@ -67,7 +67,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 
 | Tool | Key | How to use it |
 |---|:-:|---|
-| Select | V | Click a part to edit it in the inspector (bottom right). Drag joints to reshape the mechanism. |
+| Select | V | Click a part to edit it in the inspector (bottom right). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
 | Draw bar | B | Drag, or click twice. Start or end on an existing joint to pin bars together. |
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Lock its joints on rails (X or Y) to make it slide. |
 | Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector. |
@@ -88,6 +88,14 @@ A rack is a rigid body like a bar, with the same mass and inertia, and bars atta
 A fixed angle adds the constraint θ_b − θ_a = α, with α the angle as drawn. Two bars that share a joint are welded there into one rigid piece, for example an L-shaped or bent arm. A purple double arc at the joint shows the angle in degrees. Bars that don't touch are joined by a dashed line and stay at their drawn angle to each other wherever they move. If the mechanism already holds that angle, as for two sides of a rigid triangle, the constraint is dropped with a warning, because a duplicate would make the equations singular.
 
 Joining two bodies makes them one rigid body: they can no longer turn or move relative to each other. This works for any pair of bars, racks and gears, whether or not they touch. Examples are a crank arm fixed to a gear, a pinion fixed to a rack, or a bent lever made of two bars. Joined bodies are drawn in the same colour: the colour of the group's lowest-numbered bar, or of its lowest-numbered gear if the group has no bars. Each body has a frame: a bar's frame is its first joint and its angle, and a gear's frame is its centre and its rotation. Joining body b to body a then adds up to three constraints: θ_b − θ_a = α, and r_b − r_a = Rot(θ_a)(u, v), with α, u and v taken from the drawing. Constraints the mechanism already enforces are left out automatically. For example, a gear joined to a bar on its own axle only needs to turn with the bar. If all three are already enforced, a warning says the bodies already move as one.
+
+**Selecting, copying and pasting groups.** In Select mode, drag on empty space to draw a box. This selects every joint inside it, every bar, rack and spring with both ends inside, and every gear whose centre is inside. Ctrl/⌘+A selects everything. Then:
+
+- Drag any selected part to move the whole group.
+- Ctrl/⌘+C copies the group, Ctrl/⌘+X cuts it, and Delete removes it. Esc deselects.
+- Ctrl/⌘+V pastes a copy centred on the cursor. You can paste as many times as you like.
+
+A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes, fixed angles and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
 
 The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, and which bars have a fixed angle, and which bodies are joined.
 

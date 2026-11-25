@@ -3,6 +3,7 @@ import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
 import { bodyName, cloneDesign, drawnAngle, emptyDesign, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { defaultFriction, NumericSystem, Simulator, type Heat } from './mechanics/simulate';
+import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
@@ -34,7 +35,14 @@ let tool: Tool = 'bar';
 let selection: Selection | null = null;
 let hover: Selection | null = null;
 let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
-let dragging: { id: number; pushed: boolean } | null = null;
+/** A dragged joint, or (`group`) the parts chosen together, moved by the snapped mouse offset. */
+let dragging: { id: number; pushed: boolean; group?: { start: Vec; applied: Vec } } | null = null;
+/** Parts chosen together by a selection box, Select all or a paste. */
+let multi: PartSet | null = null;
+/** The selection box being dragged in Select mode. */
+let boxSel: { from: Vec; to: Vec; downAt: Vec } | null = null;
+/** Parts copied with Ctrl/Cmd+C, as a design of their own. */
+let clipboard: Design | null = null;
 let panning: { last: Vec } | null = null;
 let derivation: Derivation | null = null;
 let deriveError: string | null = null;
@@ -84,6 +92,7 @@ function undo() {
   if (sim || !undoStack.length) return;
   design = undoStack.pop()!;
   selection = null;
+  multi = null;
   designChanged();
 }
 
@@ -234,6 +243,8 @@ function startSim() {
   dragging = null;
   // springs stay editable while running; a selected joint draws its path
   if (selection?.kind !== 'spring' && selection?.kind !== 'point') selection = null;
+  multi = null;
+  boxSel = null;
   resetTrail();
   renderInspector();
   refreshControls();
@@ -657,6 +668,74 @@ function bindJoinControls(ref: DBodyRef) {
   });
 }
 
+// ---- groups: box selection, copy and paste ------------------------------------------
+const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const;
+const inParts = (s: PartSet, sel: Selection) => s[partsKey[sel.kind]].has(sel.id);
+
+/** The parts chosen together, without any that have since been deleted (null if none are left). */
+function liveMulti(): PartSet | null {
+  if (!multi) return null;
+  const keep = (ids: Set<number>, items: readonly { id: number }[]) => new Set([...ids].filter((id) => items.some((x) => x.id === id)));
+  multi = { points: keep(multi.points, design.points), links: keep(multi.links, design.links), springs: keep(multi.springs, design.springs), gears: keep(multi.gears, design.gears) };
+  if (!partCount(multi)) multi = null;
+  return multi;
+}
+
+/** What Copy, Cut and Delete act on: the parts chosen together, else the selected part. */
+function currentParts(): PartSet | null {
+  const group = liveMulti();
+  if (group && !selection) return group;
+  if (!selection) return null;
+  const s = emptyParts();
+  s[partsKey[selection.kind]].add(selection.id);
+  return s;
+}
+
+/** Show a short message in the hint bar. */
+let flashTimer = 0;
+function flash(message: string) {
+  hintEl.textContent = message;
+  clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(refreshControls, 1800);
+}
+
+function copyParts(): boolean {
+  const parts = currentParts();
+  if (!parts) return false;
+  clipboard = extractParts(design, parts);
+  const n = clipboard.points.length + clipboard.links.length + clipboard.springs.length + clipboard.gears.length;
+  flash(`Copied ${n} part${n === 1 ? '' : 's'}. Press Ctrl/⌘+V to paste them at the cursor.`);
+  renderInspector();
+  return true;
+}
+
+/** Paste the copied parts centred on the cursor; they become the new selection, ready to drag. */
+function pasteClipboard() {
+  if (!clipboard || sim) return;
+  pushUndo();
+  const c = fragmentCentre(clipboard);
+  let off: Vec = [mouseWorld[0] - c[0], mouseWorld[1] - c[1]];
+  if (settings.snap) off = [snapValue(off[0]), snapValue(off[1])];
+  if (Math.hypot(off[0], off[1]) < 0.05) off = [0.2, -0.2]; // never exactly on top of the original
+  setTool('select');
+  selection = null;
+  multi = pasteParts(design, clipboard, off[0], off[1]);
+  designChanged();
+}
+
+/** Delete a group of parts, and the bars and springs attached to its joints. */
+function deleteParts(parts: PartSet) {
+  pushUndo();
+  design.links = design.links.filter((l) => !parts.links.has(l.id) && !parts.points.has(l.a) && !parts.points.has(l.b));
+  design.springs = design.springs.filter((l) => !parts.springs.has(l.id) && !parts.points.has(l.a) && !parts.points.has(l.b));
+  for (const g of design.gears.filter((x) => parts.gears.has(x.id) || parts.points.has(x.center))) removeGear(g.id);
+  design.points = design.points.filter((p) => !parts.points.has(p.id));
+  removeOrphans();
+  selection = null;
+  multi = null;
+  designChanged();
+}
+
 function deleteSelection(sel: Selection | null) {
   if (!sel) return;
   pushUndo();
@@ -765,8 +844,16 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     case 'select': {
       const hit = hitTest(w);
+      const group = liveMulti();
+      if (hit && group && inParts(group, hit)) {
+        // drag the whole group
+        dragging = { id: -1, pushed: false, group: { start: w, applied: [0, 0] } };
+        break;
+      }
+      multi = null;
       selection = hit;
       if (hit?.kind === 'point') dragging = { id: hit.id, pushed: false };
+      if (!hit) boxSel = { from: w, to: w, downAt: sp }; // empty space: start a selection box
       renderInspector();
       break;
     }
@@ -853,7 +940,22 @@ canvas.addEventListener('pointermove', (e) => {
       if (t) [drawing.to, drawing.mesh] = [t.to, t.mesh];
     }
   }
-  if (dragging) {
+  if (boxSel) boxSel.to = w;
+  if (dragging?.group && multi) {
+    const g = dragging.group;
+    let off: Vec = [w[0] - g.start[0], w[1] - g.start[1]];
+    if (settings.snap) off = [snapValue(off[0]), snapValue(off[1])]; // keeps grid-aligned parts on the grid
+    const [dx, dy] = [off[0] - g.applied[0], off[1] - g.applied[1]];
+    if (dx || dy) {
+      if (!dragging.pushed) {
+        pushUndo();
+        dragging.pushed = true;
+      }
+      for (const p of design.points) if (multi.points.has(p.id)) [p.x, p.y] = [p.x + dx, p.y + dy];
+      g.applied = off;
+      designChanged({ keepInspector: true });
+    }
+  } else if (dragging) {
     const p = design.points.find((pt) => pt.id === dragging!.id);
     if (p) {
       const [x, y] = snap(w);
@@ -884,6 +986,17 @@ canvas.addEventListener('pointerup', (e) => {
   if (dragging) {
     dragging = null;
     renderInspector();
+  }
+  if (boxSel) {
+    const box = boxSel;
+    boxSel = null;
+    if (Math.hypot(sp[0] - box.downAt[0], sp[1] - box.downAt[1]) > 4) {
+      const parts = partsInBox(design, box.from, toWorld(view, sp));
+      const only = partCount(parts) === 1 && parts.points.size === 1 ? [...parts.points][0] : null;
+      if (only !== null) selection = { kind: 'point', id: only };
+      else multi = partCount(parts) ? parts : null;
+      renderInspector();
+    }
   }
   grab = null;
   if (sim) sim.grab = null;
@@ -917,12 +1030,30 @@ window.addEventListener('keydown', (e) => {
     togglePlay();
   } else if (k === 'r') {
     stopSim();
+  } else if ((e.metaKey || e.ctrlKey) && (k === 'c' || k === 'x') && !sim) {
+    if (window.getSelection()?.toString()) return; // copying text from the page, e.g. the equations
+    if (!copyParts()) return;
+    e.preventDefault();
+    if (k === 'x') deleteParts(currentParts()!);
+  } else if ((e.metaKey || e.ctrlKey) && k === 'v' && !sim) {
+    e.preventDefault();
+    pasteClipboard();
+  } else if ((e.metaKey || e.ctrlKey) && k === 'a' && !sim) {
+    e.preventDefault();
+    setTool('select');
+    selection = null;
+    multi = allParts(design);
+    renderInspector();
   } else if (k === 'escape') {
     drawing = null;
     selection = null;
+    multi = null;
+    boxSel = null;
     renderInspector();
   } else if ((k === 'delete' || k === 'backspace') && !sim) {
-    deleteSelection(selection);
+    const group = liveMulti();
+    if (group && !selection) deleteParts(group);
+    else deleteSelection(selection);
   } else if (toolKeys[k] && !sim && !e.metaKey && !e.ctrlKey) {
     setTool(toolKeys[k]);
   }
@@ -933,6 +1064,7 @@ const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools but
 toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool as Tool)));
 
 function setTool(t: Tool) {
+  if (t !== 'select') multi = null;
   tool = t;
   angleFirst = null;
   joinFirst = null;
@@ -961,6 +1093,7 @@ clearBtn.addEventListener('click', () => {
   pushUndo();
   design = emptyDesign();
   selection = null;
+  multi = null;
   designChanged();
 });
 $<HTMLButtonElement>('#fit').addEventListener('click', fitView);
@@ -980,6 +1113,7 @@ presetSel.addEventListener('change', () => {
   pushUndo();
   design = p.build();
   selection = null;
+  multi = null;
   settings.gravity = !p.topView; // a top view lies in the horizontal plane
   $<HTMLInputElement>('#gravity').checked = settings.gravity;
   designChanged();
@@ -1043,7 +1177,7 @@ $<HTMLButtonElement>('#eom-toggle').addEventListener('click', (e) => {
 });
 
 const hints: Record<Tool, string> = {
-  select: 'Click a joint or bar to inspect it. Drag joints to reshape the mechanism.',
+  select: 'Drag joints to reshape, or drag on empty space to box-select. Ctrl/⌘+C and V copy and paste.',
   bar: 'Drag, or click twice, to draw a bar. Start or end on an existing joint to pin bars together.',
   rack: 'Drag to draw a rack (a toothed bar). Pass along a gear and it snaps tangent and meshes. Lock its joints on rails to make it slide.',
   spring: 'Drag, or click twice, to draw a spring between joints. An end in empty space is anchored to the ground.',
@@ -1081,6 +1215,30 @@ function refreshControls() {
 // ---- inspector ------------------------------------------------------------------
 function renderInspector() {
   const disabled = sim ? 'disabled' : '';
+  const group = sim ? null : liveMulti();
+  if (group && !selection) {
+    const n = partCount(group);
+    const rows = (
+      [
+        ['Joints', group.points.size],
+        ['Bars and racks', group.links.size],
+        ['Springs', group.springs.size],
+        ['Gears', group.gears.size],
+      ] as const
+    )
+      .filter(([, k]) => k)
+      .map(([name, k]) => `<div class="field"><span>${name}</span><span>${k}</span></div>`)
+      .join('');
+    inspectorEl.innerHTML = `
+      <h4>${n} parts selected</h4>
+      ${rows}
+      <div class="field"><span></span><span><button id="i-copy">Copy</button> <button id="i-paste" ${clipboard ? '' : 'disabled'}>Paste</button> <button id="i-delete">Delete</button></span></div>
+      <p class="muted">Drag any selected part to move them together. Ctrl/⌘+C copies them and Ctrl/⌘+V pastes a copy at the cursor, keeping the constraints among the copied parts (pins, rails, meshes, fixed angles, joins). Ctrl/⌘+X cuts, Delete removes, Esc deselects.</p>`;
+    inspectorEl.querySelector('#i-copy')!.addEventListener('click', copyParts);
+    inspectorEl.querySelector('#i-paste')!.addEventListener('click', pasteClipboard);
+    inspectorEl.querySelector('#i-delete')!.addEventListener('click', () => deleteParts(group));
+    return;
+  }
   const sel = selection;
   if (sel?.kind === 'point') {
     const p = design.points.find((pt) => pt.id === sel.id);
@@ -1404,6 +1562,8 @@ function frame(now: number) {
     grab: grabScene,
     simulating: !!sim,
     labels: settings.labels,
+    multi: sim ? null : liveMulti(),
+    box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
     trail: trail.n > 1 ? trail : null,
   });
   renderStatus();
