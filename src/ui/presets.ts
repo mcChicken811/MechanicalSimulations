@@ -189,6 +189,133 @@ function trapezoidSteering(turn = (20 * Math.PI) / 180): Design {
 }
 
 /**
+ * A human leg in its swing phase, seen from the side (walking to the right), hanging from a
+ * hip held still. Literature it is built from:
+ *
+ * - Knee: the crossed four-bar linkage of O'Connor, Shercliff, Biden & Goodfellow, "The geometry
+ *   of the knee in the sagittal plane", Proc. IMechE H 203 (1989) 223–233. The isometric fibres
+ *   of the cruciate ligaments and the two bones are the four links. Sagittal lengths: ACL
+ *   29.9 mm, PCL 32.2 mm, femoral link 12.8 mm, tibial link 30.5 mm, as tabulated by Hernaiz
+ *   Alzamora et al., "Anthropometry of the cruciate ligaments of the knee: MRI study of the
+ *   human four-bar linkage device", Eur. J. Anat. 21 (2017) 1–11. The flexion axis passes
+ *   where the two ligaments cross, so it rolls back as the knee bends.
+ * - At full extension the ACL rises at 45° from the tibial link, within the 40–55° range of
+ *   sagittal ACL angles measured on MRI. The tibial link slopes down 10° towards the back, as
+ *   the PCL inserts low on the back of the tibia.
+ * - Segments: Winter, "Biomechanics and Motor Control of Human Movement" (after Drillis &
+ *   Contini, 1966) for a 1.75 m, 70 kg adult. Thigh 0.245 H, shank 0.246 H, foot 0.152 H long,
+ *   ankle 0.039 H above the sole; masses thigh 0.100 M, shank 0.0465 M, foot 0.0145 M, centres
+ *   of mass 0.433 of the length from the hip and from the knee.
+ * - Swing: Mochon & McMahon, "Ballistic walking", J. Biomech. 13 (1980) 49–57, showed that the
+ *   swing leg moves much like a passive double pendulum under gravity, with the foot held at
+ *   the ankle. Here the foot is joined to the shank, and the leg starts at rest at toe-off,
+ *   hip extended by `hipExt` and knee bent by `kneeFlex`, then swings forward.
+ * - Extension stop: the posterior capsule is a tension-only spring, taut exactly at full
+ *   extension and slack in flexion, from above the back of the femoral condyles to the back of
+ *   the tibia. Its stiffness, 200 N/mm, is of the order of a knee ligament's (the ACL's is
+ *   about 240 N/mm, Woo et al., Am. J. Sports Med. 19 (1991) 217–225). Without it the
+ *   cruciate linkage alone would let the knee swing on into hyperextension.
+ *
+ * Each bone is a uniform bar plus a point mass at its upper end, sized so the bone's mass and
+ * centre of mass match Winter: a bar of 0.866 m puts the centre at 0.433 L, and its moment of
+ * inertia about the upper joint, m L²/3 · 0.866, is within 1% (thigh) and 4% (shank) of his.
+ * The femur and the tibia are each a long bar joined to the short link between the ligament
+ * attachments, so they show as one colour per bone.
+ */
+function humanLeg(hipExt = (15 * Math.PI) / 180, kneeFlex = (40 * Math.PI) / 180): Design {
+  const H = 1.75;
+  const M = 70;
+  const [thighL, shankL, footL, ankleH] = [0.245 * H, 0.246 * H, 0.152 * H, 0.039 * H];
+  const [thighM, shankM, footM] = [0.1 * M, 0.0465 * M, 0.0145 * M];
+  const [ACL, PCL, FEM, TIB] = [0.0299, 0.0322, 0.0128, 0.0305];
+  const deg = Math.PI / 180;
+
+  // Knee at full extension, tibia frame: tibial plateau through the origin, anterior +x.
+  const TA: P = [0.015, 0]; // ACL insertion on the tibia (anterior)
+  const TP: P = [TA[0] - TIB * Math.cos(10 * deg), TA[1] - TIB * Math.sin(10 * deg)]; // PCL insertion (posterior, lower)
+  const FA0: P = [TA[0] + ACL * Math.cos(Math.PI - 45 * deg), TA[1] + ACL * Math.sin(Math.PI - 45 * deg)]; // ACL on the femur
+  const front = (u: P, v: P) => (u[0] > v[0] ? u : v);
+  const FP0 = circleIntersect(FA0, FEM, TP, PCL, front); // PCL on the femur: anterior, so the ligaments cross
+  const hip0: P = [0, thighL];
+  const ankle: P = [0, -shankL];
+  const heel: P = [-0.05, -shankL - ankleH];
+  const toe: P = [heel[0] + footL, heel[1]];
+  const capF: P = [-0.035, 0.045]; // posterior capsule on the femur, above the condyles
+  const capT: P = [-0.03, -0.02]; // and on the back of the tibia
+  const capRest = Math.hypot(capF[0] - capT[0], capF[1] - capT[1]); // taut at full extension
+
+  // Bend the knee: swing the ACL back about its tibial insertion (it turns towards the tibia in
+  // flexion), close the linkage, and carry the femur along as a rigid body.
+  const femurAt = (delta: number) => {
+    const FA = rotateAbout(TA, FA0, delta);
+    const FP = circleIntersect(FA, FEM, TP, PCL, nearest(FP0));
+    const turn = Math.atan2(FP[1] - FA[1], FP[0] - FA[0]) - Math.atan2(FP0[1] - FA0[1], FP0[0] - FA0[0]);
+    const move = (p: P): P => {
+      const r = rotateAbout(FA0, p, turn);
+      return [r[0] + FA[0] - FA0[0], r[1] + FA[1] - FA0[1]];
+    };
+    return { FA, FP, turn, hip: move(hip0), capF: move(capF) };
+  };
+  let [lo, hi] = [0, Math.PI / 2];
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (femurAt(mid).turn < kneeFlex) lo = mid;
+    else hi = mid;
+  }
+  const knee = femurAt(lo);
+
+  // Pose the whole leg: hip at (0, 1), thigh tilted back by the hip extension.
+  const thighDir = Math.atan2(TA[1] - knee.hip[1], TA[0] - knee.hip[0]);
+  const spin = -Math.PI / 2 - hipExt - thighDir;
+  const place = (p: P): P => {
+    const r = rotateAbout(knee.hip, p, spin);
+    return [r[0] - knee.hip[0], r[1] - knee.hip[1] + 1];
+  };
+  const at = (id: number, p: P, mass = 0, kind: PointKind = 'free') => {
+    const [x, y] = place(p);
+    return pt(id, x, y, kind, mass);
+  };
+  return {
+    points: [
+      at(0, knee.hip, 0, 'fixed'), // hip, held still
+      at(1, knee.FA), // femoral attachment of the ACL
+      at(2, knee.FP), // femoral attachment of the PCL
+      at(3, TA, 0.134 * shankM), // tibial attachment of the ACL, carrying part of the shank's mass
+      at(4, TP), // tibial attachment of the PCL
+      at(5, ankle),
+      at(6, heel),
+      at(7, toe),
+      at(8, knee.capF), // posterior capsule attachments
+      at(9, capT),
+    ],
+    links: barsM([
+      [0, 1, 0.866 * thighM], // femur
+      [1, 2, 0.01], // femoral link (intercondylar roof)
+      [3, 1, 0.01], // ACL
+      [4, 2, 0.01], // PCL
+      [3, 4, 0.01], // tibial link (plateau)
+      [3, 5, 0.866 * shankM], // tibia
+      [5, 6, 0.25 * footM], // foot: ankle to heel
+      [6, 7, 0.75 * footM], // foot: sole
+      [1, 8, 0.01], // femur, to the capsule attachment
+      [4, 9, 0.01], // tibia, to the capsule attachment
+    ]),
+    springs: [{ id: 0, a: 8, b: 9, k: 2e5, rest: capRest, tensionOnly: true }], // posterior capsule
+    gears: [],
+    meshes: [],
+    rackMeshes: [],
+    joins: [
+      { id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 1 } }, // femur is one bone
+      { id: 1, a: { kind: 'link', id: 5 }, b: { kind: 'link', id: 4 } }, // tibia is one bone
+      { id: 2, a: { kind: 'link', id: 5 }, b: { kind: 'link', id: 6 } }, // ankle held, as in ballistic walking
+      { id: 3, a: { kind: 'link', id: 6 }, b: { kind: 'link', id: 7 } }, // foot is one piece
+      { id: 4, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 8 } },
+      { id: 5, a: { kind: 'link', id: 5 }, b: { kind: 'link', id: 9 } },
+    ],
+  };
+}
+
+/**
  * A rack railway (Riggenbach, Marsh, Abt…): on a slope too steep for wheel friction, the
  * car's cog wheels engage a toothed rack laid between the rails. Here two cog wheels joined
  * by the chassis roll on a 20° rack; the haulage cable is a spring to the top station.
@@ -328,6 +455,7 @@ export const presets: Preset[] = [
   { name: 'Rack-and-pinion steering (top view)', group: 'Famous mechanisms', build: () => steering(), topView: true },
   { name: 'Trapezoid (Ackermann) steering linkage (top view)', group: 'Famous mechanisms', build: () => trapezoidSteering(), topView: true },
   { name: 'Cog railway car on a rack incline', group: 'Famous mechanisms', build: () => cogRailway() },
+  { name: 'Human leg swing with a four-bar knee (O\'Connor 1989)', group: 'Famous mechanisms', build: () => humanLeg() },
   {
     // Watt's linkage locates an axle sideways: the midpoint of the centre link moves on a
     // nearly straight vertical line. The body (fixed here) carries the axle on two coil springs;

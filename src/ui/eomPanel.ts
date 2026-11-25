@@ -104,7 +104,11 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
     parts.push('<section><h3>Springs</h3>');
     parts.push(
       `<p class="note">Springs add no constraint. Each adds ${tex('V_j = \\tfrac{1}{2} k_j (\\ell_j - \\ell_{0,j})^2', false)} to the potential energy, ` +
-        `so equation ${tex('q_i', false)} gains ${tex('-\\partial V_j/\\partial q_i = -k_j\\left(1 - \\ell_{0,j}/\\ell_j\\right)\\tfrac{1}{2}\\,\\partial(\\ell_j^2)/\\partial q_i', false)}.</p>`,
+        `so equation ${tex('q_i', false)} gains ${tex('-\\partial V_j/\\partial q_i = -k_j\\left(1 - \\ell_{0,j}/\\ell_j\\right)\\tfrac{1}{2}\\,\\partial(\\ell_j^2)/\\partial q_i', false)}.` +
+        (d.springs.some((s) => s.tensionOnly)
+          ? ` A tension-only spring (a cable or ligament) acts only while stretched: its terms carry ${tex('\\max(0,\\,\\cdot)', false)}, and it is slack when ${tex('\\ell_j < \\ell_{0,j}', false)}.`
+          : '') +
+        `</p>`,
     );
     for (let j = 0; j < d.springs.length; j++) {
       parts.push(`<div class="eq">${tex(springLatex(d, j))}</div>`);

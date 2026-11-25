@@ -1008,7 +1008,7 @@ canvas.addEventListener(
     e.preventDefault();
     const sp = screenOf(e);
     const [wx, wy] = toWorld(view, sp);
-    view.scale = Math.min(900, Math.max(25, view.scale * Math.exp(-e.deltaY * 0.0015)));
+    view.scale = Math.min(20000, Math.max(25, view.scale * Math.exp(-e.deltaY * 0.0015)));
     view.ox = sp[0] - wx * view.scale;
     view.oy = sp[1] + wy * view.scale;
   },
@@ -1347,7 +1347,8 @@ function renderInspector() {
         <label class="field">Stiffness (N/m)<input id="i-k" type="number" min="0" step="5" value="${sp.k}"></label>
         <label class="field">Rest length (m)<input id="i-rest" type="number" min="0" step="0.05" value="${sp.rest}"></label>
         <div class="field"><span>Length now</span><span>${now.toFixed(3)} m <button id="i-rest-now" title="Set the rest length to the current length" ${disabled}>Use</button></span></div>
-        <p class="muted">Massless, no constraint. Adds V = ½k(ℓ − ℓ₀)².</p>`;
+        <label class="field">Tension only<span><input id="i-tension" type="checkbox" ${sp.tensionOnly ? 'checked' : ''}> slack when short</span></label>
+        <p class="muted">Massless, no constraint. Adds V = ½k(ℓ − ℓ₀)²${sp.tensionOnly ? ' only while stretched (ℓ > ℓ₀), like a cable, ligament or tendon; drawn dashed while slack' : ''}.</p>`;
       const apply = (fn: () => void) => {
         pushUndo();
         fn();
@@ -1360,6 +1361,13 @@ function renderInspector() {
       inspectorEl.querySelector<HTMLInputElement>('#i-rest')!.addEventListener('change', (e) =>
         apply(() => (sp.rest = Math.max(0, Number((e.target as HTMLInputElement).value) || 0))),
       );
+      inspectorEl.querySelector<HTMLInputElement>('#i-tension')!.addEventListener('change', (e) => {
+        apply(() => {
+          if ((e.target as HTMLInputElement).checked) sp.tensionOnly = true;
+          else delete sp.tensionOnly;
+        });
+        renderInspector();
+      });
       inspectorEl.querySelector<HTMLButtonElement>('#i-rest-now')!.addEventListener('click', () => {
         apply(() => (sp.rest = +linkLength(design, sp).toFixed(4)));
         renderInspector();

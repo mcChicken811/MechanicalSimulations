@@ -47,6 +47,11 @@ export interface DSpring {
   k: number;
   /** Rest length ℓ₀ (m). */
   rest: number;
+  /**
+   * A cable, ligament or tendon: it pulls when stretched beyond its rest length but goes
+   * slack, with no force and no energy, when shorter: V = ½ k max(0, ℓ − ℓ₀)².
+   */
+  tensionOnly?: boolean;
 }
 
 /**

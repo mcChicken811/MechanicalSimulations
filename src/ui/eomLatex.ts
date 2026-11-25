@@ -62,14 +62,20 @@ function springForceLatex(d: Derivation, s: Derivation['springs'][number], i: nu
   if (g.terms.size <= 3) {
     const neg = g.terms.size === 1 && [...g.terms.values()][0].coef < 0;
     const gg = neg ? g.scale(-1) : g;
-    const factor = `${neg ? '+' : '-'} ${s.kLatex}\\left(1 - \\frac{${s.restLatex}}{${s.lLatex}}\\right)`;
+    const inner = `1 - \\frac{${s.restLatex}}{${s.lLatex}}`;
+    const factor = `${neg ? '+' : '-'} ${s.kLatex}${s.tensionOnly ? `\\max\\left(0,\\ ${inner}\\right)` : `\\left(${inner}\\right)`}`;
     return [gg.constantValue() === 1 ? factor : `${factor}${productLatex(gg)}`];
   }
-  return [`- ${s.kLatex}\\left(${s.lLatex} - ${s.restLatex}\\right)\\frac{\\partial ${s.lLatex}}{\\partial ${d.coords[i].latex}}`];
+  const stretch = `${s.lLatex} - ${s.restLatex}`;
+  return [`- ${s.kLatex}${s.tensionOnly ? `\\max\\left(0,\\ ${stretch}\\right)` : `\\left(${stretch}\\right)`}\\frac{\\partial ${s.lLatex}}{\\partial ${d.coords[i].latex}}`];
 }
 
 function springEnergyParts(d: Derivation): string[] {
-  return d.springs.map((s) => `+ \\tfrac{1}{2} ${s.kLatex}\\left(${s.lLatex} - ${s.restLatex}\\right)^{2}`);
+  return d.springs.map((s) =>
+    s.tensionOnly
+      ? `+ \\tfrac{1}{2} ${s.kLatex}\\max\\left(0,\\ ${s.lLatex} - ${s.restLatex}\\right)^{2}`
+      : `+ \\tfrac{1}{2} ${s.kLatex}\\left(${s.lLatex} - ${s.restLatex}\\right)^{2}`,
+  );
 }
 
 /** Potential energy: gravity terms plus ½ k (ℓ − ℓ₀)² for every spring. */

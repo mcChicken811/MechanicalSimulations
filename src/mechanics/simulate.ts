@@ -22,7 +22,7 @@ export class NumericSystem {
   private readonly energyFn: CompiledFn;
   /** Per spring: [D, ½∂D/∂q_0, …, ½∂D/∂q_{n−1}]. */
   private readonly springFn: CompiledFn;
-  private readonly springParams: { k: number; rest: number }[];
+  private readonly springParams: { k: number; rest: number; tensionOnly: boolean }[];
   private readonly springBuf: Float64Array;
   private readonly gearAngleFn: CompiledFn;
   private readonly meshGradFn: CompiledFn;
@@ -58,7 +58,7 @@ export class NumericSystem {
     this.jacFn = compile(jac, inputs);
     this.energyFn = compile([d.T, d.V], inputs);
     const paramIndex = new Map(d.params.map((p, i) => [p.sym, i]));
-    this.springParams = d.springs.map((sp) => ({ k: paramIndex.get(sp.k)!, rest: paramIndex.get(sp.rest)! }));
+    this.springParams = d.springs.map((sp) => ({ k: paramIndex.get(sp.k)!, rest: paramIndex.get(sp.rest)!, tensionOnly: sp.tensionOnly }));
     this.springFn = compile(d.springs.flatMap((sp) => [sp.D, ...sp.grad]), inputs);
     this.springBuf = new Float64Array(d.springs.length * (this.n + 1));
     this.gearIds = d.gearAngles.map((ga) => ga.id);
@@ -94,12 +94,13 @@ export class NumericSystem {
       const o = j * (n + 1);
       const len = Math.sqrt(Math.max(buf[o], 0));
       const rest = params[sp.rest];
+      if (sp.tensionOnly && len < rest) return; // a slack cable pulls nothing
       // −∂/∂q ½k(ℓ − ℓ₀)² = −k (1 − ℓ₀/ℓ) · ½ ∂(ℓ²)/∂q
       const c = rest === 0 ? params[sp.k] : params[sp.k] * (1 - rest / Math.max(len, 1e-9));
       for (let i = 0; i < n; i++) out[i] -= c * buf[o + 1 + i];
     });
   }
-  /** Σ ½ k (ℓ − ℓ₀)² over all springs. */
+  /** Σ ½ k (ℓ − ℓ₀)² over all springs (tension-only ones only while stretched). */
   springEnergy(q: ArrayLike<number>): number {
     const { n, springParams, springBuf: buf, params } = this;
     if (!springParams.length) return 0;
@@ -107,7 +108,7 @@ export class NumericSystem {
     let V = 0;
     springParams.forEach((sp, j) => {
       const stretch = Math.sqrt(Math.max(buf[j * (n + 1)], 0)) - params[sp.rest];
-      V += 0.5 * params[sp.k] * stretch * stretch;
+      if (!sp.tensionOnly || stretch > 0) V += 0.5 * params[sp.k] * stretch * stretch;
     });
     return V;
   }

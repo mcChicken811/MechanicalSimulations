@@ -719,3 +719,53 @@ describe('joined bodies', () => {
     for (const [id, y0] of [[0, 0], [1, 0], [2, 0.4]] as const) expect(p.get(id)![1]).toBeCloseTo(y0 - 0.5 * G * 0.25, 6);
   });
 });
+
+describe('tension-only springs', () => {
+  it('pull nothing while slack, then act as springs once stretched', () => {
+    // a 1 kg point hanging on a cable of rest length 0.5 m, starting 0.2 m below its anchor
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 0, y: -0.2, kind: 'free', mass: 1 },
+      ],
+      links: [], gears: [], meshes: [], rackMeshes: [],
+      springs: [{ id: 0, a: 0, b: 1, k: 400, rest: 0.5, tensionOnly: true }],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    const s = new Simulator(new NumericSystem(der));
+    expect(s.energy().V).toBeCloseTo(1 * G * -0.2, 12); // slack: only gravity, no spring energy
+    for (let i = 0; i < 100; i++) s.step(1e-3);
+    // free fall for 0.1 s: y = −0.2 − ½ g t²
+    expect(s.jointPositions().get(1)![1]).toBeCloseTo(-0.2 - 0.5 * G * 0.01, 9);
+    // later it bounces on the cable and keeps its energy
+    const e0 = s.energy();
+    for (let i = 0; i < 3000; i++) s.step(1e-3);
+    const e1 = s.energy();
+    expect(Math.abs(e1.T + e1.V - e0.T - e0.V)).toBeLessThan(1e-3);
+    expect(s.jointPositions().get(1)![1]).toBeGreaterThan(-0.2 - 0.5 - 2 * G / 400 - 0.1); // held by the cable
+  });
+});
+
+describe('human leg preset', () => {
+  it('swings with two degrees of freedom and the knee stops near full extension', async () => {
+    const { presets } = await import('../ui/presets');
+    const design = presets.find((p) => p.name.startsWith('Human leg'))!.build();
+    const der = deriveEquations(design, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(2);
+    expect(der.warnings).toEqual([]);
+    const s = new Simulator(new NumericSystem(der));
+    const dir = (p: Map<number, [number, number]>, a: number, b: number) => Math.atan2(p.get(b)![1] - p.get(a)![1], p.get(b)![0] - p.get(a)![0]);
+    const pts = new Map(design.points.map((p) => [p.id, [p.x, p.y] as [number, number]]));
+    const flexion = (p: Map<number, [number, number]>) => dir(p, 0, 1) - dir(p, 3, 5);
+    // the drawn pose: 40° of knee flexion relative to the femur and tibia bars at full extension
+    const offset = flexion(pts) - (40 * Math.PI) / 180;
+    let least = Infinity;
+    for (let i = 0; i < 3000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      least = Math.min(least, flexion(s.jointPositions()) - offset);
+    }
+    expect((least * 180) / Math.PI).toBeGreaterThan(-10); // at most a few degrees of hyperextension
+    expect((least * 180) / Math.PI).toBeLessThan(10); // and it does straighten
+    expect(s.constraintError()).toBeLessThan(1e-9);
+  });
+});

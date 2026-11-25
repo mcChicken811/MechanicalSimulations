@@ -7,6 +7,14 @@
 - The equations are integrated with 4th-order Runge–Kutta (RK4) with a 1 ms step. While it runs, you can drag any part to pull on it.
 - Optional joint and gear friction turns energy into heat, which you see as joints glowing.
 
+The examples include a **human leg swing** built from the biomechanics literature:
+- **Knee:** O'Connor et al.'s crossed four-bar linkage of the cruciate ligaments (Proc. IMechE H, 1989), with its sagittal ligament and bone-link lengths as tabulated by Hernaiz Alzamora et al. (Eur. J. Anat., 2017).
+- **Segments:** Winter's lengths, masses and centres of mass for a 1.75 m, 70 kg adult.
+- **Swing:** passive, as in Mochon & McMahon's ballistic walking (J. Biomech., 1980).
+- **Extension stop:** the posterior capsule, modelled as a tension-only spring that goes taut at full extension.
+
+The sources and every assumption are listed in the comment above `humanLeg` in `src/ui/presets.ts`.
+
 The method behind the equation generation is described in [docs/eom-automation-report.md](docs/eom-automation-report.md).
 
 ## How to run
@@ -70,7 +78,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Select | V | Click a part to edit it in the inspector (bottom right). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
 | Draw bar | B | Drag, or click twice. Start or end on an existing joint to pin bars together. |
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Lock its joints on rails (X or Y) to make it slide. |
-| Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector. |
+| Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector, and tick **Tension only** for a cable, ligament or tendon that goes slack when short. |
 | Gears | G | Click a centre, then drag out the radius. If the gear touches another gear or a rack, it snaps into mesh with it. |
 | Pin to ground | F | Click a joint to fix it in place. Click again to free it. |
 | Lock x / Lock y | X / Y | The joint slides on a vertical or horizontal rail. |
@@ -97,11 +105,13 @@ Joining two bodies makes them one rigid body: they can no longer turn or move re
 
 A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes, fixed angles and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
 
-The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, and which bars have a fixed angle, and which bodies are joined.
+The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, which bars have a fixed angle, and which bodies are joined.
+
+A **tension-only** spring pulls when it is stretched beyond its rest length and goes slack when it is shorter, with no force and no energy: V = ½ k max(0, ℓ − ℓ₀)². While slack, it is drawn as a dashed line.
 
 Other controls:
 - Undo with Ctrl/Cmd+Z.
-- Right-drag or middle-drag to pan, and use the mouse wheel to zoom.
+- Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the grid and the scale bar follow.
 - **Fit view** re-centres the mechanism.
 
 ### Running it

@@ -94,6 +94,8 @@ export interface SpringTerm {
   D: Poly;
   /** ½ ∂D/∂q_i = ℓ ∂ℓ/∂q_i for each coordinate. */
   grad: Poly[];
+  /** Slack (no force) while shorter than its rest length. */
+  tensionOnly: boolean;
 }
 
 /** The bodies that meet at a joint, for joint friction. */
@@ -616,7 +618,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       continue;
     }
     const grad = qs.map((q) => trigSimplify(D.diff(q).scale(0.5)));
-    springTerms.push({ id: s.id, k, rest, kLatex: `k_{${lab}}`, lLatex: `\\ell_{${lab}}`, restLatex: `\\ell_{0,${lab}}`, dx, dy, D, grad });
+    springTerms.push({ id: s.id, k, rest, kLatex: `k_{${lab}}`, lLatex: `\\ell_{${lab}}`, restLatex: `\\ell_{0,${lab}}`, dx, dy, D, grad, tensionOnly: !!s.tensionOnly });
   }
 
   // ---- Lagrange's equations ---------------------------------------------------
