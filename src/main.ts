@@ -1,13 +1,13 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { cloneDesign, emptyDesign, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { cloneDesign, drawnAngle, emptyDesign, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { defaultFriction, NumericSystem, Simulator, type Heat } from './mechanics/simulate';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | PointKind | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'angle' | PointKind | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -63,6 +63,8 @@ function loadDesign(): Design | null {
     if (!Array.isArray(d.gears) || d.gears.some((g) => typeof (g as Partial<DGear>).center !== 'number')) d.gears = [];
     if (!Array.isArray(d.meshes)) d.meshes = [];
     d.meshes = d.meshes.filter((m) => d.gears.some((g) => g.id === m.a) && d.gears.some((g) => g.id === m.b));
+    if (!Array.isArray(d.angles)) d.angles = []; // saved before fixed angles existed
+    d.angles = d.angles.filter((a) => a.a !== a.b && d.links.some((l) => l.id === a.a) && d.links.some((l) => l.id === a.b));
     if (!Array.isArray(d.rackMeshes)) d.rackMeshes = [];
     d.rackMeshes = d.rackMeshes.filter((m) => d.gears.some((g) => g.id === m.gear) && d.links.some((l) => l.id === m.rack && l.rack));
     return d;
@@ -567,6 +569,7 @@ function sideOfRack(rack: DLink, g: DGear): 1 | -1 {
 }
 
 function removeOrphans() {
+  design.angles = anglesOf(design).filter((a) => design.links.some((l) => l.id === a.a) && design.links.some((l) => l.id === a.b));
   design.rackMeshes = design.rackMeshes.filter((m) => design.gears.some((g) => g.id === m.gear) && design.links.some((l) => l.id === m.rack && l.rack));
   design.points = design.points.filter(
     (p) =>
@@ -574,6 +577,22 @@ function removeOrphans() {
       design.gears.some((g) => g.center === p.id) ||
       p.mass > 0, // a particle, or a weight pinned on a gear
   );
+}
+
+// ---- fixed angles ---------------------------------------------------------------
+const anglesOf = (d: Design) => (d.angles ??= []);
+/** The first bar clicked with the Fix angle tool, waiting for the second. */
+let angleFirst: number | null = null;
+
+const findAngle = (a: number, b: number) => anglesOf(design).find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
+
+/** Fix the angle between two bars, or free it if it is already fixed. */
+function toggleAngle(a: number, b: number) {
+  pushUndo();
+  const found = findAngle(a, b);
+  if (found) design.angles = anglesOf(design).filter((x) => x !== found);
+  else anglesOf(design).push({ id: nextId(anglesOf(design)), a, b });
+  designChanged();
 }
 
 function deleteSelection(sel: Selection | null) {
@@ -695,6 +714,23 @@ canvas.addEventListener('pointerdown', (e) => {
     case 'mass':
       toggleMass(w);
       break;
+    case 'angle': {
+      const hit = linkAt(w);
+      if (!hit) {
+        angleFirst = null;
+        selection = null;
+      } else if (angleFirst === null || angleFirst === hit.id || !design.links.some((l) => l.id === angleFirst)) {
+        angleFirst = angleFirst === hit.id ? null : hit.id; // clicking the same bar again cancels
+        selection = angleFirst === null ? null : { kind: 'link', id: hit.id };
+      } else {
+        const first = angleFirst;
+        angleFirst = null;
+        selection = { kind: 'link', id: hit.id };
+        toggleAngle(first, hit.id);
+      }
+      refreshControls();
+      break;
+    }
     case 'lockGear': {
       const pid = pointAt(w);
       const g = (pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w);
@@ -788,7 +824,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', a: 'angle', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -819,6 +855,7 @@ toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.t
 
 function setTool(t: Tool) {
   tool = t;
+  angleFirst = null;
   drawing = null;
   refreshControls();
 }
@@ -938,6 +975,7 @@ const hints: Record<Tool, string> = {
   delete: 'Click a joint, bar, rack, spring or gear to delete it.',
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear to lock it so it cannot turn. Click again to unlock it.',
+  angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
 };
 
 function refreshControls() {
@@ -951,7 +989,9 @@ function refreshControls() {
   clearBtn.disabled = !!sim;
   hintEl.textContent = sim
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
-    : hints[tool];
+    : tool === 'angle' && angleFirst !== null
+      ? `Now click the bar whose angle to bar ${linkLabel(angleFirst)} should stay fixed (or bar ${linkLabel(angleFirst)} again to cancel).`
+      : hints[tool];
   renderInspector();
 }
 
@@ -993,11 +1033,24 @@ function renderInspector() {
     const l = design.links.find((x) => x.id === sel.id);
     if (l) {
       const meshed = design.rackMeshes.filter((m) => m.rack === l.id);
+      const locks = anglesOf(design).filter((x) => x.a === l.id || x.b === l.id);
+      const other = (x: { a: number; b: number }) => design.links.find((k) => k.id === (x.a === l.id ? x.b : x.a))!;
+      // bars sharing a joint with this one first, as those are the usual ones to weld
+      const lockable = design.links
+        .filter((k) => k.id !== l.id && !findAngle(l.id, k.id))
+        .sort((p, q) => Number(sharedJoint(l, q) !== null) - Number(sharedJoint(l, p) !== null) || p.id - q.id);
+      const anglesHtml = `
+        <div class="field"><span>Fixed angle to</span><span>${
+          locks.map((x) => `bar ${linkLabel(other(x).id)} (${drawnAngle(design, l, other(x)).toFixed(1)}°) <button data-unangle="${x.id}" title="Free this angle" ${disabled}>×</button>`).join('<br>') ||
+          '<span class="muted">none</span>'
+        }</span></div>
+        ${lockable.length ? `<label class="field">Fix angle to<select id="i-angle" ${disabled}><option value="">choose a bar…</option>${lockable.map((k) => `<option value="${k.id}">bar ${linkLabel(k.id)} (${pointLabel(k.a)}–${pointLabel(k.b)})</option>`).join('')}</select></label>` : ''}`;
       const candidates = design.gears.filter((g) => !meshed.some((m) => m.gear === g.id));
       inspectorEl.innerHTML = `
         <h4>${l.rack ? 'Rack' : 'Bar'} ${linkLabel(l.id)} <span class="muted">(${pointLabel(l.a)}–${pointLabel(l.b)})</span></h4>
         <label class="field">Mass (kg)<input id="i-mass" type="number" min="0.01" step="0.1" value="${l.mass}" ${disabled}></label>
         <div class="field"><span>Length</span><span>${linkLength(design, l).toFixed(3)} m</span></div>
+        ${anglesHtml}
         <label class="field">Toothed<span><input id="i-rack" type="checkbox" ${l.rack ? 'checked' : ''} ${disabled}> rack</span></label>
         ${
           l.rack
@@ -1020,6 +1073,17 @@ function renderInspector() {
         designChanged();
       });
       bindField('#i-side', (v) => (l.rack = v === '-1' ? -1 : 1));
+      inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unangle]').forEach((b) =>
+        b.addEventListener('click', () => {
+          pushUndo();
+          design.angles = anglesOf(design).filter((x) => x.id !== Number(b.dataset.unangle));
+          designChanged();
+        }),
+      );
+      inspectorEl.querySelector<HTMLSelectElement>('#i-angle')?.addEventListener('change', (e) => {
+        const k = Number((e.target as HTMLSelectElement).value);
+        if (design.links.some((x) => x.id === k)) toggleAngle(l.id, k);
+      });
       bindRackMeshButtons();
       inspectorEl.querySelector<HTMLSelectElement>('#i-rmesh')?.addEventListener('change', (e) => {
         const g = design.gears.find((x) => x.id === Number((e.target as HTMLSelectElement).value));

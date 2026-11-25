@@ -110,6 +110,7 @@ button.primary:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-block: 4px; /* compact, so all the tools and the controls below fit a laptop screen */
   border-color: transparent;
   background: transparent;
   text-align: left;

@@ -537,3 +537,84 @@ describe('trapezoid steering preset', () => {
     expect(sim.constraintError()).toBeLessThan(1e-9);
   });
 });
+
+describe('fixed angles', () => {
+  const run = (d: Design, seconds: number) => {
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    for (let i = 0; i < seconds * 1000; i++) sim.step(1e-3);
+    return sim;
+  };
+  const angleAt = (pos: Map<number, [number, number]>, c: number, a: number, b: number) => {
+    const [pc, pa, pb] = [pos.get(c)!, pos.get(a)!, pos.get(b)!];
+    return Math.atan2(pb[1] - pc[1], pb[0] - pc[0]) - Math.atan2(pa[1] - pc[1], pa[0] - pc[0]);
+  };
+
+  it('welds a double pendulum into one rigid L, moving like the same L braced by a massless bar', () => {
+    const welded = { ...doublePendulum(), angles: [{ id: 0, a: 0, b: 1 }] };
+    const d = deriveEquations(welded, { gravity: G });
+    expect(d.coords.length - d.constraints.length).toBe(1);
+    expect(d.warnings).toEqual([]);
+    const braced = doublePendulum();
+    braced.links.push({ id: 2, a: 0, b: 2, mass: 1e-6 });
+    const [s1, s2] = [run(welded, 2), run(braced, 2)];
+    const [p1, p2] = [s1.jointPositions(), s2.jointPositions()];
+    for (const id of [1, 2]) {
+      expect(p1.get(id)![0]).toBeCloseTo(p2.get(id)![0], 4);
+      expect(p1.get(id)![1]).toBeCloseTo(p2.get(id)![1], 4);
+    }
+    // the corner at joint 1 stays square
+    expect(Math.abs(Math.cos(angleAt(p1, 1, 0, 2)))).toBeLessThan(1e-9);
+  });
+
+  it('drops a weld the mechanism already holds, with a warning', () => {
+    const tri: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+        { id: 2, x: 0.5, y: -0.8, kind: 'free', mass: 0 },
+      ],
+      links: [
+        { id: 0, a: 0, b: 1, mass: 1 },
+        { id: 1, a: 1, b: 2, mass: 1 },
+        { id: 2, a: 2, b: 0, mass: 1 },
+      ],
+      springs: [], gears: [], meshes: [], rackMeshes: [],
+      angles: [{ id: 0, a: 0, b: 2 }],
+    };
+    const d = deriveEquations(tri, { gravity: G });
+    expect(d.coords.length - d.constraints.length).toBe(1);
+    expect(d.constraints.some((c) => c.fixedAngle)).toBe(false);
+    expect(d.warnings.some((w) => w.includes('already holds that angle'))).toBe(true);
+  });
+
+  it('holds the angle at a joint across a loop (five-bar becomes one degree of freedom)', () => {
+    const five: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 0.2, y: 0.6, kind: 'free', mass: 0 },
+        { id: 2, x: 0.9, y: 0.9, kind: 'free', mass: 0 },
+        { id: 3, x: 1.5, y: 0.5, kind: 'free', mass: 0 },
+        { id: 4, x: 1.6, y: 0, kind: 'fixed', mass: 0 },
+      ],
+      links: [
+        { id: 0, a: 0, b: 1, mass: 1 },
+        { id: 1, a: 1, b: 2, mass: 1 },
+        { id: 2, a: 2, b: 3, mass: 1 },
+        { id: 3, a: 3, b: 4, mass: 1 },
+      ],
+      springs: [], gears: [], meshes: [], rackMeshes: [],
+      angles: [{ id: 0, a: 1, b: 2 }],
+    };
+    const d = deriveEquations(five, { gravity: G });
+    expect(d.coords.length - d.constraints.length).toBe(1);
+    const sim = new Simulator(new NumericSystem(d));
+    const before = angleAt(sim.jointPositions(), 2, 1, 3);
+    const e0 = sim.energy();
+    for (let i = 0; i < 2000; i++) sim.step(1e-3);
+    const p = sim.jointPositions();
+    expect(Math.hypot(p.get(1)![0] - 0.2, p.get(1)![1] - 0.6)).toBeGreaterThan(0.01); // it moved
+    expect(angleAt(p, 2, 1, 3)).toBeCloseTo(before, 9);
+    const e1 = sim.energy();
+    expect(Math.abs(e1.T + e1.V - e0.T - e0.V)).toBeLessThan(1e-6);
+  });
+});
