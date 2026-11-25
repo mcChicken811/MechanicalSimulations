@@ -863,6 +863,8 @@ presetSel.addEventListener('change', () => {
   pushUndo();
   design = p.build();
   selection = null;
+  settings.gravity = !p.topView; // a top view lies in the horizontal plane
+  $<HTMLInputElement>('#gravity').checked = settings.gravity;
   designChanged();
   fitView();
 });

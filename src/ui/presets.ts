@@ -116,6 +116,79 @@ function steering(shift = 0.06): Design {
 }
 
 /**
+ * Trapezoid (Ackermann) steering of a beam axle, seen from above. The two steering arms
+ * point back and inwards, so with the tie rod they form a trapezoid. When the wheels turn,
+ * the inner wheel turns more than the outer one, and the lines of their axles meet close to
+ * the line of the rear axle (marked by its two hubs), so no tyre has to slip sideways. The steering box turns the pitman arm, and the drag link pushes the left arm.
+ * Two pre-tensioned springs on the pitman arm stand in for the self-centring of the tyres;
+ * the pitman arm starts turned by `turn`, so the wheels swing back and forth through centre.
+ */
+function trapezoidSteering(turn = (20 * Math.PI) / 180): Design {
+  const track = 0.8; // half the distance between the kingpins
+  const axleY = 0.3;
+  const rearY = axleY - 1.6; // wheelbase 1.6 m
+  const armLen = 0.18;
+  // Inward angle of the steering arms. The textbook rule (aim at the middle of the rear axle)
+  // gives atan(0.8 / 1.6) = 26.6° here, which corrects only about 70% of the way; 35° keeps
+  // the outer wheel within half a degree of true Ackermann from 10° to 30° of steering.
+  const beta = (35 * Math.PI) / 180;
+  const knuckle = (s: 1 | -1) => {
+    const K: P = [track * s, axleY];
+    const C0: P = [K[0] - s * armLen * Math.sin(beta), K[1] - armLen * Math.cos(beta)];
+    return { K, C0, W0: [K[0], axleY + 0.3] as P, B0: [K[0], axleY - 0.3] as P }; // tyre front and back
+  };
+  const L = knuckle(-1);
+  const R = knuckle(1);
+  // The drag link meets the left steering arm at a right angle (best leverage, far from a
+  // dead point); the pitman arm hangs straight down from the steering box, so it moves the
+  // drag link end mostly sideways.
+  const drag = 0.4;
+  const armDir: P = [(L.C0[0] - L.K[0]) / armLen, (L.C0[1] - L.K[1]) / armLen];
+  const Q0: P = [L.C0[0] - drag * armDir[1], L.C0[1] + drag * armDir[0]]; // pitman arm end, centred
+  const S: P = [Q0[0], Q0[1] + 0.2]; // steering box output shaft
+  const tie = Math.hypot(R.C0[0] - L.C0[0], R.C0[1] - L.C0[1]);
+  const angle = (K: P, C: P) => Math.atan2(C[1] - K[1], C[0] - K[0]);
+  // start turned: rotate the pitman arm, then close the drag link and the trapezoid
+  const Q = rotateAbout(S, Q0, turn);
+  const CL = circleIntersect(L.K, armLen, Q, drag, nearest(L.C0));
+  const CR = circleIntersect(R.K, armLen, CL, tie, nearest(R.C0));
+  const turnL = angle(L.K, CL) - angle(L.K, L.C0);
+  const turnR = angle(R.K, CR) - angle(R.K, R.C0);
+  const [WL, BL] = [rotateAbout(L.K, L.W0, turnL), rotateAbout(L.K, L.B0, turnL)];
+  const [WR, BR] = [rotateAbout(R.K, R.W0, turnR), rotateAbout(R.K, R.B0, turnR)];
+  return {
+    points: [
+      pt(0, ...L.K, 'fixed'), // left kingpin
+      pt(1, ...CL),
+      pt(2, ...WL),
+      pt(3, ...R.K, 'fixed'), // right kingpin
+      pt(4, ...CR),
+      pt(5, ...WR),
+      pt(6, ...S, 'fixed'), // steering box
+      pt(7, ...Q),
+      pt(8, Q0[0] - 0.4, Q0[1], 'fixed'), // spring anchors
+      pt(9, Q0[0] + 0.4, Q0[1], 'fixed'),
+      pt(10, -track, rearY, 'fixed'), // rear wheel hubs, for reference
+      pt(11, track, rearY, 'fixed'),
+      pt(12, ...BL), // backs of the front tyres
+      pt(13, ...BR),
+    ],
+    // each knuckle is rigid: steering arm, the two halves of the tyre, and two braces to the arm
+    links: barsM([
+      [0, 1, 0.3], [0, 2, 1], [0, 12, 1], [1, 2, 0.05], [1, 12, 0.05], // left knuckle
+      [3, 4, 0.3], [3, 5, 1], [3, 13, 1], [4, 5, 0.05], [4, 13, 0.05], // right knuckle
+      [1, 4, 0.4], // tie rod
+      [6, 7, 0.3], // pitman arm
+      [7, 1, 0.3], // drag link
+    ]),
+    springs: [spring(0, 7, 8, 60, 0.25), spring(1, 7, 9, 60, 0.25)],
+    gears: [],
+    meshes: [],
+    rackMeshes: [],
+  };
+}
+
+/**
  * A rack railway (Riggenbach, Marsh, Abt…): on a slope too steep for wheel friction, the
  * car's cog wheels engage a toothed rack laid between the rails. Here two cog wheels joined
  * by the chassis roll on a 20° rack; the haulage cable is a spring to the top station.
@@ -192,6 +265,8 @@ export interface Preset {
   name: string;
   group: 'Famous mechanisms' | 'Basics';
   build: () => Design;
+  /** Seen from above, so loading it turns gravity off (other presets turn it back on). */
+  topView?: boolean;
 }
 
 export const presets: Preset[] = [
@@ -250,7 +325,8 @@ export const presets: Preset[] = [
     }),
   },
   { name: 'Peaucellier–Lipkin straight-line linkage', group: 'Famous mechanisms', build: () => peaucellier() },
-  { name: 'Rack-and-pinion steering (top view)', group: 'Famous mechanisms', build: () => steering() },
+  { name: 'Rack-and-pinion steering (top view)', group: 'Famous mechanisms', build: () => steering(), topView: true },
+  { name: 'Trapezoid (Ackermann) steering linkage (top view)', group: 'Famous mechanisms', build: () => trapezoidSteering(), topView: true },
   { name: 'Cog railway car on a rack incline', group: 'Famous mechanisms', build: () => cogRailway() },
   {
     // Watt's linkage locates an axle sideways: the midpoint of the centre link moves on a

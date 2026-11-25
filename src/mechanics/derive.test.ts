@@ -510,3 +510,30 @@ describe('racks', () => {
     expect(e.T + e.V + sim.dissipated).toBeCloseTo(e0.T + e0.V, 6);
   });
 });
+
+describe('trapezoid steering preset', () => {
+  it('turns the inner wheel more, close to true Ackermann', async () => {
+    const { presets } = await import('../ui/presets');
+    const p = presets.find((x) => x.name.startsWith('Trapezoid'))!;
+    expect(p.topView).toBe(true);
+    const d = deriveEquations(p.build(), { gravity: 0 });
+    expect(d.coords.length - d.constraints.length).toBe(1);
+    expect(d.warnings).toEqual([]);
+    const sim = new Simulator(new NumericSystem(d));
+    // wheel angle from straight ahead: kingpins are joints 0 and 3, wheel fronts 2 and 5
+    const angle = (pos: Map<number, [number, number]>, k: number, w: number) => Math.atan2(pos.get(w)![0] - pos.get(k)![0], pos.get(w)![1] - pos.get(k)![1]);
+    let worst = 0;
+    for (let i = 0; i < 3000; i++) {
+      sim.step(1e-3);
+      const pos = sim.jointPositions();
+      const [a, b] = [Math.abs(angle(pos, 0, 2)), Math.abs(angle(pos, 3, 5))];
+      const inner = Math.max(a, b);
+      if (inner < 0.05) continue;
+      // kingpins 1.6 m apart, wheelbase 1.6 m: cot(outer) = cot(inner) + 1
+      const ideal = Math.atan(1 / (1 / Math.tan(inner) + 1));
+      worst = Math.max(worst, Math.abs(Math.min(a, b) - ideal));
+    }
+    expect(worst).toBeLessThan((1 * Math.PI) / 180);
+    expect(sim.constraintError()).toBeLessThan(1e-9);
+  });
+});
