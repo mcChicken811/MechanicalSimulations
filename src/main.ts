@@ -228,12 +228,16 @@ function startSim() {
   running = true;
   drawing = null;
   dragging = null;
-  if (selection?.kind !== 'spring') selection = null; // springs stay editable while running
+  // springs stay editable while running; a selected joint draws its path
+  if (selection?.kind !== 'spring' && selection?.kind !== 'point') selection = null;
+  resetTrail();
+  renderInspector();
   refreshControls();
 }
 
 function stopSim() {
   sim = null;
+  resetTrail();
   running = false;
   grab = null;
   simError = null;
@@ -271,6 +275,7 @@ function advance(seconds: number) {
   sim.damping = settings.damping;
   sim.grab = grab ? { ...grab, target: mouseWorld, stiffness: settings.stiffness } : null;
   for (let i = 0; i < steps; i++) {
+    if (trail.id >= 0) recordTrail(sim);
     if (!sim.step(H_STEP)) {
       running = false;
       simError = 'The solver hit a singular configuration (for example a fully stretched loop). Press Reset to edit.';
@@ -278,10 +283,43 @@ function advance(seconds: number) {
       break;
     }
   }
+  if (trail.id >= 0) recordTrail(sim);
   if (!grab) sim.appliedForce = [0, 0];
   simPositions = sim.jointPositions();
   simGearAngles = sim.gearAngles();
   simHeat = sim.heat();
+}
+
+// ---- path of the selected joint ---------------------------------------------------
+/** Points kept in the path; the oldest are dropped first. */
+const TRAIL_MAX = 24000;
+const trail = { id: -1, xs: new Float64Array(TRAIL_MAX), ys: new Float64Array(TRAIL_MAX), start: 0, n: 0 };
+
+/** The joint whose path is drawn: the selected joint, while a simulation exists. */
+function trailTarget(): number {
+  return sim && selection?.kind === 'point' && sim.sys.pointIndex.has(selection.id) ? selection.id : -1;
+}
+
+function resetTrail(id = -1) {
+  trail.id = id;
+  trail.start = 0;
+  trail.n = 0;
+  if (id >= 0 && sim) recordTrail(sim);
+}
+
+/** Append the joint's current position, skipping moves smaller than about a pixel. */
+function recordTrail(s: Simulator) {
+  const p = s.jointPosition(trail.id);
+  if (!p) return;
+  if (trail.n) {
+    const k = (trail.start + trail.n - 1) % TRAIL_MAX;
+    if (Math.hypot(p[0] - trail.xs[k], p[1] - trail.ys[k]) < 1.5 / view.scale) return;
+  }
+  const k = (trail.start + trail.n) % TRAIL_MAX;
+  trail.xs[k] = p[0];
+  trail.ys[k] = p[1];
+  if (trail.n < TRAIL_MAX) trail.n++;
+  else trail.start = (trail.start + 1) % TRAIL_MAX;
 }
 
 // ---- geometry helpers ----------------------------------------------------------
@@ -603,8 +641,11 @@ canvas.addEventListener('pointerdown', (e) => {
 
   if (sim) {
     const pid = pointAt(w, null, true);
-    if (pid !== null) grab = { a: pid, b: pid, s: 0 };
-    else {
+    if (pid !== null) {
+      grab = { a: pid, b: pid, s: 0 };
+      selection = { kind: 'point', id: pid }; // and draw its path
+      renderInspector();
+    } else {
       const l = linkAt(w);
       const link = l && design.links.find((x) => x.id === l.id);
       const spr = springAt(w);
@@ -1181,6 +1222,8 @@ let last = performance.now();
 function frame(now: number) {
   const dt = Math.min((now - last) / 1000, 1 / 20);
   last = now;
+  const target = trailTarget();
+  if (target !== trail.id) resetTrail(target);
   if (sim && running) advance(dt * settings.speed);
 
   let grabScene = null;
@@ -1202,6 +1245,7 @@ function frame(now: number) {
     grab: grabScene,
     simulating: !!sim,
     labels: settings.labels,
+    trail: trail.n > 1 ? trail : null,
   });
   renderStatus();
   requestAnimationFrame(frame);

@@ -496,6 +496,14 @@ export class Simulator {
   }
 
   /** Current joint positions keyed by joint id. */
+  /** Position of one joint (cheaper than jointPositions when only one is needed). */
+  jointPosition(id: number): [number, number] | null {
+    const i = this.sys.pointIndex.get(id);
+    if (i === undefined) return null;
+    this.sys.positions(this.q, this.pos);
+    return [this.pos[2 * i], this.pos[2 * i + 1]];
+  }
+
   jointPositions(): Map<number, [number, number]> {
     this.sys.positions(this.q, this.pos);
     const out = new Map<number, [number, number]>();

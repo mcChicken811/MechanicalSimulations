@@ -29,6 +29,8 @@ export interface Scene {
   simulating: boolean;
   /** Draw the names of joints, bars, racks, springs and gears, and mass tags (default true). */
   labels?: boolean;
+  /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
+  trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
 }
 
 /** Set from the scene at the start of every frame. */
@@ -98,9 +100,38 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     ctx.restore();
     dot(ctx, b, 5, '#fff', C.accent);
   }
+  if (s.trail) drawTrail(ctx, v, s.trail);
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
   if (s.grab) drawGrab(ctx, v, s.grab);
+}
+
+/** The selected joint's path; once it is long, its oldest part fades out. */
+function drawTrail(ctx: CanvasRenderingContext2D, v: View, t: NonNullable<Scene['trail']>) {
+  const max = t.xs.length;
+  const last = t.n - 1;
+  const BANDS = 24;
+  const per = Math.ceil(last / BANDS);
+  const fadeLen = max / 4; // the oldest quarter of a full buffer fades out
+  ctx.save();
+  ctx.strokeStyle = C.accent;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  for (let i0 = 0; i0 < last; i0 += per) {
+    const i1 = Math.min(last, i0 + per);
+    // fade by how soon a point is dropped from the buffer: short paths stay solid
+    ctx.globalAlpha = 0.1 + 0.75 * Math.min(1, (i1 + max - t.n) / fadeLen);
+    ctx.beginPath();
+    for (let i = i0; i <= i1; i++) {
+      const k = (t.start + i) % max;
+      const x = v.ox + t.xs[k] * v.scale;
+      const y = v.oy - t.ys[k] * v.scale;
+      if (i === i0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function line(ctx: CanvasRenderingContext2D, a: Vec, b: Vec) {
