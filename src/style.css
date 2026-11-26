@@ -60,7 +60,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 0;
+  padding: 6px 0;
   border-top: 1px solid var(--line);
 }
 
@@ -151,7 +151,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 2px;
+  padding: 1px 2px;
 }
 
 .settings label.slider {
@@ -161,6 +161,18 @@ kbd {
 .settings label.slider input {
   width: 100%;
   accent-color: var(--primary);
+}
+
+.settings label.numrow {
+  justify-content: space-between;
+}
+
+.settings label.numrow input {
+  width: 84px;
+  font: inherit;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
 }
 
 .settings output {

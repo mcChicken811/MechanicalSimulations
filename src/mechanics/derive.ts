@@ -128,6 +128,8 @@ export interface Derivation {
   params: Parameter[];
   /** Rotation angle φ of every gear (zero for a locked gear), for drawing. */
   gearAngles: { id: number; angle: Poly }[];
+  /** Centre joint and pitch radius of every gear in the mechanism, for ground contact. */
+  gearDisks: { id: number; center: number; radius: number }[];
   /** Symbolic position of every active joint. */
   positions: Map<number, [Poly, Poly]>;
   T: Poly;
@@ -698,6 +700,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     constraints: kept,
     springs: springTerms,
     gearAngles: [...gearAngle].map(([id, angle]) => ({ id, angle })),
+    gearDisks: gears.filter((gr) => gearAngle.has(gr.id)).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),
     phiQ,
     gamma,
     activePoints: active.map((pt) => pt.id),

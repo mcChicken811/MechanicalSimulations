@@ -127,6 +127,20 @@ export function bodyName(d: Design, ref: DBodyRef): string {
   return `${d.links.find((l) => l.id === ref.id)?.rack ? 'rack' : 'bar'} ${linkLabel(ref.id)}`;
 }
 
+/**
+ * A flat ground the mechanism can land on: the line through (0, y), rising at `slope`
+ * degrees to the right. Joints, bar ends and gear rims cannot pass below it.
+ */
+export interface DGround {
+  y: number;
+  /** Degrees; positive rises to the right. */
+  slope: number;
+  /** Coefficient of restitution of impacts, 0 (dead stop) to 1 (perfect bounce). */
+  restitution: number;
+  /** Coulomb friction coefficient μ. */
+  friction: number;
+}
+
 export interface Design {
   points: DPoint[];
   links: DLink[];
@@ -138,6 +152,8 @@ export interface Design {
   angles?: DAngle[];
   /** Bodies joined into one (absent in designs saved before joins existed). */
   joins?: DJoin[];
+  /** Ground contact; absent when there is no ground. */
+  ground?: DGround;
 }
 
 export function emptyDesign(): Design {
@@ -212,5 +228,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground } } : {}) };
 }

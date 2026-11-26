@@ -2,7 +2,7 @@ import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
 import { bodyName, cloneDesign, drawnAngle, emptyDesign, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
-import { defaultFriction, NumericSystem, Simulator, type Heat } from './mechanics/simulate';
+import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
@@ -55,7 +55,7 @@ let grab: { a: number; b: number; s: number; gear?: { id: number; u: number; v: 
 let mouseWorld: Vec = [0, 0];
 const undoStack: Design[] = [];
 const LABELS_KEY = 'linkage-lab-labels';
-const settings = { gravity: true, snap: true, labels: localStorage.getItem(LABELS_KEY) !== 'off', damping: 0, stiffness: 80, speed: 1 };
+const settings = { gravity: true, snap: true, labels: localStorage.getItem(LABELS_KEY) !== 'off', follow: false, damping: 0, stiffness: 80, speed: 1 };
 const friction = defaultFriction();
 let simHeat: Heat = { joints: new Map(), meshes: new Map(), racks: new Map() };
 
@@ -71,6 +71,7 @@ function loadDesign(): Design | null {
     if (!Array.isArray(d.gears) || d.gears.some((g) => typeof (g as Partial<DGear>).center !== 'number')) d.gears = [];
     if (!Array.isArray(d.meshes)) d.meshes = [];
     d.meshes = d.meshes.filter((m) => d.gears.some((g) => g.id === m.a) && d.gears.some((g) => g.id === m.b));
+    if (d.ground && (typeof d.ground.y !== 'number' || typeof d.ground.slope !== 'number')) delete d.ground;
     if (!Array.isArray(d.angles)) d.angles = []; // saved before fixed angles existed
     d.angles = d.angles.filter((a) => a.a !== a.b && d.links.some((l) => l.id === a.a) && d.links.some((l) => l.id === a.b));
     if (!Array.isArray(d.joins)) d.joins = []; // saved before joins existed
@@ -93,6 +94,7 @@ function undo() {
   design = undoStack.pop()!;
   selection = null;
   multi = null;
+  syncGroundUI();
   designChanged();
 }
 
@@ -205,7 +207,7 @@ function derive() {
 /** Typeset the current derivation into the panel; the bar runs from `from` to 100 %. */
 function typeset(token: number, from: number) {
   runSliced(
-    eomPanelSteps(derivation, deriveError, friction.enabled),
+    eomPanelSteps(derivation, deriveError, friction.enabled, groundNote()),
     token,
     (f) => showProgress(from + (1 - from) * f, 'Typesetting the equations'),
     (html) => {
@@ -234,6 +236,8 @@ function startSim() {
   sim = new Simulator(new NumericSystem(derivation));
   sim.damping = settings.damping;
   sim.friction = friction;
+  sim.ground = groundSettings();
+  if (sim.ground && belowGround()) flash('Some joints start below the ground, so it pushes them up.');
   simPositions = sim.jointPositions();
   simHeat = sim.heat();
   simGearAngles = sim.gearAngles();
@@ -275,6 +279,7 @@ function rebuildSim() {
   next.t = sim.t;
   next.damping = settings.damping;
   next.friction = friction;
+  next.ground = groundSettings();
   // same topology (only parameters changed), so the heat carries over
   if (next.jointHeat.length === sim.jointHeat.length && next.meshHeat.length === sim.meshHeat.length) {
     next.jointHeat.set(sim.jointHeat);
@@ -667,6 +672,81 @@ function bindJoinControls(ref: DBodyRef) {
     if (id !== undefined && bodyExists(design, target)) toggleJoin(ref, target);
   });
 }
+
+// ---- ground contact ----------------------------------------------------------------
+/** The design's ground in the simulator's units (slope in radians), or null. */
+function groundSettings(): GroundSettings | null {
+  const g = design.ground;
+  return g ? { y: g.y, slope: (g.slope * Math.PI) / 180, restitution: g.restitution, friction: g.friction } : null;
+}
+
+function groundNote() {
+  const g = design.ground;
+  return g ? { ...g, zeta: dampingRatio(g.restitution), omega: CONTACT_OMEGA } : null;
+}
+
+/** Whether any joint of the design lies below its ground. */
+function belowGround(): boolean {
+  const g = design.ground;
+  if (!g) return false;
+  const t = Math.tan((g.slope * Math.PI) / 180);
+  return design.points.some((p) => p.y < g.y + t * p.x - 1e-3);
+}
+
+const groundBox = $<HTMLInputElement>('#ground');
+const groundPanel = $<HTMLDivElement>('#ground-settings');
+const groundInputs = {
+  y: $<HTMLInputElement>('#ground-y'),
+  slope: $<HTMLInputElement>('#ground-slope'),
+  restitution: $<HTMLInputElement>('#ground-e'),
+  friction: $<HTMLInputElement>('#ground-mu'),
+};
+const groundOut = { restitution: $<HTMLOutputElement>('#ground-e-out'), friction: $<HTMLOutputElement>('#ground-mu-out') };
+
+/** Show the design's ground in the settings panel. */
+function syncGroundUI() {
+  const g = design.ground;
+  groundBox.checked = !!g;
+  groundPanel.hidden = !g;
+  if (!g) return;
+  groundInputs.y.value = String(g.y);
+  groundInputs.slope.value = String(g.slope);
+  groundInputs.restitution.value = String(g.restitution);
+  groundInputs.friction.value = String(g.friction);
+  groundOut.restitution.textContent = g.restitution.toFixed(2);
+  groundOut.friction.textContent = g.friction.toFixed(2);
+}
+
+/** The ground changed: save it, hand it to a running simulation, and redescribe it. */
+function groundChanged() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(design));
+  if (sim) sim.ground = groundSettings();
+  syncGroundUI();
+  retypeset();
+}
+
+groundBox.addEventListener('change', () => {
+  pushUndo();
+  if (groundBox.checked) {
+    // just below the lowest joint or gear rim, so nothing starts in the ground
+    const lows = [...design.points.map((p) => p.y), ...design.gears.map((g) => (design.points.find((p) => p.id === g.center)?.y ?? 0) - g.radius)];
+    const y = lows.length ? Math.floor((Math.min(...lows) - 5e-4) * 100) / 100 : 0;
+    design.ground = { y, slope: 0, restitution: 0.3, friction: 0.8 };
+  } else delete design.ground;
+  groundChanged();
+});
+for (const key of ['y', 'slope', 'restitution', 'friction'] as const) {
+  groundInputs[key].addEventListener('input', () => {
+    const g = design.ground;
+    const v = Number(groundInputs[key].value);
+    if (!g || !Number.isFinite(v)) return;
+    g[key] = key === 'slope' ? Math.max(-45, Math.min(45, v)) : key === 'y' ? v : Math.max(0, v);
+    if (sim) sim.ground = groundSettings();
+    if (key === 'restitution' || key === 'friction') groundOut[key].textContent = g[key].toFixed(2);
+  });
+  groundInputs[key].addEventListener('change', groundChanged);
+}
+syncGroundUI();
 
 // ---- groups: box selection, copy and paste ------------------------------------------
 const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const;
@@ -1094,6 +1174,7 @@ clearBtn.addEventListener('click', () => {
   design = emptyDesign();
   selection = null;
   multi = null;
+  syncGroundUI();
   designChanged();
 });
 $<HTMLButtonElement>('#fit').addEventListener('click', fitView);
@@ -1114,8 +1195,10 @@ presetSel.addEventListener('change', () => {
   design = p.build();
   selection = null;
   multi = null;
+  syncGroundUI();
   settings.gravity = !p.topView; // a top view lies in the horizontal plane
   $<HTMLInputElement>('#gravity').checked = settings.gravity;
+  settings.follow = followBox.checked = !!p.follow; // walkers leave the view otherwise
   const drag = $<HTMLInputElement>('#damping');
   drag.value = String(p.drag ?? 0); // tissue damping for the presets that ask for it
   drag.dispatchEvent(new Event('input'));
@@ -1172,6 +1255,24 @@ labelsBox.addEventListener('change', () => {
   settings.labels = labelsBox.checked;
   localStorage.setItem(LABELS_KEY, settings.labels ? 'on' : 'off'); // remembered between visits
 });
+const followBox = $<HTMLInputElement>('#follow');
+followBox.addEventListener('change', () => (settings.follow = followBox.checked));
+
+/** Pan the view smoothly so the moving joints' centre stays in the middle of the free canvas. */
+function followMechanism() {
+  let [cx, cy, k] = [0, 0, 0];
+  for (const id of sim!.sys.derivation.joints.filter((j) => !j.ground).map((j) => j.id)) {
+    const p = simPositions.get(id);
+    if (p) [cx, cy, k] = [cx + p[0], cy + p[1], k + 1];
+  }
+  if (!k) return;
+  const left = 240;
+  const right = W > 900 ? W - 530 : W - 20;
+  const tx = (left + right) / 2 - (cx / k) * view.scale;
+  const ty = H / 2 + (cy / k) * view.scale;
+  view.ox += (tx - view.ox) * 0.08;
+  view.oy += (ty - view.oy) * 0.08;
+}
 
 const eomWrap = $<HTMLElement>('#eom-wrap');
 $<HTMLButtonElement>('#eom-toggle').addEventListener('click', (e) => {
@@ -1508,6 +1609,7 @@ function renderStatus() {
     `${running ? 'Running' : 'Paused'} · t = <b>${sim.t.toFixed(2)} s</b> · E = T + V = <b>${(T + V).toFixed(4)} J</b>` +
     (sim.sys.nc ? ` · max|Φ| = ${phi.toExponential(1)}` : '') +
     (grab ? ` · |F| = <b>${F.toFixed(1)} N</b>` : '') +
+    (sim.ground ? ` · ${sim.contactCount()} touching the ground` : '') +
     (friction.enabled || sim.dissipated > 0 ? heatStatus(sim) : '') +
     ` · RK4, h = 1 ms`;
 }
@@ -1551,7 +1653,10 @@ function frame(now: number) {
   last = now;
   const target = trailTarget();
   if (target !== trail.id) resetTrail(target);
-  if (sim && running) advance(dt * settings.speed);
+  if (sim && running) {
+    advance(dt * settings.speed);
+    if (settings.follow) followMechanism();
+  }
 
   let grabScene = null;
   grabPull = [0, 0];
@@ -1576,6 +1681,7 @@ function frame(now: number) {
     grab: grabScene,
     simulating: !!sim,
     labels: settings.labels,
+    ground: design.ground ? { y: design.ground.y, slope: design.ground.slope } : null,
     multi: sim ? null : liveMulti(),
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
     trail: trail.n > 1 ? trail : null,

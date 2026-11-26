@@ -179,6 +179,92 @@ export interface Heat {
   racks: Map<number, number>;
 }
 
+/**
+ * Ground contact, as compliant (penalty) contact. Every joint and the lowest point of every
+ * gear rim is checked against the ground line; a bar cannot reach below the ground before one
+ * of its ends does, so its joints cover it. A point that has sunk by δ is pushed out along the
+ * ground normal n and held by friction along the ground t, through Q = Jᵀ(F_n n + F_t t):
+ *   F_n = max(0, k δ + c δ̇),   k = m ω²,   c = 2 ζ m ω,   ζ set from the restitution e
+ *   |F_t| ≤ μ F_n: a stiff spring-damper to where the point first touched (static friction),
+ *          sliding along at the Coulomb limit when it is exceeded.
+ * m is the effective mass the contact pushes against, 1 / (gᵀ A g) with g = Jᵀn and A the
+ * constrained inverse inertia (from the KKT matrix), found once when the contact starts. So
+ * every contact responds at the same rate ω, whatever it carries: a 5 g fingertip and a 70 kg
+ * leg are equally stable with the 1 ms RK4 step, and anything resting sinks only g/ω² (MuJoCo
+ * sets contact softness the same way, as a time constant). The coefficient of restitution e
+ * sets the damping ratio ζ, calibrated for the clamped force (see clampedRestitution).
+ */
+export interface GroundSettings {
+  /** Height of the ground line at x = 0 (m). */
+  y: number;
+  /** Slope (rad); positive rises to the right. */
+  slope: number;
+  restitution: number;
+  friction: number;
+}
+
+/** Response rate ω of every contact (rad/s): resting objects sink g/ω² ≈ 0.16 mm. */
+export const CONTACT_OMEGA = 250;
+
+/** Largest contact damping ratio: 2ζω h stays within RK4's stable range at the 1 ms step. */
+const MAX_ZETA = 4;
+
+/**
+ * Restitution of the contact spring-damper with damping ratio ζ. Its force is clamped at zero
+ * (the ground cannot pull), so the point leaves while still slightly below the ground and a
+ * little faster than the textbook e = exp(−ζπ/√(1−ζ²)): even ζ = 1 bounces back at 0.135.
+ * Found by integrating the unit contact δ'' = −max(0, δ + 2ζδ') from δ' = 1 until δ = 0.
+ */
+function clampedRestitution(zeta: number): number {
+  const dt = 2e-3;
+  const acc = (d: number, v: number) => -Math.max(0, d + 2 * zeta * v);
+  let [d, v] = [0, 1];
+  for (let i = 0; i < 20000; i++) {
+    const k1v = acc(d, v);
+    const k2v = acc(d + (dt / 2) * v, v + (dt / 2) * k1v);
+    const k3v = acc(d + (dt / 2) * (v + (dt / 2) * k1v), v + (dt / 2) * k2v);
+    const k4v = acc(d + dt * (v + (dt / 2) * k2v), v + dt * k3v);
+    d += (dt / 6) * (v + 2 * (v + (dt / 2) * k1v) + 2 * (v + (dt / 2) * k2v) + (v + dt * k3v));
+    v += (dt / 6) * (k1v + 2 * k2v + 2 * k3v + k4v);
+    if (d <= 0) return Math.max(0, -v);
+  }
+  return 0;
+}
+
+const zetaCache = new Map<number, number>();
+/** The damping ratio whose clamped contact has restitution e (e below about 0.014 gives ζ = 4). */
+export function dampingRatio(e: number): number {
+  const key = Math.round(Math.min(Math.max(e, 0), 1) * 1000) / 1000;
+  let z = zetaCache.get(key);
+  if (z === undefined) {
+    let [lo, hi] = [0, MAX_ZETA];
+    if (clampedRestitution(hi) >= key) z = hi;
+    else {
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (clampedRestitution(mid) > key) lo = mid;
+        else hi = mid;
+      }
+      z = (lo + hi) / 2;
+    }
+    zetaCache.set(key, z);
+  }
+  return z;
+}
+
+/** A touching point: the effective masses along n and t, and where static friction holds it. */
+interface ContactState {
+  mn: number;
+  mt: number;
+  anchor: number | null;
+}
+
+/** Something that can touch the ground: a joint, or the bottom of a gear's rim. */
+interface ContactCandidate {
+  point: number;
+  gear?: { phi: number; radius: number };
+}
+
 export const defaultFriction = (): FrictionSettings => ({ enabled: false, pin: 0.02, rail: 0.5, mesh: 0.5, coolingTime: 4, heatCapacity: 0.02 });
 
 export class Simulator {
@@ -194,8 +280,10 @@ export class Simulator {
   /** Temperature rise (K) of every joint (derivation.joints order) and mesh (derivation.meshes order). */
   readonly jointHeat: Float64Array;
   readonly meshHeat: Float64Array;
-  /** Total energy turned into heat by friction (J). */
+  /** Total energy turned into heat by friction and by ground impacts (J). */
   dissipated = 0;
+  /** Ground contact, or null for none. */
+  ground: GroundSettings | null = null;
   /** Current friction power (W) of every joint then every mesh. */
   readonly power: Float64Array;
   private readonly stagePower: Float64Array[];
@@ -215,6 +303,14 @@ export class Simulator {
   private readonly jac: Float64Array;
   private readonly JJt: Float64Array;
   private readonly mu: Float64Array;
+  private readonly candidates: ContactCandidate[];
+  private readonly contacts: (ContactState | null)[];
+  private readonly Jn: Float64Array;
+  private readonly Jt: Float64Array;
+  private readonly K2: Float64Array;
+  private readonly r2: Float64Array;
+  /** Ground-contact power dissipated at each RK4 stage (W). */
+  private readonly stageContactPower = new Float64Array(4);
 
   constructor(readonly sys: NumericSystem) {
     const { n, nc } = sys;
@@ -242,6 +338,15 @@ export class Simulator {
     const maxBodies = d.joints.reduce((m, j) => Math.max(m, j.bars.length + j.gears.length + 1), 1);
     this.bodyGrad = Array.from({ length: maxBodies }, () => new Float64Array(n));
     this.meshBuf = new Float64Array(d.meshes.length * n);
+    this.candidates = [
+      ...[...sys.pointIndex.values()].map((point) => ({ point })),
+      ...d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, gear: { phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius } })),
+    ];
+    this.contacts = this.candidates.map(() => null);
+    this.Jn = new Float64Array(n);
+    this.Jt = new Float64Array(n);
+    this.K2 = new Float64Array((n + nc) * (n + nc));
+    this.r2 = new Float64Array(n + nc);
   }
 
   /** q̈ from M q̈ = f + Q, Φ_q q̈ = γ (Baumgarte-stabilised), solved as one KKT system. */
@@ -257,6 +362,7 @@ export class Simulator {
       f[i] -= this.damping * s;
     }
     this.applyGrab(q, qd, f);
+    this.applyContacts(q, qd, f, stage);
 
     if (this.solveKKT(q, qd, f, 1e-10) || this.solveKKT(q, qd, f, 1e-6)) {
       for (let i = 0; i < n; i++) out[i] = rhs[i];
@@ -362,6 +468,174 @@ export class Simulator {
     }
   }
 
+  /**
+   * Fill Jn, Jt (rows of ∂(contact point)/∂q along the ground normal and tangent) for one
+   * candidate, with pos and jac already filled, and return its gap above the ground and its
+   * position along the ground.
+   */
+  private contactGeometry(c: ContactCandidate, g: GroundSettings): { gap: number; along: number } {
+    const { n, pos, jac, Jn, Jt } = this;
+    const [nx, ny] = [-Math.sin(g.slope), Math.cos(g.slope)];
+    const [tx, ty] = [Math.cos(g.slope), Math.sin(g.slope)];
+    const i = c.point;
+    let px = pos[2 * i];
+    let py = pos[2 * i + 1];
+    for (let m = 0; m < n; m++) {
+      const jx = jac[i * 2 * n + m];
+      const jy = jac[i * 2 * n + n + m];
+      Jn[m] = nx * jx + ny * jy;
+      Jt[m] = tx * jx + ty * jy;
+    }
+    if (c.gear) {
+      // the lowest point of the rim, r = −R n from the centre, moves with the disk:
+      // ṙ_p = ṙ_c + φ̇ k × r and k × r = R t, so φ̇ adds R φ̇ along the ground only
+      const R = c.gear.radius;
+      px -= R * nx;
+      py -= R * ny;
+      if (c.gear.phi >= 0) Jt[c.gear.phi] += R;
+    }
+    return { gap: nx * px + ny * (py - g.y), along: tx * px + ty * (py - g.y) };
+  }
+
+  /** gᵀ A g: how readily the mechanism moves along g, A being the constrained inverse inertia. */
+  private mobility(q: Float64Array, g: Float64Array): number {
+    const { n, nc, sys, M, K2: K, r2: r, PhiQ } = this;
+    const N = n + nc;
+    K.fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) K[i * N + j] = M[i * n + j];
+      r[i] = g[i];
+    }
+    if (nc > 0) {
+      sys.phiQ(q, PhiQ);
+      for (let k = 0; k < nc; k++) {
+        for (let j = 0; j < n; j++) K[(n + k) * N + j] = K[j * N + n + k] = PhiQ[k * n + j];
+        K[(n + k) * N + n + k] = -1e-10;
+        r[n + k] = 0;
+      }
+    }
+    if (!solveInPlace(K, r, N)) return 0;
+    let w = 0;
+    for (let i = 0; i < n; i++) w += g[i] * r[i];
+    return w;
+  }
+
+
+  /** Normal and friction force of one touching candidate; also returns the power it dissipates. */
+  private contactForce(st: ContactState, g: GroundSettings, delta: number, vn: number, vt: number, along: number, rolling: boolean) {
+    const w = CONTACT_OMEGA;
+    const zeta = dampingRatio(g.restitution);
+    const kn = st.mn * w * w;
+    let Fn = kn * delta - 2 * zeta * st.mn * w * vn; // vn = −δ̇
+    if (Fn < 0) Fn = 0;
+    let Ft = 0;
+    if (g.friction > 0 && Fn > 0) {
+      const kt = st.mt * w * w;
+      const ct = 2 * st.mt * w;
+      Ft = !rolling && st.anchor !== null ? -kt * (along - st.anchor) - ct * vt : -ct * vt;
+      const lim = g.friction * Fn;
+      if (Ft > lim) Ft = lim;
+      else if (Ft < -lim) Ft = -lim;
+    }
+    // power lost: what the normal spring-damper does beyond the stored ½kδ², and all friction work
+    const loss = vn * (kn * delta - Fn) - Ft * vt;
+    return { Fn, Ft, loss };
+  }
+
+  /** Add the ground's contact forces Q = Jᵀ(F_n n + F_t t) to f. */
+  private applyContacts(q: Float64Array, qd: Float64Array, f: Float64Array, stage: number) {
+    const g = this.ground;
+    if (stage >= 0) this.stageContactPower[stage] = 0;
+    if (!g) return;
+    const { n, sys, pos, jac, Jn, Jt, candidates, contacts } = this;
+    sys.positions(q, pos);
+    sys.jacobians(q, jac);
+    let power = 0;
+    candidates.forEach((c, ci) => {
+      const { gap, along } = this.contactGeometry(c, g);
+      if (gap >= 0) return;
+      let st = contacts[ci];
+      if (!st) {
+        // a new contact: the effective masses it pushes against, along n and along t
+        const wn = this.mobility(q, Jn);
+        if (wn < 1e-12) return; // pinned: it cannot move into the ground anyway
+        const wt = this.mobility(q, Jt);
+        st = contacts[ci] = { mn: 1 / wn, mt: wt > 1e-12 ? 1 / wt : 1 / wn, anchor: null };
+      }
+      let vn = 0;
+      let vt = 0;
+      for (let m = 0; m < n; m++) {
+        vn += Jn[m] * qd[m];
+        vt += Jt[m] * qd[m];
+      }
+      const { Fn, Ft, loss } = this.contactForce(st, g, -gap, vn, vt, along, !!c.gear);
+      for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
+      power += loss;
+    });
+    if (stage >= 0) this.stageContactPower[stage] = power;
+  }
+
+  /**
+   * After a step: drop contacts that have lifted off, start static friction for new ones, and
+   * let a contact pushed past μ F_n slide, moving its anchor to where the friction limit holds.
+   */
+  private updateContacts(h: number) {
+    const g = this.ground;
+    const P = this.stageContactPower;
+    this.dissipated += ((P[0] + 2 * P[1] + 2 * P[2] + P[3]) / 6) * h;
+    if (!g) {
+      this.contacts.fill(null);
+      return;
+    }
+    const { n, sys, q, qd, pos, jac, Jn, candidates, contacts } = this;
+    sys.positions(q, pos);
+    sys.jacobians(q, jac);
+    candidates.forEach((c, ci) => {
+      const st = contacts[ci];
+      if (!st) return;
+      const { gap, along } = this.contactGeometry(c, g);
+      if (gap >= 0) {
+        contacts[ci] = null;
+        return;
+      }
+      if (c.gear) return; // a rolling rim has no fixed contact point: friction is viscous there
+      if (st.anchor === null) {
+        st.anchor = along;
+        return;
+      }
+      let vn = 0;
+      for (let m = 0; m < n; m++) vn += Jn[m] * qd[m];
+      const w = CONTACT_OMEGA;
+      const Fn = Math.max(0, st.mn * w * w * -gap - 2 * dampingRatio(g.restitution) * st.mn * w * vn);
+      const lim = g.friction * Fn;
+      const kt = st.mt * w * w;
+      const spring = -kt * (along - st.anchor);
+      if (Math.abs(spring) > lim) st.anchor = along + Math.sign(spring) * (lim / kt); // slide
+    });
+  }
+
+  /** Stored energy of the ground contacts, ½ k δ² each. */
+  private contactEnergy(): number {
+    const g = this.ground;
+    if (!g) return 0;
+    const { sys, q, pos, jac, candidates, contacts } = this;
+    let V = 0;
+    sys.positions(q, pos);
+    sys.jacobians(q, jac);
+    candidates.forEach((c, ci) => {
+      const st = contacts[ci];
+      if (!st) return;
+      const { gap } = this.contactGeometry(c, g);
+      if (gap < 0) V += 0.5 * st.mn * CONTACT_OMEGA * CONTACT_OMEGA * gap * gap;
+    });
+    return V;
+  }
+
+  /** Number of points touching the ground now. */
+  contactCount(): number {
+    return this.contacts.reduce((k, c) => k + (c ? 1 : 0), 0);
+  }
+
   /** Generalized force of the mouse spring: Q = Jᵀ F at the grabbed material point. */
   private applyGrab(q: Float64Array, qd: Float64Array, f: Float64Array) {
     const g = this.grab;
@@ -408,7 +682,37 @@ export class Simulator {
   }
 
   /** One classical 4th-order Runge–Kutta step of size h on y = (q, q̇). */
+  /**
+   * Advance by h. Near the ground (a point touching it, or about to within the step) the step
+   * is split into four, as contact forces switch on and off within a few milliseconds; into
+   * eight for very dead impacts (ζ > 1), whose strong damping needs it for the energy budget.
+   */
   step(h: number): boolean {
+    if (this.ground && this.nearGround(h)) {
+      const parts = dampingRatio(this.ground.restitution) > 1 ? 8 : 4;
+      for (let k = 0; k < parts; k++) if (!this.rkStep(h / parts)) return false;
+      return true;
+    }
+    return this.rkStep(h);
+  }
+
+  /** Whether any point touches the ground or could reach it within the next step. */
+  private nearGround(h: number): boolean {
+    const g = this.ground!;
+    if (this.contacts.some((c) => c)) return true;
+    const { n, sys, q, qd, pos, jac, Jn, candidates } = this;
+    sys.positions(q, pos);
+    sys.jacobians(q, jac);
+    return candidates.some((c) => {
+      const { gap } = this.contactGeometry(c, g);
+      let vn = 0;
+      for (let m = 0; m < n; m++) vn += Jn[m] * qd[m];
+      return gap < 2 * h * Math.max(0, -vn) + 1e-4;
+    });
+  }
+
+  /** One classical RK4 step. */
+  private rkStep(h: number): boolean {
     const { n } = this;
     if (n === 0) return true;
     const q0 = this.q.slice();
@@ -436,6 +740,7 @@ export class Simulator {
     this.t += h;
     this.updateHeat(h);
     this.project();
+    this.updateContacts(h);
     for (let i = 0; i < n; i++) if (!Number.isFinite(this.q[i]) || !Number.isFinite(this.qd[i])) return false;
     return true;
   }
@@ -516,8 +821,10 @@ export class Simulator {
     return out;
   }
 
+  /** T and V, V including the energy stored in ground contacts. */
   energy() {
-    return this.sys.energy(this.q, this.qd);
+    const e = this.sys.energy(this.q, this.qd);
+    return { T: e.T, V: e.V + this.contactEnergy() };
   }
 
   /** Current rotation of every gear, keyed by gear id. */

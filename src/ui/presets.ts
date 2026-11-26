@@ -443,6 +443,77 @@ function humanHand(): Design {
 }
 
 /**
+ * The rimless wheel, the simplest passive walker (McGeer, "Passive dynamic walking", Int. J.
+ * Robotics Research 9 (1990) 62–82). Spokes around a heavy hub roll down a slope with no
+ * motor: each step the wheel falls forward onto the next spoke, and that impact (restitution 0,
+ * no slip) takes away the energy the step down the slope gave, so it settles into a steady
+ * gait. The spokes are joined into one rigid body.
+ */
+function rimlessWheel(spokes = 8, L = 0.3, slopeDeg = -12): Design {
+  const alpha = Math.PI / spokes; // half the angle between spokes
+  const lean = (4 * Math.PI) / 180; // standing on one spoke, leaning a little downhill
+  const hub: P = [L * Math.sin(lean), L * Math.cos(lean) + 1e-4]; // the spoke just touching
+  const points: DPoint[] = [pt(0, hub[0], hub[1], 'free', 4)];
+  for (let k = 0; k < spokes; k++) {
+    const a = -Math.PI / 2 - lean + 2 * alpha * k; // the first spoke reaches the ground at the origin
+    points.push(pt(k + 1, hub[0] + L * Math.cos(a), hub[1] + L * Math.sin(a)));
+  }
+  const links = barsM(points.slice(1).map((p) => [0, p.id, 0.1] as [number, number, number]));
+  return {
+    points,
+    links,
+    springs: [],
+    gears: [],
+    meshes: [],
+    rackMeshes: [],
+    joins: links.slice(1).map((l, i) => ({ id: i, a: { kind: 'link' as const, id: 0 }, b: { kind: 'link' as const, id: l.id } })),
+    ground: { y: 0, slope: slopeDeg, restitution: 0, friction: 1 },
+  };
+}
+
+/** A rigid square frame (braced by a diagonal) dropped corner-first onto the floor. */
+function tumblingBox(): Design {
+  const s = 0.4;
+  const c: P = [0, 0.8];
+  const tilt = (25 * Math.PI) / 180;
+  const corners = [
+    [-s / 2, -s / 2],
+    [s / 2, -s / 2],
+    [s / 2, s / 2],
+    [-s / 2, s / 2],
+  ].map(([x, y], i) => pt(i, c[0] + x * Math.cos(tilt) - y * Math.sin(tilt), c[1] + x * Math.sin(tilt) + y * Math.cos(tilt)));
+  return {
+    points: corners,
+    links: barsM([[0, 1, 0.5], [1, 2, 0.5], [2, 3, 0.5], [3, 0, 0.5], [0, 2, 0.2]]),
+    springs: [],
+    gears: [],
+    meshes: [],
+    rackMeshes: [],
+    ground: { y: 0, slope: 0, restitution: 0.4, friction: 0.6 },
+  };
+}
+
+/** A loose chain of 12 links dropped onto the floor, many joints touching at once. */
+function droppedChain(n = 12, len = 0.1): Design {
+  const points: DPoint[] = [pt(0, -0.55, 0.9)];
+  for (let k = 1; k <= n; k++) {
+    // links heading right and a little down, along a gentle wave
+    const a = -0.35 + 0.5 * Math.sin((k / n) * Math.PI * 1.5);
+    const p = points[k - 1];
+    points.push(pt(k, p.x + len * Math.cos(a), p.y + len * Math.sin(a)));
+  }
+  return {
+    points,
+    links: bars(points.slice(1).map((p) => [p.id - 1, p.id] as [number, number]), 0.05),
+    springs: [],
+    gears: [],
+    meshes: [],
+    rackMeshes: [],
+    ground: { y: 0, slope: 0, restitution: 0.1, friction: 0.7 },
+  };
+}
+
+/**
  * A rack railway (Riggenbach, Marsh, Abt…): on a slope too steep for wheel friction, the
  * car's cog wheels engage a toothed rack laid between the rails. Here two cog wheels joined
  * by the chassis roll on a 20° rack; the haulage cable is a spring to the top station.
@@ -523,6 +594,8 @@ export interface Preset {
   topView?: boolean;
   /** Air drag (1/s) to set when loading it, standing in for tissue damping (others set 0). */
   drag?: number;
+  /** Turn on "Follow the mechanism" when loading it, for things that travel (others turn it off). */
+  follow?: boolean;
 }
 
 export const presets: Preset[] = [
@@ -586,6 +659,7 @@ export const presets: Preset[] = [
   { name: 'Cog railway car on a rack incline', group: 'Famous mechanisms', build: () => cogRailway() },
   { name: 'Human leg swing with a four-bar knee (O\'Connor 1989)', group: 'Famous mechanisms', build: () => humanLeg() },
   { name: 'Human hand, flattened (Cerruti et al. 2015 proportions)', group: 'Famous mechanisms', build: () => humanHand(), drag: 2 },
+  { name: 'Rimless wheel walking down a slope (McGeer 1990)', group: 'Famous mechanisms', build: () => rimlessWheel(), follow: true },
   {
     // Watt's linkage locates an axle sideways: the midpoint of the centre link moves on a
     // nearly straight vertical line. The body (fixed here) carries the axle on two coil springs;
@@ -659,6 +733,8 @@ export const presets: Preset[] = [
       meshes: [], rackMeshes: [],
     }),
   },
+  { name: 'Box dropped onto the floor', group: 'Basics', build: () => tumblingBox() },
+  { name: 'Chain dropped onto the floor', group: 'Basics', build: () => droppedChain() },
   {
     name: 'Hanging chain (closed loop)',
     group: 'Basics',

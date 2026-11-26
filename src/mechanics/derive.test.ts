@@ -803,3 +803,87 @@ describe('human hand preset', () => {
     expect(s.constraintError()).toBeLessThan(1e-9);
   }, 20000);
 });
+
+describe('ground contact', () => {
+  const free = (points: Design['points'], extra: Partial<Design> = {}): Design => ({ points, links: [], springs: [], gears: [], meshes: [], rackMeshes: [], ...extra });
+  const run = (d: Design, ground: { y: number; slope: number; restitution: number; friction: number }) => {
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.ground = ground;
+    return s;
+  };
+
+  it('bounces back to e² of the drop height, and E + W stays constant', () => {
+    const s = run(free([{ id: 0, x: 0, y: 1, kind: 'free', mass: 1 }]), { y: 0, slope: 0, restitution: 0.5, friction: 0.5 });
+    const E0 = s.energy().T + s.energy().V;
+    let [bounced, peak, prev, worst] = [false, 0, 0, 0];
+    for (let i = 0; i < 1500; i++) {
+      s.step(1e-3);
+      const v = s.qd[1];
+      if (!bounced && prev < 0 && v > 0) bounced = true;
+      if (bounced && prev > 0 && v <= 0 && !peak) peak = s.jointPosition(0)![1];
+      prev = v;
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V + s.dissipated - E0));
+    }
+    expect(peak).toBeGreaterThan(0.23);
+    expect(peak).toBeLessThan(0.26);
+    expect(worst).toBeLessThan(5e-3);
+  });
+
+  it('rests at the same tiny depth g/ω² whatever the mass', () => {
+    for (const mass of [0.005, 5]) {
+      const s = run(free([{ id: 0, x: 0, y: 0.05, kind: 'free', mass }]), { y: 0, slope: 0, restitution: 0.2, friction: 0.5 });
+      for (let i = 0; i < 2000; i++) expect(s.step(1e-3)).toBe(true);
+      expect(-s.jointPosition(0)![1]).toBeCloseTo(G / 250 ** 2, 5);
+    }
+  });
+
+  it('holds a bar still on a slope with static friction, and lets it slide at g(sin α − μ cos α)', () => {
+    const a = (20 * Math.PI) / 180;
+    const bar = () => free(
+      [
+        { id: 0, x: 0, y: 5e-4, kind: 'free', mass: 0 },
+        { id: 1, x: 0.5 * Math.cos(a), y: 0.5 * Math.sin(a) + 5e-4, kind: 'free', mass: 0 },
+      ],
+      { links: [{ id: 0, a: 0, b: 1, mass: 1 }] },
+    );
+    const along = (s: Simulator) => s.jointPosition(0)![0] / Math.cos(a);
+    const held = run(bar(), { y: 0, slope: a, restitution: 0, friction: 0.5 });
+    for (let i = 0; i < 1500; i++) held.step(1e-3);
+    expect(Math.abs(along(held))).toBeLessThan(2e-4);
+    const sliding = run(bar(), { y: 0, slope: a, restitution: 0, friction: 0.2 });
+    for (let i = 0; i < 300; i++) sliding.step(1e-3);
+    const s1 = along(sliding);
+    for (let i = 0; i < 1000; i++) sliding.step(1e-3);
+    const accel = (2 * (along(sliding) - s1)) / (1.3 ** 2 - 0.3 ** 2);
+    expect(accel).toBeCloseTo(-G * (Math.sin(a) - 0.2 * Math.cos(a)), 2);
+  });
+
+  it('rolls a gear down a slope at g sin α / (1 + I/mR²)', () => {
+    const b = (15 * Math.PI) / 180;
+    const R = 0.2;
+    const d = free([{ id: 0, x: -R * Math.sin(b), y: R * Math.cos(b) + 2e-4, kind: 'free', mass: 0 }], { gears: [{ id: 0, center: 0, radius: R, teeth: 13, mass: 2, locked: false }] });
+    const s = run(d, { y: 0, slope: b, restitution: 0, friction: 1 });
+    const dist = () => Math.hypot(s.jointPosition(0)![0] - d.points[0].x, s.jointPosition(0)![1] - d.points[0].y);
+    for (let i = 0; i < 200; i++) s.step(1e-3);
+    const d1 = dist();
+    for (let i = 0; i < 1000; i++) s.step(1e-3);
+    expect((2 * (dist() - d1)) / (1.2 ** 2 - 0.2 ** 2)).toBeCloseTo((G * Math.sin(b)) / 1.5, 2);
+  });
+
+  it('the rimless wheel settles into a steady passive gait down its slope', async () => {
+    const { presets } = await import('../ui/presets');
+    const design = presets.find((p) => p.name.startsWith('Rimless wheel'))!.build();
+    const g = design.ground!;
+    const s = run(design, { y: g.y, slope: (g.slope * Math.PI) / 180, restitution: g.restitution, friction: g.friction });
+    const hubX = () => s.jointPosition(0)![0];
+    for (let i = 0; i < 3000; i++) expect(s.step(1e-3)).toBe(true);
+    const x3 = hubX();
+    for (let i = 0; i < 2000; i++) s.step(1e-3);
+    const x5 = hubX();
+    for (let i = 0; i < 2000; i++) s.step(1e-3);
+    const x7 = hubX();
+    expect(x5 - x3).toBeGreaterThan(1); // still walking downhill, about 1 m/s
+    expect(Math.abs((x7 - x5) / (x5 - x3) - 1)).toBeLessThan(0.03); // at a steady pace
+  }, 30000);
+});

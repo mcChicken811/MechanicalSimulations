@@ -69,6 +69,7 @@
         <label class="check"><input type="checkbox" id="gravity" checked /> Gravity (9.81 m/s²)</label>
         <label class="check"><input type="checkbox" id="snap" checked /> Snap to 0.1 m grid</label>
         <label class="check"><input type="checkbox" id="labels" checked /> Show labels</label>
+        <label class="check" title="While simulating, pan the view to keep the moving parts in the middle"><input type="checkbox" id="follow" /> Follow the mechanism</label>
         <label class="slider">Air drag <output id="damping-out"></output><input type="range" id="damping" min="0" max="2" step="0.05" value="0" /></label>
         <label class="slider">Pull stiffness <output id="stiffness-out"></output><input type="range" id="stiffness" min="5" max="400" step="5" value="80" /></label>
         <label class="slider">Speed <output id="speed-out"></output><input type="range" id="speed" min="0.1" max="2" step="0.1" value="1" /></label>
@@ -81,6 +82,13 @@
           <label class="slider">Gear teeth <output id="fmesh-out"></output><input type="range" id="fmesh" min="0" max="5" step="0.1" value="0.5" /></label>
           <label class="slider">Rails <output id="frail-out"></output><input type="range" id="frail" min="0" max="5" step="0.1" value="0.5" /></label>
           <label class="slider">Cooling time τ <output id="fcool-out"></output><input type="range" id="fcool" min="0.5" max="20" step="0.5" value="4" /></label>
+        </div>
+        <label class="check" title="A ground that joints, bar ends and gear rims cannot pass through. Impacts and sliding lose energy, counted as heat W."><input type="checkbox" id="ground" /> Ground contact</label>
+        <div id="ground-settings" hidden>
+          <label class="numrow">Height (m)<input type="number" id="ground-y" step="0.05" /></label>
+          <label class="numrow">Slope (°)<input type="number" id="ground-slope" step="1" min="-45" max="45" /></label>
+          <label class="slider">Restitution <output id="ground-e-out"></output><input type="range" id="ground-e" min="0" max="1" step="0.05" /></label>
+          <label class="slider">Friction μ <output id="ground-mu-out"></output><input type="range" id="ground-mu" min="0" max="1.5" step="0.05" /></label>
         </div>
       </div>
 

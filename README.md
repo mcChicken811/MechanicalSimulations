@@ -4,6 +4,7 @@
 
 - You draw the mechanism. The app picks generalized coordinates, builds the kinetic and potential energy symbolically, and shows Lagrange's equations, M(q) q̈ = f(q, q̇) + Q + Φ_qᵀλ, as typeset math.
 - Closed loops, locked axes, meshing gears, rack-and-pinion pairs, fixed angles between bars and joined bodies become constraints, handled with Lagrange multipliers.
+- An optional ground that parts land on, bounce off and slide along, with adjustable restitution and friction.
 - The equations are integrated with 4th-order Runge–Kutta (RK4) with a 1 ms step. While it runs, you can drag any part to pull on it.
 - Optional joint and gear friction turns energy into heat, which you see as joints glowing.
 
@@ -127,7 +128,7 @@ Other controls:
 - **Play** / **Pause** (Space) start and stop the simulation. **Step** advances one frame. **Reset** (R) goes back to editing.
 - While it runs, **drag any bar, joint or gear** to pull it with a spring force. A red arrow shows the spring's pull, which points at the cursor and grows with the stretch. The status bar shows the same value as |F|. The grab also damps the point's motion, like a steady hand, and that damping isn't part of the arrow. You can click a spring to change its stiffness without stopping.
 - **Select a joint** to draw the path it moves along, as an orange trail. Select it before pressing Play, or click it while the simulation runs. The trail keeps about the last 24 000 points (a point is added each time the joint moves about a pixel), and its oldest end fades out. Selecting another joint, or pressing Reset, starts a new trail.
-- The settings let you turn gravity on or off, add air drag, change how strongly a drag pulls, and change the playback speed. Untick **Show labels** to hide the names of joints, bars, springs and gears, which helps with big mechanisms like the 30-link ring chain.
+- The settings let you turn gravity on or off, add air drag, change how strongly a drag pulls, and change the playback speed. Untick **Show labels** to hide the names of joints, bars, springs and gears, which helps with big mechanisms like the 30-link ring chain. Tick **Follow the mechanism** to keep moving parts in view.
 - The status bar shows the time, the total energy E = T + V, and the constraint error max|Φ|. With no air drag and no friction, E should stay constant.
 
 ### Equations panel
@@ -138,10 +139,29 @@ The top-right panel updates as you edit. It shows the generalized coordinates an
 
 Tick **Friction & heating** to add viscous friction in pin joints, rails and gear teeth. It is modelled with a Rayleigh dissipation function. The energy friction removes heats each joint, which glows from red to white and cools by Newton's law of cooling. The status bar shows the heat produced, W, and E + W, which should stay constant when air drag is off.
 
+### Ground contact
+
+Tick **Ground contact** to add a floor. When you tick it, the floor starts just below the lowest joint or gear rim; set its height and slope in the settings. Joints, bar ends and gear rims land on it, bounce and slide. A bar can't cross a flat ground before one of its ends does, so checking every joint covers all bars, racks and point masses.
+
+- **Restitution** sets how bouncy impacts are: 1 bounces back to the full height, 0 stops dead. A dropped mass rebounds to e² of its drop height.
+- **Friction μ** holds a point where it landed (static friction) until the sideways force reaches μ times the normal force, then lets it slide. A block on a slope stays put when μ > tan α and otherwise slides at g(sin α − μ cos α).
+
+Contact is a stiff spring and damper at each touching point, applied as a generalized force Q = Jᵀ F. The spring's stiffness is scaled by the effective mass the contact pushes against, worked out from the mass matrix and the constraints. The same idea sets contact softness in the MuJoCo physics engine. So every contact responds at the same rate (250 rad/s) whatever it carries. A 5 g fingertip and a 70 kg leg are equally stable, and anything resting on the ground sinks only about 0.16 mm.
+
+The damper is calibrated so the restitution you set is the one you get. It never pulls the point down, so an uncalibrated damper would bounce higher than the textbook formula predicts. Near the ground each 1 ms step is split into four (or eight for very dead impacts), because contact forces switch on and off within a few milliseconds. Energy lost in impacts and sliding is counted in the heat W, so E + W stays constant. The equations panel describes the contact model in its own section. These forces are computed each step and are not part of the symbolic equations.
+
+Tick **Follow the mechanism** to have the view pan along with something that travels, like the rimless wheel.
+
+Examples:
+- **Rimless wheel walking down a slope:** McGeer's (1990) simplest passive walker. It walks with no motor, at a steady pace set by the slope.
+- **Box dropped onto the floor**.
+- **Chain dropped onto the floor**.
+
 ### Limitations
 
 - Everything is in a plane, and bars are uniform rigid rods.
-- Gears are external spur gears and straight racks. There are no ring gears, and parts do not collide with each other.
+- Gears are external spur gears and straight racks. There are no ring gears.
+- Parts only collide with the ground, not with each other, and the ground is a flat line, possibly sloped. Contact is slightly soft: resting parts sink about 0.16 mm, and fast impacts a few millimetres.
 - Springs have no mass, and friction is viscous (proportional to speed).
 - Nothing is motor-driven. Mechanisms move under gravity, springs and your pulls.
 

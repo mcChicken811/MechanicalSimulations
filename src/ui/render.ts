@@ -34,6 +34,8 @@ export interface Scene {
   multi?: PartSet | null;
   /** The selection box being dragged, in world coordinates. */
   box?: { from: Vec; to: Vec } | null;
+  /** The ground line, if there is one (slope in degrees). */
+  ground?: { y: number; slope: number } | null;
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
 }
@@ -109,6 +111,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
   drawGrid(ctx, w, h, v);
+  if (s.ground) drawGroundLine(ctx, w, h, v, s.ground);
 
   for (const p of s.design.points) if (p.kind === 'lockX' || p.kind === 'lockY') drawRail(ctx, w, h, v, p);
 
@@ -206,6 +209,37 @@ function drawFixedAngle(ctx: CanvasRenderingContext2D, v: View, s: Scene, aId: n
       d = Math.min(d, Math.PI - d); // the angle between the two lines
       ctx.fillText(`∠ ${Math.round((d * 180) / Math.PI)}°`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 10);
     }
+  }
+  ctx.restore();
+}
+
+/** The ground: a line across the view, rising at its slope, shaded and hatched below. */
+function drawGroundLine(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, g: { y: number; slope: number }) {
+  const t = Math.tan((g.slope * Math.PI) / 180);
+  const [x0] = toWorld(v, [0, 0]);
+  const [x1] = toWorld(v, [w, 0]);
+  const a = toScreen(v, [x0, g.y + t * x0]);
+  const b = toScreen(v, [x1, g.y + t * x1]);
+  ctx.save();
+  ctx.fillStyle = 'rgba(107,110,118,0.10)';
+  ctx.beginPath();
+  ctx.moveTo(a[0], a[1]);
+  ctx.lineTo(b[0], b[1]);
+  ctx.lineTo(w, Math.max(a[1], b[1]) + h);
+  ctx.lineTo(0, Math.max(a[1], b[1]) + h);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = C.ground;
+  ctx.lineWidth = 2;
+  line(ctx, a, b);
+  // hatching under the line
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.5;
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  const [ux, uy] = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+  for (let d = 0; d < len; d += 14) {
+    const p: Vec = [a[0] + ux * d, a[1] + uy * d];
+    line(ctx, p, [p[0] - 8, p[1] + 10]);
   }
   ctx.restore();
 }

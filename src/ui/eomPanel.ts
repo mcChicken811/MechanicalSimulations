@@ -29,8 +29,18 @@ export function enableLongEquations(el: HTMLElement) {
   });
 }
 
-export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: string | null, friction = false) {
-  const steps = eomPanelSteps(d, error, friction);
+/** The ground, as the equations panel describes it (slope in degrees). */
+export interface GroundNote {
+  y: number;
+  slope: number;
+  restitution: number;
+  friction: number;
+  zeta: number;
+  omega: number;
+}
+
+export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: string | null, friction = false, ground: GroundNote | null = null) {
+  const steps = eomPanelSteps(d, error, friction, ground);
   for (;;) {
     const r = steps.next();
     if (r.done) {
@@ -44,7 +54,7 @@ export function renderEomPanel(el: HTMLElement, d: Derivation | null, error: str
  * Typeset the panel as a generator: it yields its progress (0 → 1) between equations, so the
  * app can typeset a big mechanism a slice at a time, and returns the panel's HTML.
  */
-export function* eomPanelSteps(d: Derivation | null, error: string | null, friction = false): Generator<number, string, void> {
+export function* eomPanelSteps(d: Derivation | null, error: string | null, friction = false, ground: GroundNote | null = null): Generator<number, string, void> {
   if (error) return `<p class="eom-error">Could not derive the equations: ${esc(error)}</p>`;
   if (!d || d.coords.length === 0)
     return `<p class="eom-empty">Draw a bar to start. The equations of motion are derived automatically from the geometry.</p>`;
@@ -66,7 +76,7 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
     yield step();
   }
   parts.push(
-    `<p class="note">${tex('Q_{q_i}', false)} is the generalized force from your mouse pull, ${tex('Q = J^{\\mathsf T} F', false)}` +
+    `<p class="note">${tex('Q_{q_i}', false)} is the generalized force from your mouse pull${ground ? ' and from ground contact' : ''}, ${tex('Q = J^{\\mathsf T} F', false)}` +
       (d.constraints.length ? `, and ${tex('\\lambda_k', false)} are Lagrange multipliers.` : '.') +
       `</p></section>`,
   );
@@ -97,6 +107,22 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
       ...d.meshes.map((m) => `<li>teeth of g${gearLabel(m.a)} and ${m.kind === 'rack' ? `rack ${linkLabel(m.b)}` : `g${gearLabel(m.b)}`}</li>`),
     ];
     parts.push(rows.length ? `<ul class="note">${rows.join('')}</ul>` : '<p class="note">No joint joins two bodies yet.</p>');
+    parts.push('</section>');
+  }
+
+  if (ground) {
+    const t = Math.tan((ground.slope * Math.PI) / 180);
+    parts.push('<section><h3>Ground contact</h3>');
+    parts.push(tex(`Q_c = \\sum_{\\text{touching } p} J_p^{\\mathsf T}\\left(F_n\\,\\mathbf n + F_t\\,\\mathbf t\\right),\\quad y_{\\text{ground}} = ${ground.y.toFixed(3)}${t ? ` ${t > 0 ? '+' : '-'} ${Math.abs(t).toFixed(3)}\\,x` : ''}`));
+    parts.push(tex('F_n = \\max\\left(0,\\ m_p\\omega^2\\delta_p + 2\\zeta\\, m_p\\omega\\,\\dot\\delta_p\\right),\\qquad |F_t| \\le \\mu F_n'));
+    parts.push(
+      `<p class="note">Every joint, and the lowest point of every gear rim, is checked against the ground (a bar cannot cross it before one of its ends does). ` +
+        `A point sunk by ${tex('\\delta_p', false)} is pushed out by a spring-damper scaled by the effective mass ${tex('m_p', false)} it pushes against, ` +
+        `so every contact responds at ${tex(`\\omega = ${ground.omega}\\ \\mathrm{rad/s}`, false)} whatever it carries. ` +
+        `${tex(`\\zeta = ${ground.zeta.toFixed(3)}`, false)} gives the restitution ${tex(`e = ${ground.restitution.toFixed(2)}`, false)}; ` +
+        `friction holds a point where it landed until ${tex(`|F_t|`, false)} reaches ${tex(`\\mu F_n`, false)}, ${tex(`\\mu = ${ground.friction.toFixed(2)}`, false)}, and then lets it slide. ` +
+        `These forces are evaluated numerically every step; they are not part of the symbolic equations above.</p>`,
+    );
     parts.push('</section>');
   }
 
