@@ -284,6 +284,8 @@ export class Simulator {
   dissipated = 0;
   /** Ground contact, or null for none. */
   ground: GroundSettings | null = null;
+  /** Total work done by the motors (J). */
+  motorWork = 0;
   /** Current friction power (W) of every joint then every mesh. */
   readonly power: Float64Array;
   private readonly stagePower: Float64Array[];
@@ -311,6 +313,9 @@ export class Simulator {
   private readonly r2: Float64Array;
   /** Ground-contact power dissipated at each RK4 stage (W). */
   private readonly stageContactPower = new Float64Array(4);
+  /** Motor power delivered at each RK4 stage (W). */
+  private readonly stageMotorPower = new Float64Array(4);
+  private readonly motorParams: { coord: number; tau: number; b: number }[];
 
   constructor(readonly sys: NumericSystem) {
     const { n, nc } = sys;
@@ -338,6 +343,8 @@ export class Simulator {
     const maxBodies = d.joints.reduce((m, j) => Math.max(m, j.bars.length + j.gears.length + 1), 1);
     this.bodyGrad = Array.from({ length: maxBodies }, () => new Float64Array(n));
     this.meshBuf = new Float64Array(d.meshes.length * n);
+    const paramIndex = new Map(d.params.map((p, i) => [p.sym, i]));
+    this.motorParams = d.motors.map((m) => ({ coord: m.coord, tau: paramIndex.get(m.tau)!, b: m.b ? paramIndex.get(m.b)! : -1 }));
     this.candidates = [
       ...[...sys.pointIndex.values()].map((point) => ({ point })),
       ...d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, gear: { phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius } })),
@@ -363,6 +370,15 @@ export class Simulator {
     }
     this.applyGrab(q, qd, f);
     this.applyContacts(q, qd, f, stage);
+    if (stage >= 0) {
+      // the motors' torque is in f already (symbolically); here only its power τ(φ̇) φ̇
+      let P = 0;
+      for (const m of this.motorParams) {
+        const w = qd[m.coord];
+        P += (sys.params[m.tau] - (m.b >= 0 ? sys.params[m.b] * w : 0)) * w;
+      }
+      this.stageMotorPower[stage] = P;
+    }
 
     if (this.solveKKT(q, qd, f, 1e-10) || this.solveKKT(q, qd, f, 1e-6)) {
       for (let i = 0; i < n; i++) out[i] = rhs[i];
@@ -738,6 +754,8 @@ export class Simulator {
       this.qd[i] = v0[i] + (h / 6) * (a[0][i] + 2 * a[1][i] + 2 * a[2][i] + a[3][i]);
     }
     this.t += h;
+    const mp = this.stageMotorPower;
+    this.motorWork += ((mp[0] + 2 * mp[1] + 2 * mp[2] + mp[3]) / 6) * h;
     this.updateHeat(h);
     this.project();
     this.updateContacts(h);

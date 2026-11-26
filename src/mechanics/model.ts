@@ -67,6 +67,19 @@ export interface DGear {
   teeth: number;
   mass: number;
   locked: boolean;
+  /** A motor driving the gear, its stator fixed to the ground. */
+  motor?: DMotor;
+}
+
+/**
+ * A motor's torque on its gear: τ (N·m, positive turns the gear anticlockwise), falling
+ * linearly with the gear's speed to zero at the no-load speed, τ (1 − ω/Ω), like a DC motor.
+ * A no-load speed of 0 means a constant torque.
+ */
+export interface DMotor {
+  torque: number;
+  /** No-load speed Ω (rpm); 0 for a constant torque. */
+  noLoadRpm: number;
 }
 
 /**

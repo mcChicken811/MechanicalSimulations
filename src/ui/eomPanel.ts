@@ -78,6 +78,10 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
   parts.push(
     `<p class="note">${tex('Q_{q_i}', false)} is the generalized force from your mouse pull${ground ? ' and from ground contact' : ''}, ${tex('Q = J^{\\mathsf T} F', false)}` +
       (d.constraints.length ? `, and ${tex('\\lambda_k', false)} are Lagrange multipliers.` : '.') +
+      (d.motors.length
+        ? ` ${tex('\\tau_{\\mathrm{g}}', false)} is the torque of the motor on gear g, reacting on the ground` +
+          (d.motors.some((m) => m.b) ? `; ${tex('b_{\\mathrm{g}} = \\tau_{\\mathrm{g}}/\\Omega_{\\mathrm{g}}', false)} makes it fall to zero at the motor's no-load speed ${tex('\\Omega_{\\mathrm{g}}', false)}.` : '.')
+        : '') +
       `</p></section>`,
   );
 

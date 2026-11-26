@@ -5,6 +5,7 @@
 - You draw the mechanism. The app picks generalized coordinates, builds the kinetic and potential energy symbolically, and shows Lagrange's equations, M(q) q̈ = f(q, q̇) + Q + Φ_qᵀλ, as typeset math.
 - Closed loops, locked axes, meshing gears, rack-and-pinion pairs, fixed angles between bars and joined bodies become constraints, handled with Lagrange multipliers.
 - An optional ground that parts land on, bounce off and slide along, with adjustable restitution and friction.
+- Motors that drive gears with a constant torque, or one that falls off with speed like a DC motor.
 - The equations are integrated with 4th-order Runge–Kutta (RK4) with a 1 ms step. While it runs, you can drag any part to pull on it.
 - Optional joint and gear friction turns energy into heat, which you see as joints glowing.
 
@@ -94,6 +95,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Free joint | N | Removes a joint's constraint. |
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
 | Lock gear | L | Click a gear to stop it turning. Click again to unlock it. |
+| Motor | O | Click a gear to put a motor on it. Click again to remove it. Set its torque and no-load speed in the gear's inspector. |
 | Fix angle | A | Click one bar, then another, to hold the angle between them at its drawn value. Click the same pair again to free it. |
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body. Click the same pair again to separate them. |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
@@ -139,6 +141,14 @@ The top-right panel updates as you edit. It shows the generalized coordinates an
 
 Tick **Friction & heating** to add viscous friction in pin joints, rails and gear teeth. It is modelled with a Rayleigh dissipation function. The energy friction removes heats each joint, which glows from red to white and cools by Newton's law of cooling. The status bar shows the heat produced, W, and E + W, which should stay constant when air drag is off.
 
+### Motors
+
+A motor turns its gear with a torque τ, given in N·m; a positive torque turns it anticlockwise. The motor itself is fixed to the ground. With a no-load speed Ω, the torque falls in a straight line from τ at rest to zero at Ω, as it does for a DC motor. Above Ω the motor brakes. A no-load speed of 0 gives a constant torque whatever the speed.
+
+The torque enters the gear's equation of motion as the generalized force Q_φ = τ − b φ̇, with b = τ/Ω, so the equations panel shows it. To drive a bar, such as a crank, join a gear to it with **Join bodies**. You can change the torque and the speed while the simulation runs. The status bar adds the motor's work, W_m, to the energy budget, so E + W − W_m stays constant.
+
+Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
+
 ### Ground contact
 
 Tick **Ground contact** to add a floor. When you tick it, the floor starts just below the lowest joint or gear rim; set its height and slope in the settings. Joints, bar ends and gear rims land on it, bounce and slide. A bar can't cross a flat ground before one of its ends does, so checking every joint covers all bars, racks and point masses.
@@ -163,7 +173,7 @@ Examples:
 - Gears are external spur gears and straight racks. There are no ring gears.
 - Parts only collide with the ground, not with each other, and the ground is a flat line, possibly sloped. Contact is slightly soft: resting parts sink about 0.16 mm, and fast impacts a few millimetres.
 - Springs have no mass, and friction is viscous (proportional to speed).
-- Nothing is motor-driven. Mechanisms move under gravity, springs and your pulls.
+- Motors push against the ground. A motor on a gear that rides on a moving part does not push back on that part.
 
 ## Project layout
 

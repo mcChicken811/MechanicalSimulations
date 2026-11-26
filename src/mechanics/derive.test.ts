@@ -887,3 +887,45 @@ describe('ground contact', () => {
     expect(Math.abs((x7 - x5) / (x5 - x3) - 1)).toBeLessThan(0.03); // at a steady pace
   }, 30000);
 });
+
+describe('motors', () => {
+  const geared = (motor: { torque: number; noLoadRpm: number }, locked = false): Design => ({
+    points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }],
+    links: [], springs: [], meshes: [], rackMeshes: [],
+    gears: [{ id: 0, center: 0, radius: 0.2, teeth: 13, mass: 2, locked, motor }],
+  });
+  const I = 0.5 * 2 * 0.2 * 0.2;
+
+  it('a constant torque spins a free gear up at τ/I, and its work becomes kinetic energy', () => {
+    const der = deriveEquations(geared({ torque: 0.5, noLoadRpm: 0 }), { gravity: G });
+    expect(der.motors).toHaveLength(1);
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 1000; i++) s.step(1e-3);
+    expect(s.q[0]).toBeCloseTo(0.5 * (0.5 / I) * 1, 9); // φ = ½ (τ/I) t²
+    expect(s.motorWork).toBeCloseTo(s.energy().T, 9);
+  });
+
+  it('a motor with a no-load speed settles at that speed', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(geared({ torque: 0.5, noLoadRpm: 120 }), { gravity: G })));
+    for (let i = 0; i < 3000; i++) s.step(1e-3); // time constant I/b = 0.04 · 4π / 0.5 ≈ 1 s... let it settle
+    for (let i = 0; i < 5000; i++) s.step(1e-3);
+    expect((s.qd[0] * 60) / (2 * Math.PI)).toBeCloseTo(120, 1);
+  });
+
+  it('warns that a motor on a locked gear cannot turn it', () => {
+    const der = deriveEquations(geared({ torque: 1, noLoadRpm: 0 }, true), { gravity: G });
+    expect(der.motors).toHaveLength(0);
+    expect(der.warnings.some((w) => w.includes('locked'))).toBe(true);
+  });
+
+  it('drives the Strandbeest crank round and round, with E + W − W_motor constant', async () => {
+    const { presets } = await import('../ui/presets');
+    const der = deriveEquations(presets.find((p) => p.name.startsWith('Strandbeest leg driven'))!.build(), { gravity: G });
+    const s = new Simulator(new NumericSystem(der));
+    const E0 = s.energy().T + s.energy().V;
+    for (let i = 0; i < 4000; i++) expect(s.step(1e-3)).toBe(true);
+    expect(s.q[der.motors[0].coord] / (2 * Math.PI)).toBeGreaterThan(3); // over three turns in 4 s
+    const e = s.energy();
+    expect(Math.abs(e.T + e.V + s.dissipated - s.motorWork - E0)).toBeLessThan(1e-6);
+  }, 20000);
+});

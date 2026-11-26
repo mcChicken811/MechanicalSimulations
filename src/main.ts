@@ -8,7 +8,7 @@ import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'angle' | 'join' | PointKind | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'motor' | 'angle' | 'join' | PointKind | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -245,8 +245,8 @@ function startSim() {
   running = true;
   drawing = null;
   dragging = null;
-  // springs stay editable while running; a selected joint draws its path
-  if (selection?.kind !== 'spring' && selection?.kind !== 'point') selection = null;
+  // springs and motors stay editable while running; a selected joint draws its path
+  if (selection?.kind !== 'spring' && selection?.kind !== 'point' && selection?.kind !== 'gear') selection = null;
   multi = null;
   boxSel = null;
   resetTrail();
@@ -280,6 +280,7 @@ function rebuildSim() {
   next.damping = settings.damping;
   next.friction = friction;
   next.ground = groundSettings();
+  next.motorWork = sim.motorWork; // the energy budget carries on across a parameter change
   // same topology (only parameters changed), so the heat carries over
   if (next.jointHeat.length === sim.jointHeat.length && next.meshHeat.length === sim.meshHeat.length) {
     next.jointHeat.set(sim.jointHeat);
@@ -900,6 +901,8 @@ canvas.addEventListener('pointerdown', (e) => {
         const a = gearAngleNow(gr.id);
         const [dx, dy] = [w[0] - c[0], w[1] - c[1]];
         grab = { a: gr.center, b: gr.center, s: 0, gear: { id: gr.id, u: dx * Math.cos(a) + dy * Math.sin(a), v: -dx * Math.sin(a) + dy * Math.cos(a) } };
+        selection = { kind: 'gear', id: gr.id }; // its motor stays adjustable while it runs
+        renderInspector();
       } else {
         selection = null;
         renderInspector();
@@ -975,6 +978,20 @@ canvas.addEventListener('pointerdown', (e) => {
         toggleJoin(first, hit);
       }
       refreshControls();
+      break;
+    }
+    case 'motor': {
+      const pid = pointAt(w);
+      const g = (pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w);
+      if (!g) break;
+      pushUndo();
+      if (g.motor) delete g.motor;
+      else {
+        g.motor = { torque: 1, noLoadRpm: 60 };
+        g.locked = false; // a motor needs its gear free to turn
+      }
+      selection = { kind: 'gear', id: g.id };
+      designChanged();
       break;
     }
     case 'lockGear': {
@@ -1096,7 +1113,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', a: 'angle', j: 'join', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', o: 'motor', a: 'angle', j: 'join', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1293,6 +1310,7 @@ const hints: Record<Tool, string> = {
   delete: 'Click a joint, bar, rack, spring or gear to delete it.',
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear to lock it so it cannot turn. Click again to unlock it.',
+  motor: 'Click a gear to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
   angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
   join: 'Click two bodies (bars, racks or gears) to join them into one. Click the same pair again to separate them.',
 };
@@ -1495,6 +1513,14 @@ function renderInspector() {
         <label class="field">Teeth<input id="i-n" type="number" min="6" max="300" step="1" value="${g.teeth}" ${disabled}></label>
         <label class="field">Mass (kg)<input id="i-m" type="number" min="0.01" step="0.1" value="${g.mass}" ${disabled}></label>
         <label class="field">Locked<span><input id="i-lock" type="checkbox" ${g.locked ? 'checked' : ''} ${disabled}> does not turn</span></label>
+        <label class="field">Motor<span><input id="i-motor" type="checkbox" ${g.motor ? 'checked' : ''} ${disabled}> drives it</span></label>
+        ${
+          g.motor
+            ? `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${g.motor.torque}"></label>
+        <label class="field">No-load speed (rpm)<input id="i-rpm" type="number" min="0" step="10" value="${g.motor.noLoadRpm}"></label>
+        <p class="muted">${g.motor.noLoadRpm > 0 ? `Torque τ(1 − ω/Ω): ${g.motor.torque} N·m at rest, falling to 0 at ${g.motor.noLoadRpm} rpm, like a DC motor.` : 'A constant torque, whatever the speed.'} Positive turns the gear anticlockwise. You can change these while it runs.</p>`
+            : ''
+        }
         <div class="field"><span>Meshes with</span><span>${
           [
             ...meshed.map((m) => `${label(partner(m))} <button data-unmesh="${m.id}" title="Remove this mesh" ${disabled}>×</button>`),
@@ -1520,6 +1546,26 @@ function renderInspector() {
         g.locked = (e.target as HTMLInputElement).checked;
         designChanged({ keepInspector: true });
       });
+      inspectorEl.querySelector<HTMLInputElement>('#i-motor')!.addEventListener('change', (e) => {
+        pushUndo();
+        if ((e.target as HTMLInputElement).checked) {
+          g.motor = { torque: 1, noLoadRpm: 60 };
+          g.locked = false;
+        } else delete g.motor;
+        designChanged();
+      });
+      // torque and speed can change while it runs: only parameters change, so the state carries over
+      const motorField = (sel: string, apply: (m: NonNullable<DGear['motor']>, v: number) => void) =>
+        inspectorEl.querySelector<HTMLInputElement>(sel)?.addEventListener('change', (e) => {
+          const v = Number((e.target as HTMLInputElement).value);
+          if (!g.motor || !Number.isFinite(v)) return;
+          pushUndo();
+          apply(g.motor, v);
+          designChanged();
+          if (sim) rebuildSim();
+        });
+      motorField('#i-torque', (m, v) => (m.torque = v));
+      motorField('#i-rpm', (m, v) => (m.noLoadRpm = Math.max(0, v)));
       inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unmesh]').forEach((b) =>
         b.addEventListener('click', () => {
           pushUndo();
@@ -1582,8 +1628,12 @@ function heatStatus(s: Simulator): string {
     if (T > hottest && m) [hottest, where] = [T, `gear g${gearLabel(m.gear)} on rack ${linkLabel(m.rack)}`];
   }
   const { T, V } = s.energy();
+  const motors = s.sys.derivation.motors.length > 0;
+  const heat = friction.enabled || s.dissipated > 0;
   return (
-    ` · heat W = <b>${s.dissipated.toFixed(3)} J</b> · E + W = ${(T + V + s.dissipated).toFixed(4)} J` +
+    (heat ? ` · heat W = <b>${s.dissipated.toFixed(3)} J</b>` : '') +
+    (motors ? ` · motor work W<sub>m</sub> = <b>${s.motorWork.toFixed(3)} J</b>` : '') +
+    ` · E${heat ? ' + W' : ''}${motors ? ' − W<sub>m</sub>' : ''} = ${(T + V + s.dissipated - s.motorWork).toFixed(4)} J` +
     (hottest > 0.01 ? ` · hottest: ${where} +${hottest.toFixed(1)} K` : '')
   );
 }
@@ -1610,7 +1660,7 @@ function renderStatus() {
     (sim.sys.nc ? ` · max|Φ| = ${phi.toExponential(1)}` : '') +
     (grab ? ` · |F| = <b>${F.toFixed(1)} N</b>` : '') +
     (sim.ground ? ` · ${sim.contactCount()} touching the ground` : '') +
-    (friction.enabled || sim.dissipated > 0 ? heatStatus(sim) : '') +
+    (friction.enabled || sim.dissipated > 0 || sim.sys.derivation.motors.length ? heatStatus(sim) : '') +
     ` · RK4, h = 1 ms`;
 }
 

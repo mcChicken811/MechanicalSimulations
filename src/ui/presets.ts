@@ -69,6 +69,21 @@ function jansenLeg(crankAngle = Math.PI / 2): Design {
 }
 
 /**
+ * The Strandbeest leg with its crank driven: a motor on a gear fixed to the crank (the gear is
+ * joined to the crank bar) turns it against gravity, and the foot traces Jansen's flat-bottomed
+ * walking path. Select the foot (joint G) before Play to draw it. The motor gives 3 N·m at rest
+ * and none at 60 rpm, so the crank settles near the speed where the two balance.
+ */
+function drivenJansenLeg(): Design {
+  const d = jansenLeg();
+  return {
+    ...d,
+    gears: [{ ...gear(0, 0, 0.12, 0.5), motor: { torque: 3, noLoadRpm: 60 } }],
+    joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'gear', id: 0 } }],
+  };
+}
+
+/**
  * Rack-and-pinion steering, seen from above. The steering-column pinion moves the rack
  * sideways on its rails; tie rods push the steering arms, turning each wheel's knuckle about
  * its kingpin. The arms point inwards (Ackermann geometry), so the inner wheel turns more.
@@ -600,6 +615,7 @@ export interface Preset {
 
 export const presets: Preset[] = [
   { name: 'Strandbeest leg (Jansen linkage)', group: 'Famous mechanisms', build: () => jansenLeg() },
+  { name: 'Strandbeest leg driven by a crank motor', group: 'Famous mechanisms', build: () => drivenJansenLeg() },
   {
     // James Watt, 1781. The planet gear is fixed to the connecting rod (bars E–P and E–Q make
     // them one rigid body) and is kept in mesh with the sun gear by the link O–P. One orbit of

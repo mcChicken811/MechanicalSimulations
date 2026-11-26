@@ -579,7 +579,48 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     if (showLabels) ctx.fillText(`g${gearLabel(g.id)}`, sc[0] - 14, sc[1] + 20);
     ctx.restore();
     if (g.locked) drawPadlock(ctx, [sc[0] - 20, sc[1] - 20]);
+    if (g.motor) drawMotor(ctx, sc, Math.min(g.radius * v.scale * 0.6, 34), g.motor.torque);
   }
+}
+
+/**
+ * A motor on a gear: a curved arrow around the axle in the direction of its torque (drawn in
+ * screen space, where y points down, so anticlockwise in the world is anticlockwise here too),
+ * and an "M" badge just above the axle.
+ */
+function drawMotor(ctx: CanvasRenderingContext2D, [x, y]: Vec, r: number, torque: number) {
+  if (torque === 0) return;
+  r = Math.max(r, 14);
+  const ccw = torque > 0; // world anticlockwise = screen anticlockwise (both flip together)
+  const [a0, a1] = ccw ? [0.35 * Math.PI, -1.15 * Math.PI] : [0.65 * Math.PI, 2.15 * Math.PI];
+  ctx.save();
+  ctx.strokeStyle = C.force;
+  ctx.fillStyle = C.force;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(x, y, r, a0, a1, ccw);
+  ctx.stroke();
+  // arrowhead at the end of the arc, pointing along it
+  const [ex, ey] = [x + r * Math.cos(a1), y + r * Math.sin(a1)];
+  const dir = ccw ? -1 : 1; // direction of travel along the arc in screen angle
+  const [tx, ty] = [-Math.sin(a1) * dir, Math.cos(a1) * dir];
+  const [nx, ny] = [-ty, tx];
+  ctx.beginPath();
+  ctx.moveTo(ex + tx * 7, ey + ty * 7);
+  ctx.lineTo(ex - tx * 3 + nx * 5, ey - ty * 3 + ny * 5);
+  ctx.lineTo(ex - tx * 3 - nx * 5, ey - ty * 3 - ny * 5);
+  ctx.closePath();
+  ctx.fill();
+  // badge
+  ctx.beginPath();
+  ctx.arc(x, y - r, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = '700 10px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('M', x, y - r + 0.5);
+  ctx.restore();
 }
 
 /** Small padlock marking a gear that is locked against turning. */

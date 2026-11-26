@@ -37,6 +37,8 @@
  *    centre), θ_b − θ_a = α and r_b − r_a = Rot(θ_a)(u, v), the constants taken from the
  *    drawing. Equations the mechanism already enforces (bodies sharing a joint need only
  *    the first) are dropped by the same independence test.
+ * 12. A motor on a gear adds the generalized force Q_φ = τ − b φ̇ to the gear's equation:
+ *    a constant torque τ, less b = τ/Ω as the gear nears the motor's no-load speed Ω.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
 import { bodyName, drawnAngle, gearLabel, linkLabel, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
@@ -128,6 +130,8 @@ export interface Derivation {
   params: Parameter[];
   /** Rotation angle φ of every gear (zero for a locked gear), for drawing. */
   gearAngles: { id: number; angle: Poly }[];
+  /** Motors: the index of the driven gear's φ in q, and the parameter indices of τ and b. */
+  motors: { id: number; coord: number; tau: string; b: string | null }[];
   /** Centre joint and pitch radius of every gear in the mechanism, for ground contact. */
   gearDisks: { id: number; center: number; radius: number }[];
   /** Symbolic position of every active joint. */
@@ -637,6 +641,29 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     f.push(trigSimplify(fi));
   }
 
+  // ---- motors ----------------------------------------------------------------
+  const motors: Derivation['motors'] = [];
+  for (const gr of gears) {
+    if (!gr.motor) continue;
+    const lab = gearLabel(gr.id);
+    const k = qs.indexOf(`ph${gr.id}`);
+    if (k < 0) {
+      warnings.push(`Gear g${lab} is locked, so its motor cannot turn it.`);
+      continue;
+    }
+    const tau = param(`tau${gr.id}`, `\\tau_{\\mathrm{g}${lab}}`, gr.motor.torque, 'N·m');
+    let q = tau;
+    let b: string | null = null;
+    if (gr.motor.noLoadRpm > 0) {
+      // the torque falls linearly to zero at the no-load speed: b = τ / Ω
+      b = `bm${gr.id}`;
+      const bp = param(b, `b_{\\mathrm{g}${lab}}`, gr.motor.torque / ((gr.motor.noLoadRpm * 2 * Math.PI) / 60), 'N·m·s');
+      q = q.sub(bp.mul(Poly.sym(qds[k])));
+    }
+    f[k] = f[k].add(q);
+    motors.push({ id: gr.id, coord: k, tau: `tau${gr.id}`, b });
+  }
+
   // ---- constraints -----------------------------------------------------------
   const movableKept: Constraint[] = [];
   for (const c of constraints) {
@@ -700,6 +727,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     constraints: kept,
     springs: springTerms,
     gearAngles: [...gearAngle].map(([id, angle]) => ({ id, angle })),
+    motors,
     gearDisks: gears.filter((gr) => gearAngle.has(gr.id)).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),
     phiQ,
     gamma,
