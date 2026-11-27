@@ -96,6 +96,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Free joint | N | Removes a joint's constraint: a pin, a rail, or a pin on a body. |
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
 | Lock gear | L | Click a gear or wheel to stop it turning (a braked wheel). Click again to unlock it. |
+| Lever | E | Click a motor to give it a control lever, worked from the dock at the bottom right. On a gear without a motor, a motor is added too. Click the motor again to remove the lever. |
 | Motor | O | Click a gear or wheel to put a motor on it. Click again to remove it. Set its torque and no-load speed in the gear's inspector. |
 | Fix angle | A | Click one bar, then another, to hold the angle between them at its drawn value. Click the same pair again to free it. |
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body. Click the same pair again to separate them. |
@@ -167,6 +168,13 @@ A motor turns its gear with a torque τ, given in N·m; a positive torque turns 
 In the equations, the torque acts on the gear's turn inside its housing, ρ = φ − ψ, as the generalized force Q = (τ − b ρ̇) ∂ρ/∂q with b = |τ|/Ω (so the torque falls to zero at the no-load speed turning the way it pushes, clockwise for a negative torque). This puts +τ on the gear and −τ on whatever the housing is part of, with nothing pushing from nowhere. The housing has a mass, 0.5 kg by default and set in the inspector, and turns as a disk of 0.6 times the gear's radius.
 
 The equations panel shows the torque. To drive a bar, such as a crank, join a gear to it with **Join bodies**. You can change the torque and the speed while the simulation runs. The status bar adds the motor's work, W_m, to the energy budget, so E + W − W_m stays constant.
+
+**Levers.** The Lever tool (E) gives a motor a control lever, so you can drive it by hand. The lever is drawn on the motor's housing with a coloured knob. A control in the same colour appears in the **lever dock** at the bottom right of the screen: a vertical slot with a handle.
+- **Working it:** drag the handle up for forward (anticlockwise), down for reverse, or leave it in the middle for none. Double-click the slot to centre it. It works while the simulation runs, and the lever on the housing tilts to match.
+- **Torque:** τ = position × scale, where the position runs from −1 to +1 and the **scale** is the torque at full throw. Select the lever, by clicking it on the housing or the label above its control, to set the scale and colour, centre it or remove it. While a motor has a lever, the lever sets its torque in place of the gear inspector's torque.
+- **Speed:** with a no-load speed Ω, the falloff stays b = scale/Ω as the lever moves, as in a DC motor whose voltage the lever sets. So the lever sets the top speed too, position × Ω, and in the middle the motor brakes against being turned.
+- **Many levers:** their controls line up side by side. When there are more than fit, the dock scrolls sideways (with a trackpad, the scroll bar, or the mouse wheel), and the edges with controls scrolled out of view fade out.
+- **Under the hood:** moving a lever while the simulation runs only changes the torque parameter, so nothing is derived again and the motion carries on smoothly.
 
 Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
 

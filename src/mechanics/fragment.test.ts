@@ -11,6 +11,18 @@ const dof = (d: Design) => {
 };
 
 describe('copy and paste', () => {
+  it('a pasted motor and lever are copies of their own, the lever in a new colour', () => {
+    const d = build('Motor car');
+    d.gears[0].motor!.lever = { color: '#e04f5f', scale: 2, position: 0.5 };
+    const pasted = pasteParts(d, extractParts(d, allParts(d)), 3, 0);
+    const copy = d.gears.find((g) => pasted.gears.has(g.id) && g.motor)!;
+    expect(copy.motor).not.toBe(d.gears[0].motor);
+    expect(copy.motor!.lever).toEqual({ color: copy.motor!.lever!.color, scale: 2, position: 0.5 });
+    expect(copy.motor!.lever!.color).not.toBe('#e04f5f');
+    copy.motor!.lever!.position = -1;
+    expect(d.gears[0].motor!.lever!.position).toBe(0.5); // the original is untouched
+  });
+
   it('a pasted copy of a whole mechanism keeps all its constraints', () => {
     // gears, gear pins and a mesh; add a fixed angle and a join so every kind is covered
     const d = build("Watt's sun");

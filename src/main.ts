@@ -1,14 +1,14 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, gearName, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, gearName, motorTorque, nextLeverColor, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
-import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
+import { drawScene, leverGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'mass' | 'lockGear' | 'motor' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -120,6 +120,7 @@ function designChanged(opts: { keepInspector?: boolean } = {}) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(design));
   scheduleDerive();
   if (!opts.keepInspector) renderInspector();
+  else renderLevers();
 }
 
 // ---- derivation --------------------------------------------------------------
@@ -264,7 +265,7 @@ function startSim() {
   drawing = null;
   dragging = null;
   // springs and motors stay editable while running; a selected joint draws its path
-  if (selection?.kind !== 'spring' && selection?.kind !== 'point' && selection?.kind !== 'gear') selection = null;
+  if (selection?.kind !== 'spring' && selection?.kind !== 'point' && selection?.kind !== 'gear' && selection?.kind !== 'lever') selection = null;
   multi = null;
   boxSel = null;
   constrain = null;
@@ -409,7 +410,20 @@ function segmentAt(w: Vec, segments: readonly { id: number; a: number; b: number
 const linkAt = (w: Vec) => segmentAt(w, design.links);
 const springAt = (w: Vec) => segmentAt(w, design.springs);
 
+/** The motor whose lever (its knob or stick, drawn on the housing) is under w. */
+function leverAt(w: Vec): DGear | null {
+  const sp = toScreen(view, w);
+  for (const g of design.gears) {
+    if (!g.motor?.lever || !design.points.some((p) => p.id === g.center)) continue;
+    const { base, knob, radius } = leverGeometry(view, pos(g.center), motorAngleNow(g.id), g);
+    if (Math.hypot(sp[0] - knob[0], sp[1] - knob[1]) < radius + 4 || segmentDistance(sp, base, knob).d < 5) return g;
+  }
+  return null;
+}
+
 function hitTest(w: Vec): Selection | null {
+  const lv = leverAt(w); // small, and drawn on top
+  if (lv) return { kind: 'lever', id: lv.id };
   const p = pointAt(w);
   if (p !== null) return { kind: 'point', id: p };
   const l = linkAt(w);
@@ -903,7 +917,7 @@ canvas.addEventListener('dblclick', (e) => {
 });
 
 // ---- groups: box selection, copy and paste ------------------------------------------
-const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const;
+const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears' } as const; // a lever goes with its motor's gear
 const inParts = (s: PartSet, sel: Selection) => s[partsKey[sel.kind]].has(sel.id);
 
 /** The parts chosen together, without any that have since been deleted (null if none are left). */
@@ -982,6 +996,12 @@ function deleteSelection(sel: Selection | null) {
     design.links = design.links.filter((l) => l.id !== sel.id);
   } else if (sel.kind === 'gear') {
     removeGear(sel.id);
+  } else if (sel.kind === 'lever') {
+    const m = design.gears.find((g) => g.id === sel.id)?.motor;
+    if (m?.lever) {
+      m.torque = motorTorque(m); // the motor keeps the torque the lever was giving
+      delete m.lever;
+    }
   } else {
     design.springs = design.springs.filter((l) => l.id !== sel.id);
   }
@@ -1159,8 +1179,12 @@ canvas.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
 
   if (sim) {
-    const pid = pointAt(w, null, true);
-    if (pid !== null) {
+    const lv = leverAt(w);
+    const pid = lv ? null : pointAt(w, null, true);
+    if (lv) {
+      selection = { kind: 'lever', id: lv.id }; // worked from its control in the dock
+      renderInspector();
+    } else if (pid !== null) {
       grab = { a: pid, b: pid, s: 0 };
       selection = { kind: 'point', id: pid }; // and draw its path
       renderInspector();
@@ -1290,6 +1314,24 @@ canvas.addEventListener('pointerdown', (e) => {
         g.locked = false; // a motor needs its gear free to turn
       }
       selection = { kind: 'gear', id: g.id };
+      designChanged();
+      break;
+    }
+    case 'lever': {
+      const pid = pointAt(w);
+      const g = leverAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
+      if (!g) break;
+      pushUndo();
+      if (g.motor?.lever) {
+        delete g.motor.lever;
+        selection = { kind: 'gear', id: g.id };
+      } else {
+        // on a gear without a motor, the motor comes too; the lever starts at the centre
+        g.motor ??= { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: design.points.find((p) => p.id === g.center)?.kind === 'fixed' };
+        g.locked = false;
+        g.motor.lever = { color: nextLeverColor(design), scale: +Math.max(0.1, Math.abs(g.motor.torque)).toFixed(2), position: 0 };
+        selection = { kind: 'lever', id: g.id };
+      }
       designChanged();
       break;
     }
@@ -1435,7 +1477,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', m: 'mass', l: 'lockGear', o: 'motor', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1653,6 +1695,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
   motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
+  lever: 'Click a motor (or a gear, which gets a motor) to give it a control lever; its control appears at the bottom right. Drag the control up or down to set the torque, even while it runs. Click the motor again to remove the lever.',
   angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
   join: 'Click two bodies (bars, racks or gears) to join them into one. Click the same pair again to separate them.',
 };
@@ -1679,8 +1722,198 @@ function refreshControls() {
 }
 
 // ---- inspector ------------------------------------------------------------------
+// ---- levers: the control dock at the bottom right ------------------------------------
+// One control per lever, side by side, each a vertical slot with a handle in the lever's colour:
+// up is forward, the middle is zero. More than fit scroll sideways, the cut-off edges fading out.
+const leverDock = $<HTMLDivElement>('#levers');
+const leverScroll = $<HTMLDivElement>('#levers .lever-scroll');
+let leverDrag: { id: number; pointer: number } | null = null;
+let saveTimer = 0;
+
+const leverGears = () => design.gears.filter((g) => g.motor?.lever && design.points.some((p) => p.id === g.center)).sort((a, b) => a.id - b.id);
+const leverTorqueText = (g: DGear) => {
+  const t = motorTorque(g.motor!);
+  return `${t > 0 ? '+' : ''}${t.toFixed(2)} N·m`;
+};
+const leverSettingText = (g: DGear) => {
+  const p = Math.round(g.motor!.lever!.position * 100);
+  return `${p > 0 ? '+' : ''}${p}% of ${g.motor!.lever!.scale} N·m = ${leverTorqueText(g)}`;
+};
+
+/** Save the design shortly, once a stream of changes (a lever being dragged) pauses. */
+function saveSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(design)), 250);
+}
+
+/**
+ * Move a lever, −1 … 1 (snapping to the centre close by). While running, only the motor's
+ * torque parameter changes, so the motion carries on; the derivation's value is kept in step
+ * for the next run, without deriving again.
+ */
+function setLeverPosition(g: DGear, p: number) {
+  const m = g.motor;
+  if (!m?.lever) return;
+  m.lever.position = Math.abs(p) < 0.04 ? 0 : Math.max(-1, Math.min(1, +p.toFixed(3)));
+  const tau = motorTorque(m);
+  sim?.setMotorTorque(g.id, tau);
+  const prm = derivation?.params.find((x) => x.sym === `tau${g.id}`);
+  if (prm) prm.value = tau;
+  const card = leverScroll.querySelector<HTMLElement>(`[data-lever="${g.id}"]`);
+  if (card) {
+    card.style.setProperty('--p', String(m.lever.position));
+    card.querySelector('.lever-value')!.textContent = leverTorqueText(g);
+  }
+  const shown = inspectorEl.querySelector('#i-lpos');
+  if (shown && selection?.kind === 'lever' && selection.id === g.id) shown.textContent = leverSettingText(g);
+  saveSoon();
+}
+
+/** Fade out whichever ends of the dock are scrolled out of view. */
+function updateLeverFades() {
+  const el = leverScroll;
+  el.style.setProperty('--fl', el.scrollLeft > 1 ? '32px' : '0px');
+  el.style.setProperty('--fr', el.scrollLeft + el.clientWidth < el.scrollWidth - 1 ? '32px' : '0px');
+}
+
+function markSelectedLever() {
+  leverScroll.querySelectorAll<HTMLElement>('.lever').forEach((c) => c.classList.toggle('selected', selection?.kind === 'lever' && selection.id === Number(c.dataset.lever)));
+}
+
+function renderLevers() {
+  if (leverDrag) {
+    markSelectedLever(); // rebuilding would drop the control being dragged
+    return;
+  }
+  const gs = leverGears();
+  leverDock.hidden = !gs.length;
+  leverScroll.innerHTML = gs
+    .map((g) => {
+      const lv = g.motor!.lever!;
+      const lab = gearLabel(g.id);
+      return `<div class="lever" data-lever="${g.id}" style="--c:${lv.color};--p:${lv.position}">
+        <button class="lever-name" title="Lever L${lab} on motor M${lab}: click for its settings">L${lab}</button>
+        <div class="lever-track" title="Drag up for forward (anticlockwise), down for reverse; double-click to centre. Full throw: ±${lv.scale} N·m">
+          <div class="lever-zero"></div><div class="lever-handle"></div>
+        </div>
+        <div class="lever-value">${leverTorqueText(g)}</div>
+      </div>`;
+    })
+    .join('');
+  markSelectedLever();
+  for (const card of leverScroll.querySelectorAll<HTMLElement>('.lever')) {
+    const id = Number(card.dataset.lever);
+    const gear = () => design.gears.find((x) => x.id === id);
+    const track = card.querySelector<HTMLElement>('.lever-track')!;
+    const fromPointer = (e: PointerEvent) => {
+      const r = track.getBoundingClientRect();
+      return 1 - (2 * (e.clientY - r.top - 6)) / (r.height - 12); // the slot runs 6 px in from each end
+    };
+    card.querySelector('.lever-name')!.addEventListener('click', () => {
+      selection = { kind: 'lever', id };
+      multi = null;
+      renderInspector();
+    });
+    track.addEventListener('pointerdown', (e) => {
+      const g = gear();
+      if (!g || e.button !== 0) return;
+      e.preventDefault();
+      track.setPointerCapture(e.pointerId);
+      if (!sim) pushUndo();
+      leverDrag = { id, pointer: e.pointerId };
+      card.classList.add('dragging');
+      setLeverPosition(g, fromPointer(e));
+      if (selection?.kind !== 'lever' || selection.id !== id) {
+        selection = { kind: 'lever', id };
+        multi = null;
+        renderInspector();
+      }
+    });
+    track.addEventListener('pointermove', (e) => {
+      const g = gear();
+      if (g && leverDrag?.pointer === e.pointerId) setLeverPosition(g, fromPointer(e));
+    });
+    const release = (e: PointerEvent) => {
+      if (leverDrag?.pointer !== e.pointerId) return;
+      leverDrag = null;
+      card.classList.remove('dragging');
+      if (!sim) scheduleDerive(); // refresh the parameters shown in the equations panel
+    };
+    track.addEventListener('pointerup', release);
+    track.addEventListener('pointercancel', release);
+    track.addEventListener('dblclick', () => {
+      const g = gear();
+      if (!g) return;
+      if (!sim) pushUndo();
+      setLeverPosition(g, 0);
+    });
+  }
+  // the status bar makes room for the dock
+  document.documentElement.style.setProperty('--dock-w', gs.length ? `${leverDock.offsetWidth + 12}px` : '0px');
+  updateLeverFades();
+}
+leverScroll.addEventListener('scroll', updateLeverFades);
+window.addEventListener('resize', () => renderLevers());
+// a mouse wheel scrolls the dock sideways
+leverScroll.addEventListener(
+  'wheel',
+  (e) => {
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    leverScroll.scrollLeft += e.deltaY;
+    e.preventDefault();
+  },
+  { passive: false },
+);
+
+/** The inspector for a lever: its colour and scale, where it is set, and removing it. */
+function inspectorLever(g: DGear, lever: NonNullable<NonNullable<DGear['motor']>['lever']>, disabled: string) {
+  const lab = gearLabel(g.id);
+  const m = g.motor!;
+  inspectorEl.innerHTML = `
+    <h4><span style="color:${lever.color}">●</span> Lever L${lab} <span class="muted">(motor M${lab} on ${gearName(design, g.id)})</span></h4>
+    <label class="field">Colour<input id="i-lcolor" type="color" value="${lever.color}"></label>
+    <label class="field">Scale (N·m)<input id="i-lscale" type="number" min="0.01" step="0.1" value="${lever.scale}" title="Torque at full throw"></label>
+    <div class="field"><span>Setting</span><span id="i-lpos">${leverSettingText(g)}</span></div>
+    <div class="field"><span></span><span><button id="i-lzero">Centre it</button> <button id="i-lremove" ${disabled}>Remove lever</button></span></div>
+    <p class="muted">Drag its control at the bottom right: up for forward (anticlockwise), down for reverse; double-click it to centre. The scale is the torque at full throw, ±${lever.scale} N·m. ${
+      m.noLoadRpm > 0
+        ? `The top speed follows the lever too, up to ${m.noLoadRpm} rpm at full throw, and at the centre the motor brakes, as in a DC motor whose voltage the lever sets: τ = position × scale − (scale/Ω) ω.`
+        : 'With no no-load speed set, the torque is the same at any speed.'
+    } You can work it, and change its scale and colour, while it runs.</p>`;
+  inspectorEl.querySelector<HTMLInputElement>('#i-lcolor')!.addEventListener('input', (e) => {
+    lever.color = (e.target as HTMLInputElement).value;
+    renderLevers();
+    inspectorEl.querySelector<HTMLElement>('h4 span')!.style.color = lever.color;
+    saveSoon();
+  });
+  inspectorEl.querySelector<HTMLInputElement>('#i-lscale')!.addEventListener('change', (e) => {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (!Number.isFinite(v) || v <= 0) return;
+    pushUndo();
+    lever.scale = v;
+    designChanged({ keepInspector: true });
+    if (sim) rebuildSim(); // b = scale / Ω changes as well
+    inspectorEl.querySelector('#i-lpos')!.textContent = leverSettingText(g);
+  });
+  inspectorEl.querySelector('#i-lzero')!.addEventListener('click', () => {
+    if (!sim) pushUndo();
+    setLeverPosition(g, 0);
+  });
+  inspectorEl.querySelector('#i-lremove')!.addEventListener('click', () => deleteSelection({ kind: 'lever', id: g.id }));
+}
+
 function renderInspector() {
   const disabled = sim ? 'disabled' : '';
+  renderLevers();
+  if (selection?.kind === 'lever') {
+    const g = design.gears.find((x) => x.id === selection!.id);
+    const lever = g?.motor?.lever;
+    if (g && lever) {
+      inspectorLever(g, lever, disabled);
+      return;
+    }
+    selection = null;
+  }
   if (!sim && groundSel && design.ground && !selection) {
     const g = design.ground;
     const i = groundSel.waypoint !== null && groundSel.waypoint < g.points.length ? groundSel.waypoint : null;
@@ -1938,7 +2171,11 @@ function renderInspector() {
         <label class="field">Motor<span><input id="i-motor" type="checkbox" ${g.motor ? 'checked' : ''} ${disabled}> drives it</span></label>
         ${
           g.motor
-            ? `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${g.motor.torque}"></label>
+            ? `${
+                g.motor.lever
+                  ? `<div class="field"><span>Torque</span><span>set by <button id="i-golever" style="color:${g.motor.lever.color}">lever L${gearLabel(g.id)}</button>: ${motorTorque(g.motor).toFixed(2)} N·m</span></div>`
+                  : `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${g.motor.torque}"></label>`
+              }
         <label class="field">No-load speed (rpm)<input id="i-rpm" type="number" min="0" step="10" value="${g.motor.noLoadRpm}"></label>
         <label class="field">Housing mass (kg)<input id="i-hmass" type="number" min="0.01" step="0.1" value="${g.motor.mass ?? 0.5}" ${disabled}></label>
         ${(() => {
@@ -2008,6 +2245,10 @@ function renderInspector() {
         designChanged();
       });
       if (g.motor) bindJoinControls({ kind: 'motor', id: g.id }, 'm');
+      inspectorEl.querySelector('#i-golever')?.addEventListener('click', () => {
+        selection = { kind: 'lever', id: g.id };
+        renderInspector();
+      });
       inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unmesh]').forEach((b) =>
         b.addEventListener('click', () => {
           pushUndo();

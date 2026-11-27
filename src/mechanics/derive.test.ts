@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEquations } from './derive';
-import type { Design } from './model';
+import { cloneDesign, type Design } from './model';
 import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
 import { motorCar } from '../ui/presets';
 
@@ -1291,6 +1291,40 @@ describe('motor speed falloff', () => {
     const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
     for (let i = 0; i < 3000; i++) expect(s.step(1e-3)).toBe(true);
     expect(s.qd[0]).toBeCloseTo(-2 * Math.PI, 3); // 60 rpm clockwise, not running away
+  });
+});
+
+describe('motor levers', () => {
+  const levered = (lever: { scale: number; position: number }, noLoadRpm: number): Design => ({
+    points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }],
+    links: [], springs: [], meshes: [], rackMeshes: [],
+    gears: [{ id: 0, center: 0, radius: 0.2, teeth: 13, mass: 1, locked: false, motor: { torque: 5, noLoadRpm, lever: { color: '#e04f5f', ...lever } } }],
+  });
+
+  it('sets the torque as position × scale, ignoring the motor\'s own torque', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(levered({ scale: 2, position: -0.25 }, 0), { gravity: G })));
+    const I = 0.5 * 1 * 0.2 * 0.2;
+    s.step(1e-3);
+    expect(s.qd[0] / 1e-3).toBeCloseTo(-0.5 / I, 6);
+  });
+
+  it('keeps b = scale / Ω as it moves, so the free speed is position × Ω', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(levered({ scale: 1, position: 0.5 }, 60), { gravity: G })));
+    for (let i = 0; i < 3000; i++) s.step(1e-3);
+    expect(s.qd[0]).toBeCloseTo(0.5 * 2 * Math.PI, 3); // half of 60 rpm
+    // moved while running: only τ changes, and the gear settles at the new free speed
+    expect(s.setMotorTorque(0, -0.75 * 1)).toBe(true);
+    for (let i = 0; i < 3000; i++) s.step(1e-3);
+    expect(s.qd[0]).toBeCloseTo(-0.75 * 2 * Math.PI, 3);
+  });
+
+  it('an undo snapshot does not share the motor or its lever', () => {
+    const d = levered({ scale: 1, position: 0.5 }, 60);
+    const c = cloneDesign(d);
+    c.gears[0].motor!.lever!.position = -1;
+    c.gears[0].motor!.torque = 9;
+    expect(d.gears[0].motor!.lever!.position).toBe(0.5);
+    expect(d.gears[0].motor!.torque).toBe(5);
   });
 });
 

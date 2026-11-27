@@ -13,7 +13,7 @@ export type Vec = [number, number];
 export const toScreen = (v: View, [x, y]: Vec): Vec => [v.ox + x * v.scale, v.oy - y * v.scale];
 export const toWorld = (v: View, [sx, sy]: Vec): Vec => [(sx - v.ox) / v.scale, (v.oy - sy) / v.scale];
 
-export type Selection = { kind: 'point'; id: number } | { kind: 'link'; id: number } | { kind: 'spring'; id: number } | { kind: 'gear'; id: number };
+export type Selection = { kind: 'point'; id: number } | { kind: 'link'; id: number } | { kind: 'spring'; id: number } | { kind: 'gear'; id: number } | { kind: 'lever'; id: number }; // a lever's id is its motor's gear
 
 export interface Scene {
   design: Design;
@@ -46,7 +46,7 @@ export interface Scene {
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
 }
 
-const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const;
+const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears' } as const;
 /** Whether a part is the selection or one of the parts chosen together. */
 function isSelected(s: Scene, kind: Selection['kind'], id: number): boolean {
   return (s.selection?.kind === kind && s.selection.id === id) || !!s.multi?.[partsKey[kind]].has(id);
@@ -782,6 +782,7 @@ function drawHousing(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design
   ctx.textBaseline = 'middle';
   ctx.fillText('M', r * 2.15, 0.5); // out beyond the gear's rim
   ctx.restore();
+  if (g.motor?.lever) drawLever(ctx, v, s, g);
   if (g.motor?.mounted !== false && !joined) {
     // mounted on the ground: a short hatched base under the far end
     const end = toScreen(v, [s.pos(g.center)[0] + 2 * motorHousingRadius(g), s.pos(g.center)[1] - motorHousingRadius(g)]);
@@ -792,6 +793,55 @@ function drawHousing(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design
     for (let k = -8; k <= 8; k += 4) line(ctx, [end[0] + k, end[1] + 2], [end[0] + k - 4, end[1] + 7]);
     ctx.restore();
   }
+}
+
+/**
+ * Where the lever on a motor's housing is drawn (screen): its pivot on top of the housing's far
+ * end, the knob, and the knob's radius. It tilts with its position, up to 34° either way
+ * (forward leans away from the axle), and turns with the housing.
+ */
+export function leverGeometry(v: View, centre: Vec, turn: number, g: Design['gears'][number]): { base: Vec; knob: Vec; radius: number } {
+  const c = toScreen(v, centre);
+  const r = Math.max(motorHousingRadius(g) * v.scale, 9);
+  const len = Math.max(r * 1.1, 18);
+  const tilt = (g.motor?.lever?.position ?? 0) * 0.6;
+  // in the housing's frame (screen axes: y down), then turned by −turn like the housing
+  const local: [Vec, Vec] = [[r * 2.15, -r * 0.9], [r * 2.15 + len * Math.sin(tilt), -r * 0.9 - len * Math.cos(tilt)]];
+  const [cs, sn] = [Math.cos(-turn), Math.sin(-turn)];
+  const [base, knob] = local.map(([x, y]): Vec => [c[0] + x * cs - y * sn, c[1] + x * sn + y * cs]);
+  return { base, knob, radius: Math.min(Math.max(r * 0.28, 6), 14) };
+}
+
+function drawLever(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number]) {
+  const lever = g.motor!.lever!;
+  const { base, knob, radius } = leverGeometry(v, s.pos(g.center), s.motorAngle?.(g.id) ?? 0, g);
+  const selected = isSelected(s, 'lever', g.id);
+  const hovered = s.hover?.kind === 'lever' && s.hover.id === g.id;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = C.ink;
+  ctx.lineWidth = Math.max(2.5, radius * 0.45);
+  line(ctx, base, knob);
+  ctx.fillStyle = C.ink; // the pivot
+  ctx.beginPath();
+  ctx.arc(base[0], base[1], Math.max(3, radius * 0.5), 0, Math.PI * 2);
+  ctx.fill();
+  if (selected || hovered) {
+    ctx.fillStyle = C.accent;
+    ctx.globalAlpha = selected ? 0.4 : 0.25;
+    ctx.beginPath();
+    ctx.arc(knob[0], knob[1], radius + 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = lever.color;
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(knob[0], knob[1], radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** Small padlock marking a gear that is locked against turning. */

@@ -1038,6 +1038,17 @@ export class Simulator {
     return near;
   }
 
+  /**
+   * Set the torque at rest of the motor on gear `gearId` while it runs (a lever moving): only
+   * the parameter τ changes, so the state carries on. False if the gear has no running motor.
+   */
+  setMotorTorque(gearId: number, tau: number): boolean {
+    const k = this.sys.derivation.motors.findIndex((m) => m.id === gearId);
+    if (k < 0) return false;
+    this.sys.params[this.motorParams[k].tau] = tau;
+    return true;
+  }
+
   /** Number of points touching the ground now. */
   contactCount(): number {
     return this.contacts.reduce((k, c) => k + (c ? 1 : 0), this.diskContacts.size);

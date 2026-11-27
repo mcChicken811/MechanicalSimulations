@@ -49,7 +49,7 @@
  *    Q = (τ − b ρ̇) ∂ρ/∂q, b = τ/Ω making the torque fall to zero at the no-load speed Ω.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
-import { bodyName, drawnAngle, gearLabel, linkLabel, motorHousingRadius, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
+import { bodyName, drawnAngle, gearLabel, motorTorque, linkLabel, motorHousingRadius, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
 
 export interface Coordinate {
   sym: string;
@@ -986,14 +986,16 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       warnings.push(gr.locked ? `Gear g${lab} is locked, so its motor cannot turn it.` : `Motor M${lab} cannot turn gear g${lab}: the gear and the motor's housing are held together.`);
       continue;
     }
-    const tau = param(`tau${gr.id}`, `\\tau_{\\mathrm{g}${lab}}`, gr.motor.torque, 'N·m');
+    const tau = param(`tau${gr.id}`, `\\tau_{\\mathrm{g}${lab}}`, motorTorque(gr.motor), 'N·m');
     let torque = tau;
     let b: string | null = null;
     if (gr.motor.noLoadRpm > 0) {
       // the torque falls linearly to zero at the no-load speed, reached turning the way τ pushes:
-      // b = |τ| / Ω (a clockwise motor, τ < 0, runs free at ω = −Ω)
+      // b = |τ| / Ω (a clockwise motor, τ < 0, runs free at ω = −Ω). With a lever, b = scale / Ω
+      // whatever its position, so the lever sets the free speed too, as voltage does in a DC motor.
       b = `bm${gr.id}`;
-      const bp = param(b, `b_{\\mathrm{g}${lab}}`, Math.abs(gr.motor.torque) / ((gr.motor.noLoadRpm * 2 * Math.PI) / 60), 'N·m·s');
+      const full = gr.motor.lever ? Math.abs(gr.motor.lever.scale) : Math.abs(gr.motor.torque);
+      const bp = param(b, `b_{\\mathrm{g}${lab}}`, full / ((gr.motor.noLoadRpm * 2 * Math.PI) / 60), 'N·m·s');
       torque = torque.sub(bp.mul(timeDerivative(rel, qs, qds)));
     }
     for (const { coord: i, k } of terms) f[i] = f[i].add(torque.scale(k));

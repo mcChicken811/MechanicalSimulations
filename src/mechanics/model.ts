@@ -137,6 +137,46 @@ export interface DMotor {
    * pushes back on that body instead. Unmounted and unjoined, it is free to spin back.
    */
   mounted?: boolean;
+  /**
+   * A control lever: while it is there, it sets the torque instead of `torque`, as
+   * τ = position × scale (see motorTorque), and the speed falloff is b = scale / Ω.
+   */
+  lever?: DLever;
+}
+
+/**
+ * A lever on a motor, worked from the control dock at the bottom right like a throttle: its
+ * position runs from −1 (full reverse) through 0 (centre) to +1 (full forward), and full
+ * forward gives `scale` N·m. As in a DC motor under voltage control, b = scale / Ω stays put
+ * while the lever moves, so the lever sets both the push and the top speed, ±position × Ω, and
+ * at the centre the motor brakes against being turned.
+ */
+export interface DLever {
+  /** CSS colour, shared by the lever on the motor and its control. */
+  color: string;
+  /** Torque at full forward (N·m). */
+  scale: number;
+  /** −1 … 1. */
+  position: number;
+}
+
+/** Colours for new levers, in order. */
+export const LEVER_COLORS = ['#e04f5f', '#2f9e8f', '#f2a93b', '#7b5ce0', '#3a8fd9', '#d9579b', '#6fae3a', '#8c6d4f'];
+
+/** A colour for a new lever: the first not used by another lever. */
+export function nextLeverColor(d: Design): string {
+  const used = new Set(d.gears.flatMap((g) => (g.motor?.lever ? [g.motor.lever.color] : [])));
+  return LEVER_COLORS.find((c) => !used.has(c)) ?? LEVER_COLORS[used.size % LEVER_COLORS.length];
+}
+
+/** The torque a motor applies at rest: its lever's setting if it has one. */
+export function motorTorque(m: DMotor): number {
+  return m.lever ? m.lever.position * m.lever.scale : m.torque;
+}
+
+/** A deep copy of a gear, its motor and lever included. */
+export function cloneGear(g: DGear): DGear {
+  return { ...g, ...(g.motor ? { motor: { ...g.motor, ...(g.motor.lever ? { lever: { ...g.motor.lever } } : {}) } } : {}) };
 }
 
 /** Radius of a motor's housing, as a disk for its inertia (m). */
@@ -370,5 +410,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map(cloneGear), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
 }

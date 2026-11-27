@@ -4,7 +4,7 @@
  * pinned on its gears, gear and rack meshes, fixed angles, joined bodies); constraints to
  * parts that were not copied are left behind.
  */
-import { nextId, type DBodyRef, type Design } from './model';
+import { cloneGear, nextId, nextLeverColor, type DBodyRef, type Design } from './model';
 
 /** A set of parts of a design, by id. */
 export interface PartSet {
@@ -72,7 +72,7 @@ export function extractParts(d: Design, chosen: PartSet): Design {
       }),
     links: d.links.filter((l) => s.links.has(l.id)).map((l) => ({ ...l })),
     springs: d.springs.filter((sp) => s.springs.has(sp.id)).map((sp) => ({ ...sp })),
-    gears: d.gears.filter((g) => s.gears.has(g.id)).map((g) => ({ ...g })),
+    gears: d.gears.filter((g) => s.gears.has(g.id)).map(cloneGear),
     meshes: d.meshes.filter((m) => s.gears.has(m.a) && s.gears.has(m.b)).map((m) => ({ ...m })),
     rackMeshes: d.rackMeshes.filter((m) => s.gears.has(m.gear) && s.links.has(m.rack)).map((m) => ({ ...m })),
     angles: (d.angles ?? []).filter((a) => s.links.has(a.a) && s.links.has(a.b)).map((a) => ({ ...a })),
@@ -116,7 +116,11 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   }
   for (const l of f.links) d.links.push({ ...l, id: L.get(l.id)!, a: P.get(l.a)!, b: P.get(l.b)! });
   for (const sp of f.springs) d.springs.push({ ...sp, id: S.get(sp.id)!, a: P.get(sp.a)!, b: P.get(sp.b)! });
-  for (const g of f.gears) d.gears.push({ ...g, id: G.get(g.id)!, center: P.get(g.center)! });
+  for (const g of f.gears) {
+    const c = { ...cloneGear(g), id: G.get(g.id)!, center: P.get(g.center)! };
+    if (c.motor?.lever) c.motor.lever.color = nextLeverColor(d); // its own colour, to tell the controls apart
+    d.gears.push(c);
+  }
   for (const m of f.meshes) d.meshes.push({ id: M.get(m.id)!, a: G.get(m.a)!, b: G.get(m.b)! });
   for (const m of f.rackMeshes) d.rackMeshes.push({ id: RM.get(m.id)!, gear: G.get(m.gear)!, rack: L.get(m.rack)! });
   for (const a of f.angles ?? []) (d.angles ??= []).push({ id: A.get(a.id)!, a: L.get(a.a)!, b: L.get(a.b)! });
