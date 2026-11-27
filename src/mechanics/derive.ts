@@ -32,11 +32,12 @@
  *    angle is not a coordinate gets an explicit one, as for gears. The constraint is dropped,
  *    with a warning, when the mechanism already holds that angle (say, two sides of a rigid
  *    triangle), since a redundant constraint would make the equations singular.
- * 11. Joining two bodies into one (bars, racks, gears) fixes body b in body a's frame:
- *    with θ the bodies' angles and r their reference points (a bar's joint a, a gear's
- *    centre), θ_b − θ_a = α and r_b − r_a = Rot(θ_a)(u, v), the constants taken from the
- *    drawing. Equations the mechanism already enforces (bodies sharing a joint need only
- *    the first) are dropped by the same independence test.
+ * 11. Bodies joined into one (bars, racks, gears, joined directly or through others) are
+ *    placed as a single rigid body: one rotation coordinate for the whole group (the first
+ *    bar's angle θ, or the first gear's φ), and every joint of the group at
+ *    r = r_origin + Rot(θ)(u, v), the offsets taken from the drawing. So a group needs at most
+ *    three coordinates and no constraints of its own; its other bars turn at θ plus a constant
+ *    and its gears with θ.
  * 13. A joint pinned onto a bar keeps its drawn place in the bar's frame, r_P − r_A = Rot(θ)(u, v)
  *    (two constraints); a joint on a rail fixed to a body stays on that line as the body moves,
  *    (r_P − r_A) · n(θ) = d with n the rail's normal turning with the body (one constraint). A
@@ -144,6 +145,8 @@ export interface Derivation {
   sliderStops: { joint: number; s: Poly; grad: Poly[]; min: number | null; max: number | null; restitution: number }[];
   /** Motors: the index of the driven gear's φ in q, and the parameter indices of τ and b. */
   motors: { id: number; coord: number; tau: string; b: string | null }[];
+  /** For every gear that turns, the coordinate it turns with one for one (its φ, or its group's angle). */
+  gearCoords: { id: number; coord: number }[];
   /** Centre joint and pitch radius of every gear in the mechanism, for ground contact. */
   gearDisks: { id: number; center: number; radius: number }[];
   /** Symbolic position of every active joint. */
@@ -266,6 +269,53 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   const barAngle = new Map<number, string>();
   /** Rotation of every placed gear (Poly.zero when locked). */
   const gearAngle = new Map<number, Poly>();
+  /** The coordinate symbol a gear's frame turns with (its own φ, or its group's), null if it cannot turn. */
+  const gearSym = new Map<number, string | null>();
+
+  // ---- joined bodies: groups placed as one rigid body ---------------------------------
+  const linkById = new Map(links.map((l) => [l.id, l]));
+  const bodyKey = (r: DBodyRef) => `${r.kind}:${r.id}`;
+  const parent = new Map<string, string>();
+  const find = (k: string): string => {
+    const p = parent.get(k) ?? k;
+    if (p === k) return k;
+    const root = find(p);
+    parent.set(k, root);
+    return root;
+  };
+  const exists = (r: DBodyRef) => (r.kind === 'link' ? linkById.has(r.id) : gearById.has(r.id));
+  for (const j of design.joins ?? []) if (!sameBody(j.a, j.b) && exists(j.a) && exists(j.b)) parent.set(find(bodyKey(j.a)), find(bodyKey(j.b)));
+  const members = new Map<string, DBodyRef[]>();
+  for (const j of design.joins ?? [])
+    for (const r of [j.a, j.b])
+      if (exists(r)) {
+        const root = find(bodyKey(r));
+        const list = members.get(root) ?? [];
+        if (!list.some((x) => sameBody(x, r))) list.push(r);
+        members.set(root, list);
+      }
+  /** A group: its bars and gears, and every joint on them. */
+  interface Group {
+    bars: DLink[];
+    gears: typeof gears;
+    joints: number[];
+  }
+  const groups: Group[] = [];
+  /** Group index of a bar or gear in a group. */
+  const groupOfBody = new Map<string, number>();
+  for (const list of members.values()) {
+    if (list.length < 2) continue;
+    const bars = list.filter((r) => r.kind === 'link').map((r) => linkById.get(r.id)!);
+    const gs = list.filter((r) => r.kind === 'gear').map((r) => gearById.get(r.id)!);
+    const joints = [...new Set([...bars.flatMap((l) => [l.a, l.b]), ...gs.flatMap((g) => gearJoints.get(g.id)!)])];
+    for (const r of list) groupOfBody.set(bodyKey(r), groups.length);
+    groups.push({ bars, gears: gs, joints });
+  }
+  const groupsAt = new Map<number, number[]>();
+  groups.forEach((g, gi) => g.joints.forEach((pid) => groupsAt.set(pid, [...(groupsAt.get(pid) ?? []), gi])));
+  const groupPlaced = new Set<number>();
+  /** Bars of a group other than its reference bar: their angle is the group's coordinate plus `off`. */
+  const groupBar = new Map<number, { sym: string | null; off: number }>();
 
   for (const p of active) {
     if (p.kind === 'fixed') {
@@ -318,6 +368,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       sin = Poly.sin([[sym, 1]]);
     }
     gearAngle.set(gid, phi);
+    gearSym.set(gid, gr.locked ? null : `ph${gid}`);
     const rot = ([u, v]: [Poly, Poly]): [Poly, Poly] => [u.mul(cos).sub(v.mul(sin)), u.mul(sin).add(v.mul(cos))];
     const [fx, fy] = positions.get(fromPid)!;
     const [fu, fv] = rot(pinOffset(gid, fromPid));
@@ -341,9 +392,83 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     }
   };
 
+  /**
+   * Place a whole group of joined bodies from one of its joints that is already placed: one
+   * rotation coordinate (its first bar's angle, or its first gear's φ; none if it holds a locked
+   * gear), and every joint at r_origin + Rot(θ)(u, v) with (u, v) from the drawing.
+   */
+  const placeGroup = (gi: number, fromPid: number) => {
+    groupPlaced.add(gi);
+    const G = groups[gi];
+    const locked = G.gears.some((g) => g.locked);
+    const ref = G.bars[0];
+    const origin = ref ? ref.a : G.gears[0].center;
+    const o = pointById.get(origin)!;
+    // the frame: the reference bar's direction (drawn at th0), or the first gear's
+    let sym: string | null = null;
+    let th0 = 0;
+    if (ref) {
+      const b = pointById.get(ref.b)!;
+      th0 = Math.atan2(b.y - o.y, b.x - o.x);
+    }
+    if (!locked) {
+      if (ref) {
+        sym = `th${ref.id}`;
+        coord(sym, '\\theta', linkLabel(ref.id), 'angle', th0);
+        barAngle.set(ref.id, sym);
+      } else {
+        sym = `ph${G.gears[0].id}`;
+        coord(sym, '\\varphi', gearLabel(G.gears[0].id), 'angle', 0);
+      }
+    }
+    // Rot(θ) of the frame (θ absolute for a bar frame, θ = φ for a gear frame); a locked group keeps its drawn frame
+    const [cos, sin] = sym ? [Poly.cos([[sym, 1]]), Poly.sin([[sym, 1]])] : [Poly.const(Math.cos(th0)), Poly.const(Math.sin(th0))];
+    const offset = (pid: number): [Poly, Poly] => {
+      if (pid === origin) return [Poly.zero, Poly.zero];
+      if (ref && pid === ref.b) return [linkLen.get(ref.id)!, Poly.zero];
+      const p = pointById.get(pid)!;
+      const [dx, dy] = [p.x - o.x, p.y - o.y];
+      const [u, v] = [Math.cos(th0) * dx + Math.sin(th0) * dy, -Math.sin(th0) * dx + Math.cos(th0) * dy];
+      const lab = pointLabel(pid);
+      return [Math.abs(u) < 1e-12 ? Poly.zero : param(`gu${pid}`, `u_{${lab}}`, u, 'm'), Math.abs(v) < 1e-12 ? Poly.zero : param(`gv${pid}`, `v_{${lab}}`, v, 'm')];
+    };
+    const rot = ([u, v]: [Poly, Poly]): [Poly, Poly] => [u.mul(cos).sub(v.mul(sin)), u.mul(sin).add(v.mul(cos))];
+    const [fx, fy] = positions.get(fromPid)!;
+    const [fu, fv] = rot(offset(fromPid));
+    const [ox, oy] = [fx.sub(fu), fy.sub(fv)];
+    const name = `the joined ${[...G.bars.map((l) => `bar ${linkLabel(l.id)}`), ...G.gears.map((g) => `g${gearLabel(g.id)}`)].join(', ')}`;
+    for (const pid of G.joints) {
+      if (pid === fromPid) continue;
+      const [du, dv] = rot(offset(pid));
+      const pos: [Poly, Poly] = [ox.add(du), oy.add(dv)];
+      if (!positions.has(pid)) {
+        positions.set(pid, pos);
+        lockConstraints(pointById.get(pid)!, pos, `on ${name}`);
+        queue.push(pid);
+      } else {
+        // reached a second way: the group closes a loop
+        const [ex, ey] = positions.get(pid)!;
+        const why = `joint ${pointLabel(pid)} on ${name} closes a loop`;
+        constraints.push({ phi: pos[0].sub(ex), reason: `${why} (x)` }, { phi: pos[1].sub(ey), reason: `${why} (y)` });
+      }
+    }
+    for (const l of G.bars) {
+      visitedLink.add(l.id); // rigid inside the group: no loop of its own
+      if (l === ref) continue;
+      const [a, b] = [pointById.get(l.a)!, pointById.get(l.b)!];
+      groupBar.set(l.id, { sym, off: Math.atan2(b.y - a.y, b.x - a.x) - (sym ? th0 : 0) });
+    }
+    for (const g of G.gears) {
+      // a gear's φ is its turn since the drawing: the group's turn
+      gearAngle.set(g.id, sym ? (ref ? Poly.sym(sym).sub(Poly.const(th0)) : Poly.sym(sym)) : Poly.zero);
+      gearSym.set(g.id, sym);
+    }
+  };
+
   const propagate = () => {
     while (queue.length) {
       const pid = queue.shift()!;
+      for (const gi of groupsAt.get(pid) ?? []) if (!groupPlaced.has(gi)) placeGroup(gi, pid);
       for (const gid of gearsAt.get(pid) ?? []) if (!gearAngle.has(gid)) placeGear(gid, pid);
       const [px, py] = positions.get(pid)!;
       for (const l of adjacency.get(pid) ?? []) {
@@ -417,6 +542,8 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   const angleOf = (l: DLink): Poly => {
     const known = barAngle.get(l.id);
     if (known) return Poly.sym(known);
+    const inGroup = groupBar.get(l.id);
+    if (inGroup) return inGroup.sym ? Poly.sym(inGroup.sym).add(Poly.const(inGroup.off)) : Poly.const(inGroup.off);
     const [dx, dy] = relative(l);
     if (!movable(dx) && !movable(dy)) return Poly.zero; // both ends fixed: constant angle
     // A loop-closing bar: make its angle explicit, replacing |Δr| = L by Δr = L(cos θ, sin θ).
@@ -501,9 +628,13 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       ey = Poly.const((b.y - a.y) / L0);
     } else {
       th = angleOf(rack);
-      const sym = barAngle.get(rack.id)!;
-      ex = Poly.cos([[sym, 1]]);
-      ey = Poly.sin([[sym, 1]]);
+      const inGroup = groupBar.get(rack.id);
+      const sym = barAngle.get(rack.id) ?? inGroup?.sym ?? null;
+      const off = inGroup?.off ?? 0;
+      // its direction: cos and sin of θ (+ the group offset)
+      const [c, sn] = sym ? [Poly.cos([[sym, 1]]), Poly.sin([[sym, 1]])] : [Poly.const(1), Poly.zero];
+      ex = c.scale(Math.cos(off)).sub(sn.scale(Math.sin(off)));
+      ey = sn.scale(Math.cos(off)).add(c.scale(Math.sin(off)));
     }
     const [ax, ay] = positions.get(rack.a)!;
     const [cx, cy] = positions.get(gr.center)!;
@@ -556,16 +687,23 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     if (ref.kind === 'link') {
       const l = links.find((x) => x.id === ref.id);
       if (!l) return null;
+      const inGroup = groupBar.get(l.id);
+      // a group's bar uses the group's frame (a constant turn from its own direction)
+      if (inGroup) return { angle: inGroup.sym ? Poly.sym(inGroup.sym) : Poly.zero, sym: inGroup.sym, at: positions.get(l.a)! };
       const angle = angleOf(l);
       return { angle, sym: barAngle.get(l.id) ?? null, at: positions.get(l.a)! };
     }
     const gr = gearById.get(ref.id);
     if (!gr || !gearAngle.has(gr.id)) return null;
-    return { angle: gearAngle.get(gr.id)!, sym: gr.locked ? null : `ph${gr.id}`, at: positions.get(gr.center)! };
+    const sym = gearSym.get(gr.id) ?? null;
+    return { angle: sym ? Poly.sym(sym) : Poly.zero, sym, at: positions.get(gr.center)! };
   };
   const joinNames = new Map<number, string>();
   for (const j of design.joins ?? []) {
     if (sameBody(j.a, j.b)) continue;
+    // bodies placed as one group are rigid already
+    const [ga, gb] = [groupOfBody.get(bodyKey(j.a)), groupOfBody.get(bodyKey(j.b))];
+    if (ga !== undefined && ga === gb && groupPlaced.has(ga)) continue;
     const A = bodyFrame(j.a);
     const B = bodyFrame(j.b);
     if (!A || !B) continue;
@@ -645,6 +783,13 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   }
 
   const qs = coords.map((c) => c.sym);
+  /** The coordinate a gear turns with, one for one (its own φ, or its group's angle); −1 if none. */
+  const gearCoordOf = (gid: number): number => {
+    const a = gearAngle.get(gid);
+    if (!a) return -1;
+    const deps = qs.filter((q) => a.dependsOn(q));
+    return deps.length === 1 && a.diff(deps[0]).constantValue() === 1 ? qs.indexOf(deps[0]) : -1;
+  };
 
   // ---- slider end stops --------------------------------------------------------------
   // s = (r_P − r_A) · t(θ) − s₀: travel along the rail, t its direction turning with the body
@@ -708,7 +853,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     const R = gearRadius.get(gr.id)!;
     T = T.add(m.scale(0.5).mul(dot(vc, vc)));
     if (!gr.locked) {
-      const w = Poly.sym(`ph${gr.id}_d`);
+      const w = timeDerivative(gearAngle.get(gr.id)!, qs, qds); // φ̇: its own coordinate's rate, or its group's
       T = T.add(m.mul(R).mul(R).mul(w).mul(w).scale(0.25)); // ½ I φ̇², I = ½ m R²
     }
     if (g) V = V.add(m.mul(g).mul(rc[1]));
@@ -766,7 +911,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   for (const gr of gears) {
     if (!gr.motor) continue;
     const lab = gearLabel(gr.id);
-    const k = qs.indexOf(`ph${gr.id}`);
+    const k = gearCoordOf(gr.id);
     if (k < 0) {
       warnings.push(`Gear g${lab} is locked, so its motor cannot turn it.`);
       continue;
@@ -852,6 +997,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     gearAngles: [...gearAngle].map(([id, angle]) => ({ id, angle })),
     motors,
     sliderStops,
+    gearCoords: [...gearAngle.keys()].map((id) => ({ id, coord: gearCoordOf(id) })).filter((g) => g.coord >= 0),
     gearDisks: gears.filter((gr) => gearAngle.has(gr.id)).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),
     phiQ,
     gamma,

@@ -638,17 +638,17 @@ describe('joined bodies', () => {
       joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'gear', id: 0 } }],
     };
     const der = deriveEquations(d, { gravity: G });
-    expect(der.coords.length - der.constraints.length).toBe(1);
-    expect(der.constraints.filter((c) => c.joined === 0)).toHaveLength(1); // the shared axle already holds x and y
+    // placed as one body: a single coordinate (the bar's angle) and no constraints at all
+    expect(der.coords.map((c) => c.sym)).toEqual(['th0']);
+    expect(der.constraints).toHaveLength(0);
     const s = new Simulator(new NumericSystem(der));
     // released horizontal: θ̈ = −(m g L/2) / (m L²/3 + ½ M R²) at the start
     const I = 1 / 3 + 0.5 * 4 * 0.25;
     const h = 1e-3;
     s.step(h);
-    const th = s.q[der.coords.findIndex((c) => c.sym === 'th0')];
+    const th = s.q[0];
     expect(th).toBeCloseTo(-0.5 * (G * 0.5 / I) * h * h, 9);
-    const ph = s.q[der.coords.findIndex((c) => c.sym === 'ph0')];
-    expect(ph).toBeCloseTo(th, 12);
+    expect(s.gearAngles().get(0)!).toBeCloseTo(th, 12); // the gear turns with the bar
   });
 
   it('a floating bar joined to a pendulum keeps its place on it', () => {
@@ -677,7 +677,7 @@ describe('joined bodies', () => {
     expect(Math.abs(total(s) - e0)).toBeLessThan(1e-6);
   });
 
-  it('warns when the bodies already move as one', () => {
+  it('a join inside an already rigid triangle changes nothing', () => {
     const d: Design = {
       points: [
         { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
@@ -694,7 +694,7 @@ describe('joined bodies', () => {
     };
     const der = deriveEquations(d, { gravity: G });
     expect(der.coords.length - der.constraints.length).toBe(1);
-    expect(der.warnings.some((w) => w.includes('already move as one body'))).toBe(true);
+    expect(der.constraints.some((c) => c.joined !== undefined)).toBe(false);
   });
 
   it('joins a gear to a rack, so the pair slides and turns as one', () => {

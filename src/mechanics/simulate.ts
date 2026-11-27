@@ -65,7 +65,8 @@ export class NumericSystem {
     this.springBuf = new Float64Array(d.springs.length * (this.n + 1));
     this.gearIds = d.gearAngles.map((ga) => ga.id);
     this.gearAngleFn = compile(d.gearAngles.map((ga) => ga.angle), inputs);
-    this.gearCoord = new Map(this.gearIds.map((id) => [id, d.coords.findIndex((c) => c.sym === `ph${id}`)]));
+    // the coordinate each gear turns with (its own φ, or the angle of the group it is joined into)
+    this.gearCoord = new Map(this.gearIds.map((id) => [id, d.gearCoords.find((g) => g.id === id)?.coord ?? -1]));
     this.meshGradFn = compile(d.meshes.flatMap((m) => m.pitchGrad), inputs);
     this.stopFn = compile(d.sliderStops.flatMap((st) => [st.s, ...st.grad]), inputs);
   }
