@@ -926,7 +926,7 @@ describe('motors', () => {
     const s = new Simulator(new NumericSystem(der));
     const E0 = s.energy().T + s.energy().V;
     for (let i = 0; i < 4000; i++) expect(s.step(1e-3)).toBe(true);
-    expect(s.q[der.motors[0].coord] / (2 * Math.PI)).toBeGreaterThan(3); // over three turns in 4 s
+    expect(s.q[der.motors[0].terms[0].coord] / (2 * Math.PI)).toBeGreaterThan(3); // over three turns in 4 s
     const e = s.energy();
     expect(Math.abs(e.T + e.V + s.dissipated - s.motorWork - E0)).toBeLessThan(1e-6);
   }, 20000);
@@ -1168,5 +1168,57 @@ describe('terrain peaks against bars', () => {
     const midY = (p.get(0)![1] + p.get(1)![1]) / 2;
     expect(midY).toBeGreaterThan(0.19); // resting on the peak at 0.2, not fallen through it
     expect(worst).toBeLessThan(5e-3);
+  });
+});
+
+describe('motor housings', () => {
+  const geared = (motor: Record<string, unknown>, extra: Partial<Design> = {}): Design => ({
+    points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }],
+    links: [], springs: [], meshes: [], rackMeshes: [],
+    gears: [{ id: 0, center: 0, radius: 0.2, teeth: 13, mass: 2, locked: false, motor: { torque: 0.5, noLoadRpm: 0, ...motor } }],
+    ...extra,
+  });
+
+  it('a free housing spins back, so the gear and the housing share no net angular momentum', () => {
+    const der = deriveEquations(geared({ mounted: false, mass: 1 }), { gravity: G });
+    expect(der.coords.map((c) => c.sym).sort()).toEqual(['ms0', 'ph0']);
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 1000; i++) s.step(1e-3);
+    const Ig = 0.5 * 2 * 0.2 ** 2;
+    const Is = 0.5 * 1 * (0.6 * 0.2) ** 2;
+    const phi = s.gearAngles().get(0)!;
+    const psi = s.motorAngles().get(0)!;
+    expect(phi).toBeCloseTo(0.5 * (0.5 / Ig), 9); // ½ (τ/I_g) t² with t = 1
+    expect(psi).toBeCloseTo(-0.5 * (0.5 / Is), 9); // and the housing the other way, −½ (τ/I_s) t²
+    // all the motor's work went into the two spins
+    expect(s.motorWork).toBeCloseTo(s.energy().T, 9);
+  });
+
+  it('a housing joined to a swinging arm pushes the arm back, keeping the total angular momentum at zero', () => {
+    // no gravity: an arm pivoted at O carries the gear's axle at its end, with the motor's housing joined to the arm
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+      ],
+      links: [{ id: 0, a: 0, b: 1, mass: 1 }],
+      springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 1, radius: 0.2, teeth: 13, mass: 2, locked: false, motor: { torque: 0.5, noLoadRpm: 0, mass: 1 } }],
+      joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'motor', id: 0 } }],
+    };
+    const der = deriveEquations(d, { gravity: 0 });
+    expect(der.coords.length - der.constraints.length).toBe(2); // the arm (with the housing) and the gear
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 1000; i++) expect(s.step(1e-3)).toBe(true);
+    const th = s.q[der.coords.findIndex((c) => c.sym === 'th0')];
+    const thd = s.qd[der.coords.findIndex((c) => c.sym === 'th0')];
+    const phid = s.qd[der.coords.findIndex((c) => c.sym === 'ph0')];
+    expect(th).toBeLessThan(0); // the arm turns back against the gear
+    // angular momentum about O: arm (m L²/3) + housing and gear masses at the end (m L²) + housing spin (I_s θ̇) + gear spin (I_g φ̇)
+    const Ig = 0.5 * 2 * 0.2 ** 2;
+    const Is = 0.5 * 1 * (0.6 * 0.2) ** 2;
+    const L = (1 / 3 + 1 + 2) * thd + Is * thd + Ig * phid;
+    expect(Math.abs(L)).toBeLessThan(1e-9);
+    expect(Math.abs(s.energy().T - s.motorWork)).toBeLessThan(1e-9);
   });
 });

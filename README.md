@@ -154,9 +154,16 @@ Tick **Friction & heating** to add viscous friction in pin joints, rails and gea
 
 ### Motors
 
-A motor turns its gear with a torque τ, given in N·m; a positive torque turns it anticlockwise. The motor itself is fixed to the ground. With a no-load speed Ω, the torque falls in a straight line from τ at rest to zero at Ω, as it does for a DC motor. Above Ω the motor brakes. A no-load speed of 0 gives a constant torque whatever the speed.
+A motor turns its gear with a torque τ, given in N·m; a positive torque turns it anticlockwise. With a no-load speed Ω, the torque falls in a straight line from τ at rest to zero at Ω, as it does for a DC motor. Above Ω the motor brakes. A no-load speed of 0 gives a constant torque whatever the speed.
 
-The torque enters the gear's equation of motion as the generalized force Q_φ = τ − b φ̇, with b = τ/Ω, so the equations panel shows it. To drive a bar, such as a crank, join a gear to it with **Join bodies**. You can change the torque and the speed while the simulation runs. The status bar adds the motor's work, W_m, to the energy budget, so E + W − W_m stays constant.
+**The housing.** A motor is a body of its own: a housing, drawn as a box on the gear's axle, that turns about the axle. The motor turns the gear by τ and its own housing back by −τ, as a real motor does. What happens to that reaction depends on how the housing is held:
+- **Mounted on the ground:** this is the default when the axle is pinned to the ground. The housing can't turn, and the ground takes the reaction.
+- **Joined to other bodies:** with **Join bodies**, click the part of the housing outside the gear, or use the gear inspector's **Join to** under the motor. The housing then pushes back on what it's joined to, such as a frame or an arm.
+- **Free:** neither mounted nor joined. The housing spins back the other way.
+
+In the equations, the torque acts on the gear's turn inside its housing, ρ = φ − ψ, as the generalized force Q = (τ − b ρ̇) ∂ρ/∂q with b = τ/Ω. This puts +τ on the gear and −τ on whatever the housing is part of, with nothing pushing from nowhere. The housing has a mass, 0.5 kg by default and set in the inspector, and turns as a disk of 0.6 times the gear's radius.
+
+The equations panel shows the torque. To drive a bar, such as a crank, join a gear to it with **Join bodies**. You can change the torque and the speed while the simulation runs. The status bar adds the motor's work, W_m, to the energy budget, so E + W − W_m stays constant.
 
 Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
 
@@ -195,7 +202,6 @@ Examples:
 - Gears are external spur gears and straight racks. There are no ring gears.
 - Parts only collide with the ground, not with each other. The ground is a terrain line through waypoints, and very steep bars, over 60°, only touch it at their ends. Contact is slightly soft: resting parts sink about 0.16 mm, and fast impacts a few millimetres.
 - Springs have no mass, and friction is viscous (proportional to speed).
-- Motors push against the ground. A motor on a gear that rides on a moving part does not push back on that part.
 
 ## Project layout
 

@@ -123,7 +123,18 @@ export interface DMotor {
   torque: number;
   /** No-load speed Ω (rpm); 0 for a constant torque. */
   noLoadRpm: number;
+  /** Mass of the motor's housing (kg); 0.5 if absent. */
+  mass?: number;
+  /**
+   * Whether the housing is mounted on the ground (true if absent), so it cannot turn and the
+   * reaction goes into the ground. Only for a housing not joined to another body: joined, it
+   * pushes back on that body instead. Unmounted and unjoined, it is free to spin back.
+   */
+  mounted?: boolean;
 }
+
+/** Radius of a motor's housing, as a disk for its inertia (m). */
+export const motorHousingRadius = (g: { radius: number }) => 0.6 * g.radius;
 
 /**
  * Two gears in mesh. Their pitch circles roll on each other, which imposes
@@ -160,7 +171,8 @@ export interface DAngle {
 
 /** A rigid body of the design: a bar (racks included) or a gear. */
 export interface DBodyRef {
-  kind: 'link' | 'gear';
+  /** A bar or rack, a gear, or the housing of the motor on gear `id`. */
+  kind: 'link' | 'gear' | 'motor';
   id: number;
 }
 
@@ -180,6 +192,7 @@ export const sameBody = (x: DBodyRef, y: DBodyRef) => x.kind === y.kind && x.id 
 /** "bar 3", "rack 2" or "gear g1". */
 export function bodyName(d: Design, ref: DBodyRef): string {
   if (ref.kind === 'gear') return `gear g${gearLabel(ref.id)}`;
+  if (ref.kind === 'motor') return `motor M${gearLabel(ref.id)}`;
   return `${d.links.find((l) => l.id === ref.id)?.rack ? 'rack' : 'bar'} ${linkLabel(ref.id)}`;
 }
 

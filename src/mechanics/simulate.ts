@@ -27,6 +27,7 @@ export class NumericSystem {
   private readonly gearAngleFn: CompiledFn;
   /** Per slider stop: [s, ∂s/∂q_0, …, ∂s/∂q_{n−1}]. */
   private readonly stopFn: CompiledFn;
+  private readonly motorAngleFn: CompiledFn;
   private readonly meshGradFn: CompiledFn;
   /** Gear ids in gearAngles order, and the index of each gear's φ in q (−1 when locked). */
   readonly gearIds: number[];
@@ -69,6 +70,11 @@ export class NumericSystem {
     this.gearCoord = new Map(this.gearIds.map((id) => [id, d.gearCoords.find((g) => g.id === id)?.coord ?? -1]));
     this.meshGradFn = compile(d.meshes.flatMap((m) => m.pitchGrad), inputs);
     this.stopFn = compile(d.sliderStops.flatMap((st) => [st.s, ...st.grad]), inputs);
+    this.motorAngleFn = compile(d.motorAngles.map((m) => m.angle), inputs);
+  }
+  /** Turn ψ of every motor housing, in derivation.motorAngles order. */
+  motorAngles(q: ArrayLike<number>, out: Float64Array) {
+    this.motorAngleFn(q, EMPTY, this.params, out);
   }
   /** Per slider stop: its travel s and ∂s/∂q (n + 1 entries each, concatenated). */
   stops(q: ArrayLike<number>, out: Float64Array) {
@@ -367,7 +373,7 @@ export class Simulator {
   private readonly stageContactPower = new Float64Array(4);
   /** Motor power delivered at each RK4 stage (W). */
   private readonly stageMotorPower = new Float64Array(4);
-  private readonly motorParams: { coord: number; tau: number; b: number }[];
+  private readonly motorParams: { terms: { coord: number; k: number }[]; tau: number; b: number }[];
   /** Slider end stops: travel and gradient per stop, and the effective mass when touching (per end). */
   private readonly stopBuf: Float64Array;
   private readonly stopMass: (number | null)[];
@@ -400,7 +406,7 @@ export class Simulator {
     this.bodyGrad = Array.from({ length: maxBodies }, () => new Float64Array(n));
     this.meshBuf = new Float64Array(d.meshes.length * n);
     const paramIndex = new Map(d.params.map((p, i) => [p.sym, i]));
-    this.motorParams = d.motors.map((m) => ({ coord: m.coord, tau: paramIndex.get(m.tau)!, b: m.b ? paramIndex.get(m.b)! : -1 }));
+    this.motorParams = d.motors.map((m) => ({ terms: m.terms, tau: paramIndex.get(m.tau)!, b: m.b ? paramIndex.get(m.b)! : -1 }));
     this.candidates = [
       ...[...sys.pointIndex.values()].map((point) => ({ point })),
       ...d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, gear: { phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius } })),
@@ -439,10 +445,12 @@ export class Simulator {
     this.applyContacts(q, qd, f, stage);
     this.applyStops(q, qd, f, stage);
     if (stage >= 0) {
-      // the motors' torque is in f already (symbolically); here only its power τ(φ̇) φ̇
+      // the motors' torque is in f already (symbolically); here only the power they put in,
+      // τ(ρ̇) ρ̇ with ρ̇ the gear's turn rate in its housing
       let P = 0;
       for (const m of this.motorParams) {
-        const w = qd[m.coord];
+        let w = 0;
+        for (const t of m.terms) w += t.k * qd[t.coord];
         P += (sys.params[m.tau] - (m.b >= 0 ? sys.params[m.b] * w : 0)) * w;
       }
       this.stageMotorPower[stage] = P;
@@ -1121,6 +1129,14 @@ export class Simulator {
     const out = new Float64Array(this.sys.gearIds.length);
     this.sys.gearAngles(this.q, out);
     return new Map(this.sys.gearIds.map((id, i) => [id, out[i]]));
+  }
+
+  /** Current turn of every motor housing since the drawing, keyed by its gear's id. */
+  motorAngles(): Map<number, number> {
+    const d = this.sys.derivation;
+    const out = new Float64Array(d.motorAngles.length);
+    this.sys.motorAngles(this.q, out);
+    return new Map(d.motorAngles.map((m, i) => [m.id, out[i]]));
   }
 
   constraintError(): number {

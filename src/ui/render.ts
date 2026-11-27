@@ -1,4 +1,4 @@
-import { gearLabel, GEAR_MODULE, linkLabel, pointLabel, rackPitch, railOf, sharedJoint, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import { gearLabel, GEAR_MODULE, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, sharedJoint, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
 import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
 
@@ -24,6 +24,8 @@ export interface Scene {
   preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear' | 'rack'; meshAt?: Vec | null; side?: 1 | -1 } | null;
   /** Current rotation of a gear (0 while editing). */
   gearAngle: (id: number) => number;
+  /** Current turn of the housing of the motor on a gear, since the drawing (0 while editing). */
+  motorAngle?: (id: number) => number;
   /** Temperature rise (K) of joints and gear meshes from friction, while simulating. */
   heat?: Heat | null;
   grab: { at: Vec; to: Vec; force: Vec } | null;
@@ -91,9 +93,9 @@ function joinColors(d: Design): Map<string, string> {
     parent.set(k, root);
     return root;
   };
-  const key = (r: { kind: 'link' | 'gear'; id: number }) => `${r.kind}:${r.id}`;
+  const key = (r: DBodyRef) => `${r.kind}:${r.id}`;
   for (const j of d.joins ?? []) parent.set(find(key(j.a)), find(key(j.b)));
-  const groups = new Map<string, { kind: 'link' | 'gear'; id: number }[]>();
+  const groups = new Map<string, DBodyRef[]>();
   for (const j of d.joins ?? [])
     for (const r of [j.a, j.b]) {
       const g = groups.get(find(key(r))) ?? [];
@@ -120,6 +122,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
 
   const phases = toothPhases(s.design);
+  for (const g of s.design.gears) if (g.motor) drawHousing(ctx, v, s, g); // under its gear
   drawGears(ctx, v, s, phases.gears);
   for (const sp of s.design.springs) drawSpring(ctx, v, s, sp);
   for (const l of s.design.links) {
@@ -386,7 +389,7 @@ function bodyMotion(s: Scene, ref: DBodyRef): { turn: number; map: (p: Vec) => V
     const c = g && at(g.center);
     if (!g || !c) return null;
     [o0, o1] = [[c.x, c.y], s.pos(g.center)];
-    turn = s.gearAngle(g.id);
+    turn = ref.kind === 'motor' ? (s.motorAngle?.(g.id) ?? 0) : s.gearAngle(g.id);
   }
   const [cs, sn] = [Math.cos(turn), Math.sin(turn)];
   return { turn, map: ([x, y]) => [o1[0] + (x - o0[0]) * cs - (y - o0[1]) * sn, o1[1] + (x - o0[0]) * sn + (y - o0[1]) * cs] };
@@ -425,7 +428,7 @@ function drawRail(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, 
       const half = r.on.kind === 'gear' ? (s.design.gears.find((g) => g.id === r.on!.id)?.radius ?? 0.1) * 1.4 : 0.25;
       const [lo, hi] = [range?.min ?? -half, range?.max ?? half];
       const along = (t: number) => toScreen(v, m.map([p.x + Math.cos(a) * t, p.y + Math.sin(a) * t]));
-      const color = r.on.kind === 'link' ? linkColor(r.on.id) : gearColor(r.on.id);
+      const color = r.on.kind === 'link' ? linkColor(r.on.id) : r.on.kind === 'motor' ? (groupColors.get(`motor:${r.on.id}`) ?? C.ink) : gearColor(r.on.id);
       ctx.strokeStyle = color;
       ctx.lineCap = 'round';
       line(ctx, along(lo), along(hi));
@@ -707,9 +710,9 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
 }
 
 /**
- * A motor on a gear: a curved arrow around the axle in the direction of its torque (drawn in
- * screen space, where y points down, so anticlockwise in the world is anticlockwise here too),
- * and an "M" badge just above the axle.
+ * The torque arrow of a motor on its gear: a curved red arrow around the axle in the direction
+ * of the torque (drawn in screen space, where y points down, so anticlockwise in the world is
+ * anticlockwise here too). The motor's housing is drawn separately, under the gear.
  */
 function drawMotor(ctx: CanvasRenderingContext2D, [x, y]: Vec, r: number, torque: number) {
   if (torque === 0) return;
@@ -734,16 +737,60 @@ function drawMotor(ctx: CanvasRenderingContext2D, [x, y]: Vec, r: number, torque
   ctx.lineTo(ex - tx * 3 - nx * 5, ey - ty * 3 - ny * 5);
   ctx.closePath();
   ctx.fill();
-  // badge
+  ctx.restore();
+}
+
+/**
+ * A motor's housing: a rounded box from the axle out to one side (to the right as drawn),
+ * turning with the housing, with an "M" on it. In its group's colour when joined to other bodies,
+ * dark grey otherwise, and hatched underneath when mounted on the ground.
+ */
+function drawHousing(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number]) {
+  const c = toScreen(v, s.pos(g.center));
+  const turn = s.motorAngle?.(g.id) ?? 0;
+  const r = Math.max(motorHousingRadius(g) * v.scale, 9);
+  const joined = groupColors.get(`motor:${g.id}`);
+  const selected = isSelected(s, 'gear', g.id);
+  const hovered = s.hover?.kind === 'gear' && s.hover.id === g.id;
+  ctx.save();
+  ctx.translate(c[0], c[1]);
+  ctx.rotate(-turn); // the screen's y points down
+  const [x0, x1, hh] = [-r * 0.9, r * 2.6, r * 0.9];
+  if (selected || hovered) {
+    ctx.fillStyle = C.accent;
+    ctx.globalAlpha = selected ? 0.35 : 0.2;
+    ctx.beginPath();
+    ctx.roundRect(x0 - 6, -hh - 6, x1 - x0 + 12, 2 * hh + 12, 8);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = joined ?? '#5d6068';
+  ctx.strokeStyle = C.ink;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(x, y - r, 8, 0, Math.PI * 2);
+  ctx.roundRect(x0, -hh, x1 - x0, 2 * hh, Math.min(6, hh));
   ctx.fill();
+  ctx.stroke();
+  // cooling fins and the end cap
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1;
+  for (let k = 1; k <= 3; k++) line(ctx, [r * (1.0 + 0.25 * k), -hh + 3], [r * (1.0 + 0.25 * k), hh - 3]);
   ctx.fillStyle = '#fff';
-  ctx.font = '700 10px system-ui, sans-serif';
+  ctx.font = `700 ${Math.round(Math.min(14, hh))}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('M', x, y - r + 0.5);
+  ctx.fillText('M', r * 2.15, 0.5); // out beyond the gear's rim
   ctx.restore();
+  if (g.motor?.mounted !== false && !joined) {
+    // mounted on the ground: a short hatched base under the far end
+    const end = toScreen(v, [s.pos(g.center)[0] + 2 * motorHousingRadius(g), s.pos(g.center)[1] - motorHousingRadius(g)]);
+    ctx.save();
+    ctx.strokeStyle = C.ground;
+    ctx.lineWidth = 1.5;
+    line(ctx, [end[0] - 10, end[1] + 2], [end[0] + 10, end[1] + 2]);
+    for (let k = -8; k <= 8; k += 4) line(ctx, [end[0] + k, end[1] + 2], [end[0] + k - 4, end[1] + 7]);
+    ctx.restore();
+  }
 }
 
 /** Small padlock marking a gear that is locked against turning. */

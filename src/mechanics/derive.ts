@@ -43,11 +43,13 @@
  *    (r_P − r_A) · n(θ) = d with n the rail's normal turning with the body (one constraint). A
  *    ground rail at any angle gives n · (r_P − r_0) = 0, or, for a joint that seeds a floating
  *    part, a single coordinate s along the rail.
- * 12. A motor on a gear adds the generalized force Q_φ = τ − b φ̇ to the gear's equation:
- *    a constant torque τ, less b = τ/Ω as the gear nears the motor's no-load speed Ω.
+ * 12. A motor is a body of its own: a housing (a disk turning by ψ about the gear's axle),
+ *    mounted on the ground, free, or joined to other bodies. It turns the gear by τ and its own
+ *    housing back by −τ: with the relative angle ρ = φ − ψ, the generalized force is
+ *    Q = (τ − b ρ̇) ∂ρ/∂q, b = τ/Ω making the torque fall to zero at the no-load speed Ω.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
-import { bodyName, drawnAngle, gearLabel, linkLabel, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
+import { bodyName, drawnAngle, gearLabel, linkLabel, motorHousingRadius, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
 
 export interface Coordinate {
   sym: string;
@@ -144,7 +146,9 @@ export interface Derivation {
    */
   sliderStops: { joint: number; s: Poly; grad: Poly[]; min: number | null; max: number | null; restitution: number }[];
   /** Motors: the index of the driven gear's φ in q, and the parameter indices of τ and b. */
-  motors: { id: number; coord: number; tau: string; b: string | null }[];
+  motors: { id: number; terms: { coord: number; k: number }[]; tau: string; b: string | null }[];
+  /** Rotation ψ of every motor housing (by its gear's id), for drawing. */
+  motorAngles: { id: number; angle: Poly }[];
   /** For every gear that turns, the coordinate it turns with one for one (its φ, or its group's angle). */
   gearCoords: { id: number; coord: number }[];
   /** Centre joint and pitch radius of every gear in the mechanism, for ground contact. */
@@ -235,6 +239,16 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   const gearMass = new Map<number, Poly>();
   const gearRadius = new Map<number, Poly>();
   const gearTeeth = new Map<number, Poly>();
+  // motor housings: mass and moment of inertia (a disk of the housing's radius)
+  const housingMass = new Map<number, Poly>();
+  const housingInertia = new Map<number, Poly>();
+  for (const gr of gears) {
+    if (!gr.motor) continue;
+    const lab = gearLabel(gr.id);
+    const m = Math.max(gr.motor.mass ?? 0.5, 1e-6);
+    housingMass.set(gr.id, param(`mm${gr.id}`, `m_{\\mathrm{M}${lab}}`, m, 'kg'));
+    housingInertia.set(gr.id, param(`Im${gr.id}`, `I_{\\mathrm{M}${lab}}`, 0.5 * m * motorHousingRadius(gr) ** 2, 'kg·m²'));
+  }
   for (const gr of gears) {
     const lab = gearLabel(gr.id);
     gearMass.set(gr.id, param(`mg${gr.id}`, `m_{\\mathrm{g}${lab}}`, Math.max(gr.mass, 1e-6), 'kg'));
@@ -271,6 +285,9 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   const gearAngle = new Map<number, Poly>();
   /** The coordinate symbol a gear's frame turns with (its own φ, or its group's), null if it cannot turn. */
   const gearSym = new Map<number, string | null>();
+  /** Rotation ψ of each motor housing since the drawing, by its gear's id, and the symbol it turns with. */
+  const housingAngle = new Map<number, Poly>();
+  const housingSym = new Map<number, string | null>();
 
   // ---- joined bodies: groups placed as one rigid body ---------------------------------
   const linkById = new Map(links.map((l) => [l.id, l]));
@@ -283,7 +300,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     parent.set(k, root);
     return root;
   };
-  const exists = (r: DBodyRef) => (r.kind === 'link' ? linkById.has(r.id) : gearById.has(r.id));
+  const exists = (r: DBodyRef) => (r.kind === 'link' ? linkById.has(r.id) : r.kind === 'gear' ? gearById.has(r.id) : !!gearById.get(r.id)?.motor);
   for (const j of design.joins ?? []) if (!sameBody(j.a, j.b) && exists(j.a) && exists(j.b)) parent.set(find(bodyKey(j.a)), find(bodyKey(j.b)));
   const members = new Map<string, DBodyRef[]>();
   for (const j of design.joins ?? [])
@@ -298,6 +315,8 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   interface Group {
     bars: DLink[];
     gears: typeof gears;
+    /** Gears whose motor housing is in the group. */
+    housings: typeof gears;
     joints: number[];
   }
   const groups: Group[] = [];
@@ -307,9 +326,10 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     if (list.length < 2) continue;
     const bars = list.filter((r) => r.kind === 'link').map((r) => linkById.get(r.id)!);
     const gs = list.filter((r) => r.kind === 'gear').map((r) => gearById.get(r.id)!);
-    const joints = [...new Set([...bars.flatMap((l) => [l.a, l.b]), ...gs.flatMap((g) => gearJoints.get(g.id)!)])];
+    const hs = list.filter((r) => r.kind === 'motor').map((r) => gearById.get(r.id)!);
+    const joints = [...new Set([...bars.flatMap((l) => [l.a, l.b]), ...gs.flatMap((g) => gearJoints.get(g.id)!), ...hs.map((g) => g.center)])];
     for (const r of list) groupOfBody.set(bodyKey(r), groups.length);
-    groups.push({ bars, gears: gs, joints });
+    groups.push({ bars, gears: gs, housings: hs, joints });
   }
   const groupsAt = new Map<number, number[]>();
   groups.forEach((g, gi) => g.joints.forEach((pid) => groupsAt.set(pid, [...(groupsAt.get(pid) ?? []), gi])));
@@ -402,7 +422,8 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     const G = groups[gi];
     const locked = G.gears.some((g) => g.locked);
     const ref = G.bars[0];
-    const origin = ref ? ref.a : G.gears[0].center;
+    const refDisk = G.gears[0] ?? G.housings[0]; // a gear, or else a motor housing, gives the frame
+    const origin = ref ? ref.a : refDisk.center;
     const o = pointById.get(origin)!;
     // the frame: the reference bar's direction (drawn at th0), or the first gear's
     let sym: string | null = null;
@@ -416,9 +437,12 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
         sym = `th${ref.id}`;
         coord(sym, '\\theta', linkLabel(ref.id), 'angle', th0);
         barAngle.set(ref.id, sym);
-      } else {
+      } else if (G.gears.length) {
         sym = `ph${G.gears[0].id}`;
         coord(sym, '\\varphi', gearLabel(G.gears[0].id), 'angle', 0);
+      } else {
+        sym = `ms${refDisk.id}`;
+        coord(sym, '\\psi', gearLabel(refDisk.id), 'angle', 0);
       }
     }
     // Rot(θ) of the frame (θ absolute for a bar frame, θ = φ for a gear frame); a locked group keeps its drawn frame
@@ -436,7 +460,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     const [fx, fy] = positions.get(fromPid)!;
     const [fu, fv] = rot(offset(fromPid));
     const [ox, oy] = [fx.sub(fu), fy.sub(fv)];
-    const name = `the joined ${[...G.bars.map((l) => `bar ${linkLabel(l.id)}`), ...G.gears.map((g) => `g${gearLabel(g.id)}`)].join(', ')}`;
+    const name = `the joined ${[...G.bars.map((l) => `bar ${linkLabel(l.id)}`), ...G.gears.map((g) => `g${gearLabel(g.id)}`), ...G.housings.map((g) => `motor M${gearLabel(g.id)}`)].join(', ')}`;
     for (const pid of G.joints) {
       if (pid === fromPid) continue;
       const [du, dv] = rot(offset(pid));
@@ -463,13 +487,33 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       gearAngle.set(g.id, sym ? (ref ? Poly.sym(sym).sub(Poly.const(th0)) : Poly.sym(sym)) : Poly.zero);
       gearSym.set(g.id, sym);
     }
+    for (const g of G.housings) {
+      // a housing in a group turns with it (its mounting does not matter then)
+      housingAngle.set(g.id, sym ? (ref ? Poly.sym(sym).sub(Poly.const(th0)) : Poly.sym(sym)) : Poly.zero);
+      housingSym.set(g.id, sym);
+    }
   };
+
+  /** A motor housing on its own: mounted on the ground (no coordinate), or free to turn by ψ. */
+  const placeHousing = (gr: (typeof gears)[number]) => {
+    if (gr.motor!.mounted !== false) {
+      housingAngle.set(gr.id, Poly.zero);
+      housingSym.set(gr.id, null);
+      return;
+    }
+    const sym = `ms${gr.id}`;
+    housingAngle.set(gr.id, coord(sym, '\\psi', gearLabel(gr.id), 'angle', 0));
+    housingSym.set(gr.id, sym);
+  };
+  const housingsAt = new Map<number, (typeof gears)[number][]>();
+  for (const gr of gears) if (gr.motor) housingsAt.set(gr.center, [...(housingsAt.get(gr.center) ?? []), gr]);
 
   const propagate = () => {
     while (queue.length) {
       const pid = queue.shift()!;
       for (const gi of groupsAt.get(pid) ?? []) if (!groupPlaced.has(gi)) placeGroup(gi, pid);
       for (const gid of gearsAt.get(pid) ?? []) if (!gearAngle.has(gid)) placeGear(gid, pid);
+      for (const gr of housingsAt.get(pid) ?? []) if (!housingAngle.has(gr.id)) placeHousing(gr);
       const [px, py] = positions.get(pid)!;
       for (const l of adjacency.get(pid) ?? []) {
         if (visitedLink.has(l.id)) continue;
@@ -694,6 +738,11 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       return { angle, sym: barAngle.get(l.id) ?? null, at: positions.get(l.a)! };
     }
     const gr = gearById.get(ref.id);
+    if (ref.kind === 'motor') {
+      if (!gr || !housingAngle.has(gr.id)) return null;
+      const hs = housingSym.get(gr.id) ?? null;
+      return { angle: hs ? Poly.sym(hs) : Poly.zero, sym: hs, at: positions.get(gr.center)! };
+    }
     if (!gr || !gearAngle.has(gr.id)) return null;
     const sym = gearSym.get(gr.id) ?? null;
     return { angle: sym ? Poly.sym(sym) : Poly.zero, sym, at: positions.get(gr.center)! };
@@ -858,6 +907,17 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     }
     if (g) V = V.add(m.mul(g).mul(rc[1]));
   }
+  for (const gr of gears) {
+    // motor housings: ½ m v² of the axle, ½ I ψ̇² of their turn, and their weight
+    if (!gr.motor || !housingAngle.has(gr.id)) continue;
+    const rc = positions.get(gr.center)!;
+    const vc = velocity(rc);
+    const m = housingMass.get(gr.id)!;
+    T = T.add(m.scale(0.5).mul(dot(vc, vc)));
+    const w = timeDerivative(housingAngle.get(gr.id)!, qs, qds);
+    if (!w.isZero()) T = T.add(housingInertia.get(gr.id)!.mul(w).mul(w).scale(0.5));
+    if (g) V = V.add(m.mul(g).mul(rc[1]));
+  }
   for (const [pid, m] of pointMass) {
     yield bodyDone();
     const r = positions.get(pid)!;
@@ -907,26 +967,28 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   }
 
   // ---- motors ----------------------------------------------------------------
+  // τ on the gear, −τ on the housing: Q = (τ − b ρ̇) ∂ρ/∂q with ρ = φ − ψ, the gear's turn in the housing
   const motors: Derivation['motors'] = [];
   for (const gr of gears) {
-    if (!gr.motor) continue;
+    if (!gr.motor || !gearAngle.has(gr.id) || !housingAngle.has(gr.id)) continue;
     const lab = gearLabel(gr.id);
-    const k = gearCoordOf(gr.id);
-    if (k < 0) {
-      warnings.push(`Gear g${lab} is locked, so its motor cannot turn it.`);
+    const rel = gearAngle.get(gr.id)!.sub(housingAngle.get(gr.id)!);
+    const terms = qs.map((q, i) => ({ coord: i, k: rel.diff(q).constantValue() ?? 0 })).filter((t) => t.k !== 0);
+    if (!terms.length) {
+      warnings.push(gr.locked ? `Gear g${lab} is locked, so its motor cannot turn it.` : `Motor M${lab} cannot turn gear g${lab}: the gear and the motor's housing are held together.`);
       continue;
     }
     const tau = param(`tau${gr.id}`, `\\tau_{\\mathrm{g}${lab}}`, gr.motor.torque, 'N·m');
-    let q = tau;
+    let torque = tau;
     let b: string | null = null;
     if (gr.motor.noLoadRpm > 0) {
       // the torque falls linearly to zero at the no-load speed: b = τ / Ω
       b = `bm${gr.id}`;
       const bp = param(b, `b_{\\mathrm{g}${lab}}`, gr.motor.torque / ((gr.motor.noLoadRpm * 2 * Math.PI) / 60), 'N·m·s');
-      q = q.sub(bp.mul(Poly.sym(qds[k])));
+      torque = torque.sub(bp.mul(timeDerivative(rel, qs, qds)));
     }
-    f[k] = f[k].add(q);
-    motors.push({ id: gr.id, coord: k, tau: `tau${gr.id}`, b });
+    for (const { coord: i, k } of terms) f[i] = f[i].add(torque.scale(k));
+    motors.push({ id: gr.id, terms, tau: `tau${gr.id}`, b });
   }
 
   // ---- constraints -----------------------------------------------------------
@@ -996,6 +1058,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     springs: springTerms,
     gearAngles: [...gearAngle].map(([id, angle]) => ({ id, angle })),
     motors,
+    motorAngles: [...housingAngle].map(([id, angle]) => ({ id, angle })),
     sliderStops,
     gearCoords: [...gearAngle.keys()].map((id) => ({ id, coord: gearCoordOf(id) })).filter((g) => g.coord >= 0),
     gearDisks: gears.filter((gr) => gearAngle.has(gr.id)).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),

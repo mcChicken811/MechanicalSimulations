@@ -55,7 +55,7 @@ export function closeParts(d: Design, s: PartSet): PartSet {
   return out;
 }
 
-const hasBody = (s: PartSet, r: DBodyRef) => (r.kind === 'gear' ? s.gears.has(r.id) : s.links.has(r.id));
+const hasBody = (s: PartSet, r: DBodyRef) => (r.kind === 'link' ? s.links.has(r.id) : s.gears.has(r.id)); // a motor goes with its gear
 
 /** A copy of the chosen parts and the constraints among them, as a design of its own. */
 export function extractParts(d: Design, chosen: PartSet): Design {
@@ -105,7 +105,7 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   const RM = renumber(f.rackMeshes, d.rackMeshes);
   const A = renumber(f.angles ?? [], d.angles ?? []);
   const J = renumber(f.joins ?? [], d.joins ?? []);
-  const body = (r: DBodyRef): DBodyRef => ({ kind: r.kind, id: (r.kind === 'gear' ? G : L).get(r.id)! });
+  const body = (r: DBodyRef): DBodyRef => ({ kind: r.kind, id: (r.kind === 'link' ? L : G).get(r.id)! });
 
   for (const p of f.points) {
     const q = { ...p, id: P.get(p.id)!, x: p.x + dx, y: p.y + dy };

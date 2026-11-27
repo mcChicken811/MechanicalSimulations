@@ -1,7 +1,7 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, clearConstraint, cloneDesign, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
@@ -49,6 +49,7 @@ let deriveError: string | null = null;
 let sim: Simulator | null = null;
 let simPositions = new Map<number, Vec>();
 let simGearAngles = new Map<number, number>();
+let simMotorAngles = new Map<number, number>();
 let running = false;
 let simError: string | null = null;
 let grab: { a: number; b: number; s: number; gear?: { id: number; u: number; v: number } } | null = null;
@@ -257,6 +258,7 @@ function startSim() {
   simPositions = sim.jointPositions();
   simHeat = sim.heat();
   simGearAngles = sim.gearAngles();
+  simMotorAngles = sim.motorAngles();
   simError = null;
   running = true;
   drawing = null;
@@ -326,6 +328,7 @@ function advance(seconds: number) {
   if (!grab) sim.appliedForce = [0, 0];
   simPositions = sim.jointPositions();
   simGearAngles = sim.gearAngles();
+  simMotorAngles = sim.motorAngles();
   simHeat = sim.heat();
 }
 
@@ -413,7 +416,7 @@ function hitTest(w: Vec): Selection | null {
   if (l) return { kind: 'link', id: l.id };
   const sp = springAt(w);
   if (sp) return { kind: 'spring', id: sp.id };
-  const g = gearAt(w);
+  const g = gearAt(w) ?? housingAt(w); // a motor's housing selects its gear (with the motor's settings)
   return g ? { kind: 'gear', id: g.id } : null;
 }
 
@@ -429,6 +432,21 @@ function gearAt(w: Vec): DGear | null {
 }
 
 const gearAngleNow = (id: number) => (sim ? (simGearAngles.get(id) ?? 0) : 0);
+const motorAngleNow = (id: number) => (sim ? (simMotorAngles.get(id) ?? 0) : 0);
+
+/** The gear whose motor housing (a box from the axle out to one side) contains w. */
+function housingAt(w: Vec): DGear | null {
+  for (const g of design.gears) {
+    if (!g.motor || !design.points.some((p) => p.id === g.center)) continue;
+    const c = pos(g.center);
+    const r = motorHousingRadius(g);
+    const t = -motorAngleNow(g.id);
+    const [dx, dy] = [w[0] - c[0], w[1] - c[1]];
+    const [u, v] = [dx * Math.cos(t) - dy * Math.sin(t), dx * Math.sin(t) + dy * Math.cos(t)];
+    if (u >= -0.9 * r && u <= 2.6 * r && Math.abs(v) <= 0.9 * r) return g;
+  }
+  return null;
+}
 
 /** World position of the point at offset (u, v) in a gear's frame. */
 function gearPoint(g: DGear, u: number, v: number): Vec {
@@ -654,6 +672,7 @@ function toggleAngle(a: number, b: number) {
 
 // ---- joined bodies ---------------------------------------------------------------
 function bodyExists(d: Design, ref: DBodyRef): boolean {
+  if (ref.kind === 'motor') return d.gears.some((g) => g.id === ref.id && !!g.motor);
   return ref.kind === 'gear' ? d.gears.some((g) => g.id === ref.id) : d.links.some((l) => l.id === ref.id);
 }
 const joinsOf = (d: Design) => (d.joins ??= []);
@@ -676,37 +695,41 @@ function bodyAt(w: Vec): DBodyRef | null {
   const l = linkAt(w);
   if (l) return { kind: 'link', id: l.id };
   const g = gearAt(w);
-  return g ? { kind: 'gear', id: g.id } : null;
+  if (g) return { kind: 'gear', id: g.id };
+  // the part of a motor's housing outside its gear is the motor
+  const h = housingAt(w);
+  return h ? { kind: 'motor', id: h.id } : null;
 }
 
-const bodySelection = (ref: DBodyRef): Selection => (ref.kind === 'gear' ? { kind: 'gear', id: ref.id } : { kind: 'link', id: ref.id });
+const bodySelection = (ref: DBodyRef): Selection => (ref.kind === 'link' ? { kind: 'link', id: ref.id } : { kind: 'gear', id: ref.id });
 
 /** Inspector rows listing a body's joins, with a picker to join it to another body. */
-function joinsHtml(ref: DBodyRef, disabled: string): string {
+function joinsHtml(ref: DBodyRef, disabled: string, tag = ''): string {
   const mine = joinsOf(design).filter((j) => sameBody(j.a, ref) || sameBody(j.b, ref));
   const other = (j: { a: DBodyRef; b: DBodyRef }) => (sameBody(j.a, ref) ? j.b : j.a);
   const choices: DBodyRef[] = [
     ...design.links.map((l): DBodyRef => ({ kind: 'link', id: l.id })),
     ...design.gears.map((g): DBodyRef => ({ kind: 'gear', id: g.id })),
-  ].filter((x) => !sameBody(x, ref) && !findJoin(ref, x));
+    ...design.gears.filter((g) => g.motor).map((g): DBodyRef => ({ kind: 'motor', id: g.id })),
+  ].filter((x) => !sameBody(x, ref) && !findJoin(ref, x) && !(x.id === ref.id && x.kind !== 'link' && ref.kind !== 'link')); // a motor and its own gear: that would lock it
   return `
     <div class="field"><span>One body with</span><span>${
-      mine.map((j) => `${bodyName(design, other(j))} <button data-unjoin="${j.id}" title="Separate these bodies" ${disabled}>×</button>`).join('<br>') || '<span class="muted">none</span>'
+      mine.map((j) => `${bodyName(design, other(j))} <button data-unjoin${tag}="${j.id}" title="Separate these bodies" ${disabled}>×</button>`).join('<br>') || '<span class="muted">none</span>'
     }</span></div>
-    ${choices.length ? `<label class="field">Join to<select id="i-join" ${disabled}><option value="">choose a body…</option>${choices.map((x) => `<option value="${x.kind}:${x.id}">${bodyName(design, x)}</option>`).join('')}</select></label>` : ''}`;
+    ${choices.length ? `<label class="field">Join to<select id="i-join${tag}" ${disabled}><option value="">choose a body…</option>${choices.map((x) => `<option value="${x.kind}:${x.id}">${bodyName(design, x)}</option>`).join('')}</select></label>` : ''}`;
 }
 
-function bindJoinControls(ref: DBodyRef) {
-  inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unjoin]').forEach((b) =>
+function bindJoinControls(ref: DBodyRef, tag = '') {
+  inspectorEl.querySelectorAll<HTMLButtonElement>(`[data-unjoin${tag}]`).forEach((b) =>
     b.addEventListener('click', () => {
       pushUndo();
-      design.joins = joinsOf(design).filter((j) => j.id !== Number(b.dataset.unjoin));
+      design.joins = joinsOf(design).filter((j) => j.id !== Number(b.getAttribute(`data-unjoin${tag}`)));
       designChanged();
     }),
   );
-  inspectorEl.querySelector<HTMLSelectElement>('#i-join')?.addEventListener('change', (e) => {
+  inspectorEl.querySelector<HTMLSelectElement>(`#i-join${tag}`)?.addEventListener('change', (e) => {
     const [kind, id] = (e.target as HTMLSelectElement).value.split(':');
-    const target: DBodyRef = { kind: kind === 'gear' ? 'gear' : 'link', id: Number(id) };
+    const target: DBodyRef = { kind: kind === 'gear' || kind === 'motor' ? kind : 'link', id: Number(id) };
     if (id !== undefined && bodyExists(design, target)) toggleJoin(ref, target);
   });
 }
@@ -1023,6 +1046,7 @@ function freeJoint(id: number) {
 function carries(ref: DBodyRef, pid: number): boolean {
   const p = design.points.find((pt) => pt.id === pid);
   if (ref.kind === 'link') return design.links.some((l) => l.id === ref.id && (l.a === pid || l.b === pid));
+  if (ref.kind === 'motor') return design.gears.some((g) => g.id === ref.id && g.center === pid); // on its axle already
   return design.gears.some((g) => g.id === ref.id && g.center === pid) || p?.gear === ref.id;
 }
 
@@ -1242,9 +1266,12 @@ canvas.addEventListener('pointerdown', (e) => {
       const g = (pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w);
       if (!g) break;
       pushUndo();
-      if (g.motor) delete g.motor;
-      else {
-        g.motor = { torque: 1, noLoadRpm: 60 };
+      if (g.motor) {
+        delete g.motor;
+        removeOrphans();
+      } else {
+        // its housing starts mounted on the ground if the axle is; otherwise free, to be joined to something
+        g.motor = { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: design.points.find((p) => p.id === g.center)?.kind === 'fixed' };
         g.locked = false; // a motor needs its gear free to turn
       }
       selection = { kind: 'gear', id: g.id };
@@ -1895,6 +1922,13 @@ function renderInspector() {
           g.motor
             ? `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${g.motor.torque}"></label>
         <label class="field">No-load speed (rpm)<input id="i-rpm" type="number" min="0" step="10" value="${g.motor.noLoadRpm}"></label>
+        <label class="field">Housing mass (kg)<input id="i-hmass" type="number" min="0.01" step="0.1" value="${g.motor.mass ?? 0.5}" ${disabled}></label>
+        ${(() => {
+          const joined = joinsOf(design).some((j) => sameBody(j.a, { kind: 'motor', id: g.id }) || sameBody(j.b, { kind: 'motor', id: g.id }));
+          return `<label class="field">Housing<span><input id="i-mounted" type="checkbox" ${g.motor.mounted !== false ? 'checked' : ''} ${disabled || joined ? 'disabled' : ''}> mounted on the ground</span></label>
+        ${joinsHtml({ kind: 'motor', id: g.id }, disabled, 'm')}
+        <p class="muted">The motor turns the gear by τ and its own housing back by −τ. ${joined ? 'Its housing is joined to other bodies, so they take the reaction.' : g.motor.mounted !== false ? 'Its housing is mounted on the ground, which takes the reaction.' : 'Its housing is free, so it spins back the other way; join it to a frame to hold it.'}</p>`;
+        })()}
         <p class="muted">${g.motor.noLoadRpm > 0 ? `Torque τ(1 − ω/Ω): ${g.motor.torque} N·m at rest, falling to 0 at ${g.motor.noLoadRpm} rpm, like a DC motor.` : 'A constant torque, whatever the speed.'} Positive turns the gear anticlockwise. You can change these while it runs.</p>`
             : ''
         }
@@ -1926,9 +1960,10 @@ function renderInspector() {
       inspectorEl.querySelector<HTMLInputElement>('#i-motor')!.addEventListener('change', (e) => {
         pushUndo();
         if ((e.target as HTMLInputElement).checked) {
-          g.motor = { torque: 1, noLoadRpm: 60 };
+          g.motor = { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: design.points.find((p) => p.id === g.center)?.kind === 'fixed' };
           g.locked = false;
         } else delete g.motor;
+        removeOrphans(); // joins to its housing go with it
         designChanged();
       });
       // torque and speed can change while it runs: only parameters change, so the state carries over
@@ -1943,6 +1978,14 @@ function renderInspector() {
         });
       motorField('#i-torque', (m, v) => (m.torque = v));
       motorField('#i-rpm', (m, v) => (m.noLoadRpm = Math.max(0, v)));
+      motorField('#i-hmass', (m, v) => (m.mass = Math.max(0.01, v)));
+      inspectorEl.querySelector<HTMLInputElement>('#i-mounted')?.addEventListener('change', (e) => {
+        if (!g.motor) return;
+        pushUndo();
+        g.motor.mounted = (e.target as HTMLInputElement).checked;
+        designChanged();
+      });
+      if (g.motor) bindJoinControls({ kind: 'motor', id: g.id }, 'm');
       inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unmesh]').forEach((b) =>
         b.addEventListener('click', () => {
           pushUndo();
@@ -2112,6 +2155,7 @@ function frame(now: number) {
     hover,
     preview: drawing ? { from: drawing.from, to: drawing.to, kind: drawing.kind, meshAt: drawing.mesh?.at ?? null, side: drawing.mesh?.side } : null,
     gearAngle: gearAngleNow,
+    motorAngle: motorAngleNow,
     heat: sim ? simHeat : null,
     grab: grabScene,
     simulating: !!sim,
