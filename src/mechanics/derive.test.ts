@@ -1255,6 +1255,46 @@ describe('wheels', () => {
   }, 20000);
 });
 
+describe('events and motion reported for sound', () => {
+  it('reports one impact per landing, at about the speed it landed', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations({ points: [{ id: 0, x: 0, y: 0.2, kind: 'free', mass: 1 }], links: [], springs: [], gears: [], meshes: [], rackMeshes: [] }, { gravity: G })));
+    s.ground = straightGroundSettings(0, 0, 0, 0.5);
+    for (let i = 0; i < 260; i++) s.step(1e-3);
+    expect(s.events).toHaveLength(1);
+    expect(s.events[0].kind).toBe('impact');
+    expect(s.events[0].speed).toBeGreaterThan(0.8 * Math.sqrt(2 * G * 0.2)); // √(2gh) ≈ 1.98 m/s, less what the contact took in its first step
+    expect(s.events[0].mass).toBeCloseTo(1, 6);
+  });
+
+  it('reports a slider hitting its end stop', () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'free', mass: 1, slide: { on: null, angle: 90, range: { min: -0.1, max: null, restitution: 0.2 } } }], // a vertical rail (degrees)
+      links: [], springs: [], gears: [], meshes: [], rackMeshes: [],
+    };
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    for (let i = 0; i < 180; i++) s.step(1e-3); // falls 0.1 m onto it (and bounces back up, restitution 0.2)
+    expect(s.events).toHaveLength(1);
+    expect(s.events[0].kind).toBe('stop');
+    expect(s.events[0].speed).toBeGreaterThan(1.2); // √(2 g 0.1) ≈ 1.4 m/s
+  });
+
+  it('reports a wheel rolling without slipping, and a braked one skidding', () => {
+    const roll = (locked: boolean) => {
+      const d: Design = { points: [{ id: 0, x: 0, y: 0.2 - 1e-4, kind: 'free', mass: 0 }], links: [], springs: [], meshes: [], rackMeshes: [], gears: [{ id: 0, center: 0, radius: 0.2, teeth: 10, mass: 1, locked, wheel: true }] };
+      const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+      s.ground = straightGroundSettings(0, 0, 0, 0.3);
+      s.qd[0] = 2;
+      if (!locked) s.qd[2] = -10; // rolling at 2 m/s
+      for (let i = 0; i < 50; i++) s.step(1e-3);
+      return { ...s.contactMotion };
+    };
+    const free = roll(false);
+    expect(free.rolling).toBeGreaterThan(1.9);
+    expect(free.slip).toBeLessThan(0.05);
+    expect(roll(true).slip).toBeGreaterThan(1.5);
+  });
+});
+
 describe('terrain peaks against bars', () => {
   it('holds up a bar lying across a peak, though both its ends are in the air', () => {
     // a bar 1 m long dropped flat onto a sharp peak at x = 0

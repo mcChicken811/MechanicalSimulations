@@ -11,6 +11,13 @@ const dof = (d: Design) => {
 };
 
 describe('copy and paste', () => {
+  it('a pasted slider keeps its end stops', () => {
+    const d: Design = { points: [{ id: 0, x: 0, y: 0, kind: 'free', mass: 1, slide: { on: null, angle: 90, range: { min: -0.1, max: 0.2, restitution: 0.3 } } }], links: [], springs: [], gears: [], meshes: [], rackMeshes: [] };
+    pasteParts(d, extractParts(d, allParts(d)), 1, 0);
+    expect(d.points[1].slide?.range).toEqual({ min: -0.1, max: 0.2, restitution: 0.3 });
+    expect(d.points[1].slide?.range).not.toBe(d.points[0].slide?.range);
+  });
+
   it('a pasted motor and lever are copies of their own, the lever in a new colour', () => {
     const d = build('Motor car');
     d.gears[0].motor!.lever = { color: '#e04f5f', scale: 2, position: 0.5 };

@@ -6,6 +6,7 @@ import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator,
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
+import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { drawScene, leverGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
 type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
@@ -106,6 +107,7 @@ function pushUndo() {
 
 function undo() {
   if (sim || !undoStack.length) return;
+  sfx('undo');
   design = undoStack.pop()!;
   selection = null;
   multi = null;
@@ -113,6 +115,37 @@ function undo() {
   groundSel = null;
   syncGroundUI();
   designChanged();
+}
+
+// ---- sound ----------------------------------------------------------------------------
+const sound = new SoundEngine();
+const sfx = (c: Cue) => sound.cue(c);
+// browsers start audio only from a gesture
+for (const ev of ['pointerdown', 'keydown'] as const) window.addEventListener(ev, () => sound.unlock(), { capture: true });
+
+/** What the running mechanism sounds like now: its motors, propellers, gear teeth, contacts and speed. */
+function machineState(s: Simulator): MachineState {
+  const d = s.sys.derivation;
+  // the fastest mesh: its pitch speed and how often a tooth passes (pitch speed / tooth pitch)
+  let mesh: MachineState['mesh'] = null;
+  if (d.meshes.length) {
+    s.meshSpeeds().forEach((v, k) => {
+      const g = design.gears.find((x) => x.id === d.meshes[k].a);
+      if (!g || (mesh && Math.abs(v) <= mesh.speed)) return;
+      mesh = { speed: Math.abs(v), rate: (Math.abs(v) * g.teeth) / (2 * Math.PI * g.radius) };
+    });
+  }
+  return {
+    motors: s.motorStates(),
+    propellers: d.propellers.map((pr) => ({ id: pr.id, spin: pr.spin >= 0 ? s.qd[pr.spin] : 0, thrust: s.thrust.get(pr.id) ?? 0, blades: design.gears.find((g) => g.id === pr.id)?.propeller?.blades ?? 2 })),
+    mesh,
+    rolling: s.contactMotion.rolling,
+    slip: s.contactMotion.slip,
+    scrape: s.contactMotion.scrape,
+    wind: s.maxJointSpeed(),
+    friction: friction.enabled ? s.power.reduce((a, b) => a + b, 0) : 0,
+    events: s.events,
+  };
 }
 
 /** Call after every edit of the design. */
@@ -289,6 +322,7 @@ function stopSim() {
 function togglePlay() {
   if (!sim) startSim();
   else running = !running;
+  sfx(running ? 'play' : 'pause');
   refreshControls();
 }
 
@@ -324,6 +358,7 @@ function advance(seconds: number) {
     if (!sim.step(H_STEP)) {
       running = false;
       simError = 'The solver hit a singular configuration (for example a fully stretched loop). Press Reset to edit.';
+      sfx('error');
       refreshControls();
       break;
     }
@@ -614,6 +649,7 @@ function finishSegment() {
         : teethForRadius(r);
     const id = nextId(design.gears);
     design.gears.push({ id, center, radius: +r.toFixed(4), teeth, mass: +Math.max(0.1, 25 * r * r).toFixed(2), locked: false });
+    sfx(other || rack ? 'mesh' : 'gear');
     if (other) design.meshes.push({ id: nextId(design.meshes), a: other.id, b: id });
     if (rack) addRackMesh(id, rack, d.mesh?.side);
     selection = { kind: 'gear', id };
@@ -629,6 +665,7 @@ function finishSegment() {
     const id = nextId(design.gears);
     const angle = +Math.atan2(d.to[1] - d.from[1], d.to[0] - d.from[0]).toFixed(6);
     design.gears.push({ id, center, radius: +r.toFixed(4), teeth: 2, mass: +Math.max(0.02, 2 * r * r).toFixed(3), locked: false, propeller: { angle, blades: 2 } });
+    sfx('propeller');
     selection = { kind: 'gear', id };
     designChanged();
     return;
@@ -642,6 +679,7 @@ function finishSegment() {
     const center = d.fromId ?? newJoint(d.from);
     const id = nextId(design.gears);
     design.gears.push({ id, center, radius: +r.toFixed(4), teeth: teethForRadius(r), mass: +Math.max(0.1, 25 * r * r).toFixed(2), locked: false, wheel: true });
+    sfx('wheel');
     selection = { kind: 'gear', id };
     designChanged();
     return;
@@ -657,6 +695,7 @@ function finishSegment() {
     const id = nextId(design.links);
     const link: DLink = { id, a, b, mass: 1 };
     design.links.push(link);
+    sfx(d.kind === 'rack' ? (d.mesh?.gear !== undefined ? 'mesh' : 'rack') : 'bar');
     if (d.kind === 'rack') {
       link.rack = d.mesh?.side ?? 1;
       if (d.mesh?.gear !== undefined) addRackMesh(d.mesh.gear, link, d.mesh.side);
@@ -670,6 +709,7 @@ function finishSegment() {
     const b = d.toId ?? (d.fromId === null ? newJoint(d.to, 'free', 1) : newJoint(d.to, 'fixed'));
     const id = nextId(design.springs);
     design.springs.push({ id, a, b, k: DEFAULT_SPRING_K, rest: +length.toFixed(4) });
+    sfx('spring');
     selection = { kind: 'spring', id };
   }
   designChanged();
@@ -732,6 +772,7 @@ function toggleAngle(a: number, b: number) {
   const found = findAngle(a, b);
   if (found) design.angles = anglesOf(design).filter((x) => x !== found);
   else anglesOf(design).push({ id: nextId(anglesOf(design)), a, b });
+  sfx(found ? 'free' : 'angle');
   designChanged();
 }
 
@@ -752,6 +793,7 @@ function toggleJoin(a: DBodyRef, b: DBodyRef) {
   const found = findJoin(a, b);
   if (found) design.joins = joinsOf(design).filter((j) => j !== found);
   else joinsOf(design).push({ id: nextId(joinsOf(design)), a: { ...a }, b: { ...b } });
+  sfx(found ? 'unjoin' : 'join');
   designChanged();
 }
 
@@ -949,6 +991,7 @@ canvas.addEventListener('dblclick', (e) => {
   selection = null;
   multi = null;
   groundSel = { waypoint: g.points.indexOf(p) };
+  sfx('place');
   groundChanged();
   renderInspector();
 });
@@ -990,6 +1033,7 @@ function copyParts(): boolean {
   clipboard = extractParts(design, parts);
   const n = clipboard.points.length + clipboard.links.length + clipboard.springs.length + clipboard.gears.length;
   flash(`Copied ${n} part${n === 1 ? '' : 's'}. Press Ctrl/⌘+V to paste them at the cursor.`);
+  sfx('copy');
   renderInspector();
   return true;
 }
@@ -1005,12 +1049,14 @@ function pasteClipboard() {
   setTool('select');
   selection = null;
   multi = pasteParts(design, clipboard, off[0], off[1]);
+  sfx('paste');
   designChanged();
 }
 
 /** Delete a group of parts, and the bars and springs attached to its joints. */
 function deleteParts(parts: PartSet) {
   pushUndo();
+  sfx('delete');
   design.links = design.links.filter((l) => !parts.links.has(l.id) && !parts.points.has(l.a) && !parts.points.has(l.b));
   design.springs = design.springs.filter((l) => !parts.springs.has(l.id) && !parts.points.has(l.a) && !parts.points.has(l.b));
   for (const g of design.gears.filter((x) => parts.gears.has(x.id) || parts.points.has(x.center))) removeGear(g.id);
@@ -1024,6 +1070,7 @@ function deleteParts(parts: PartSet) {
 function deleteSelection(sel: Selection | null) {
   if (!sel) return;
   pushUndo();
+  sfx('delete');
   if (sel.kind === 'point') {
     design.links = design.links.filter((l) => l.a !== sel.id && l.b !== sel.id);
     design.springs = design.springs.filter((l) => l.a !== sel.id && l.b !== sel.id);
@@ -1054,6 +1101,7 @@ function deleteSelection(sel: Selection | null) {
 function toggleMass(w: Vec) {
   const pid = pointAt(w);
   pushUndo();
+  sfx('mass');
   if (pid !== null) {
     const p = design.points.find((q) => q.id === pid)!;
     p.mass = p.mass > 0 ? 0 : DEFAULT_MASS;
@@ -1088,6 +1136,7 @@ function finishSlider() {
   constrain = null;
   if (!p) return;
   pushUndo();
+  sfx('pin');
   clearConstraint(p);
   p.slide = { on: c.body ?? null, angle: c.angle };
   const ends = c.ends ?? [];
@@ -1108,6 +1157,7 @@ function freeJoint(id: number) {
   const p = design.points.find((pt) => pt.id === id);
   if (!p) return;
   pushUndo();
+  sfx('free');
   clearConstraint(p);
   selection = { kind: 'point', id };
   designChanged();
@@ -1176,6 +1226,7 @@ function constrainClick(w: Vec) {
       if (!body) p.kind = 'fixed';
       else if (body.kind === 'gear') p.gear = body.id;
       else p.pin = { ...body };
+      sfx('pin');
       constrain = null;
       designChanged();
       refreshControls();
@@ -1222,6 +1273,7 @@ canvas.addEventListener('pointerdown', (e) => {
       selection = { kind: 'lever', id: lv.id }; // worked from its control in the dock
       renderInspector();
     } else if (pid !== null) {
+      sfx('grab');
       grab = { a: pid, b: pid, s: 0 };
       selection = { kind: 'point', id: pid }; // and draw its path
       renderInspector();
@@ -1297,6 +1349,7 @@ canvas.addEventListener('pointerdown', (e) => {
         break;
       }
       multi = null;
+      if (hit && (hit.kind !== selection?.kind || hit.id !== selection.id)) sfx('select');
       selection = hit;
       if (hit?.kind === 'point') dragging = { id: hit.id, pushed: false };
       if (!hit) boxSel = { from: w, to: w, downAt: sp }; // empty space: start a selection box
@@ -1348,6 +1401,7 @@ canvas.addEventListener('pointerdown', (e) => {
       const g = propellerAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
       if (!g) break;
       pushUndo();
+      sfx(g.motor ? 'motorOff' : 'motorOn');
       if (g.motor) {
         delete g.motor;
         removeOrphans();
@@ -1366,6 +1420,7 @@ canvas.addEventListener('pointerdown', (e) => {
       const g = leverAt(w) ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
       if (!g) break;
       pushUndo();
+      sfx(g.motor?.lever ? 'delete' : 'lever');
       if (g.motor?.lever) {
         delete g.motor.lever;
         selection = { kind: 'gear', id: g.id };
@@ -1386,6 +1441,7 @@ canvas.addEventListener('pointerdown', (e) => {
       if (!g) break;
       pushUndo();
       g.locked = !g.locked;
+      sfx(g.locked ? 'lock' : 'unlock');
       selection = { kind: 'gear', id: g.id };
       designChanged();
       break;
@@ -1544,6 +1600,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     togglePlay();
   } else if (k === 'r') {
+    if (sim) sfx('reset');
     stopSim();
   } else if ((e.metaKey || e.ctrlKey) && (k === 'c' || k === 'x') && !sim) {
     if (window.getSelection()?.toString()) return; // copying text from the page, e.g. the equations
@@ -1608,7 +1665,10 @@ const resetBtn = $<HTMLButtonElement>('#reset');
 const undoBtn = $<HTMLButtonElement>('#undo');
 const clearBtn = $<HTMLButtonElement>('#clear');
 playBtn.addEventListener('click', togglePlay);
-resetBtn.addEventListener('click', stopSim);
+resetBtn.addEventListener('click', () => {
+  if (sim) sfx('reset');
+  stopSim();
+});
 stepBtn.addEventListener('click', () => {
   if (!sim) {
     startSim();
@@ -1644,6 +1704,7 @@ presetSel.addEventListener('change', () => {
   if (!p) return;
   stopSim();
   pushUndo();
+  sfx('preset');
   design = p.build();
   selection = null;
   multi = null;
@@ -1709,6 +1770,27 @@ labelsBox.addEventListener('change', () => {
   settings.labels = labelsBox.checked;
   localStorage.setItem(LABELS_KEY, settings.labels ? 'on' : 'off'); // remembered between visits
 });
+const soundBox = $<HTMLInputElement>('#sound');
+const volumeIn = $<HTMLInputElement>('#volume');
+const volumeOut = $<HTMLOutputElement>('#volume-out');
+soundBox.checked = sound.enabled;
+volumeIn.value = String(sound.volume);
+const showVolume = () => {
+  volumeOut.textContent = `${Math.round(sound.volume * 100)}%`;
+  $<HTMLElement>('#volume-row').hidden = !sound.enabled;
+};
+showVolume();
+soundBox.addEventListener('change', () => {
+  sound.setEnabled(soundBox.checked);
+  showVolume();
+  if (soundBox.checked) sfx('place');
+});
+volumeIn.addEventListener('input', () => {
+  sound.setVolume(Number(volumeIn.value));
+  showVolume();
+});
+volumeIn.addEventListener('change', () => sfx('place')); // a sample at the new volume
+
 const followBox = $<HTMLInputElement>('#follow');
 followBox.addEventListener('change', () => (settings.follow = followBox.checked));
 
@@ -1809,7 +1891,9 @@ function saveSoon() {
 function setLeverPosition(g: DGear, p: number) {
   const m = g.motor;
   if (!m?.lever) return;
+  const before = Math.round(m.lever.position * 20);
   m.lever.position = Math.abs(p) < 0.04 ? 0 : Math.max(-1, Math.min(1, +p.toFixed(3)));
+  if (Math.round(m.lever.position * 20) !== before) sfx('tick'); // a ratchet click every 5 %
   const tau = motorTorque(m);
   sim?.setMotorTorque(g.id, tau);
   const prm = derivation?.params.find((x) => x.sym === `tau${g.id}`);
@@ -1988,6 +2072,7 @@ function inspectorPropeller(g: DGear, disabled: string) {
   });
   inspectorEl.querySelector<HTMLInputElement>('#i-motor')!.addEventListener('change', (e) => {
     pushUndo();
+    sfx((e.target as HTMLInputElement).checked ? 'motorOn' : 'motorOff');
     if ((e.target as HTMLInputElement).checked) {
       g.motor = propellerMotor(design.points.find((p) => p.id === g.center)?.kind === 'fixed');
       g.locked = false;
@@ -2381,6 +2466,7 @@ function renderInspector() {
       });
       inspectorEl.querySelector<HTMLInputElement>('#i-motor')!.addEventListener('change', (e) => {
         pushUndo();
+        sfx((e.target as HTMLInputElement).checked ? 'motorOn' : 'motorOff');
         if ((e.target as HTMLInputElement).checked) {
           g.motor = { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: design.points.find((p) => p.id === g.center)?.kind === 'fixed' };
           g.locked = false;
@@ -2565,6 +2651,7 @@ function frame(now: number) {
     advance(dt * settings.speed);
     if (settings.follow) followMechanism();
   }
+  sound.update(sim && running ? machineState(sim) : null);
 
   let grabScene = null;
   grabPull = [0, 0];

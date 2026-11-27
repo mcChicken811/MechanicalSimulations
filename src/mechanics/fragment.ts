@@ -111,7 +111,7 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
     const q = { ...p, id: P.get(p.id)!, x: p.x + dx, y: p.y + dy };
     if (p.gear !== undefined) q.gear = G.get(p.gear)!;
     if (p.pin) q.pin = body(p.pin);
-    if (p.slide) q.slide = { angle: p.slide.angle, on: p.slide.on ? body(p.slide.on) : null };
+    if (p.slide) q.slide = { angle: p.slide.angle, on: p.slide.on ? body(p.slide.on) : null, ...(p.slide.range ? { range: { ...p.slide.range } } : {}) }; // its end stops too
     d.points.push(q);
   }
   for (const l of f.links) d.links.push({ ...l, id: L.get(l.id)!, a: P.get(l.a)!, b: P.get(l.b)! });

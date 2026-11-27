@@ -228,6 +228,42 @@ Examples:
 - **Box dropped onto the floor**.
 - **Chain dropped onto the floor**.
 
+### Sound
+
+Tick **Sound effects** in the settings (on by default) and set the **Volume**; both are remembered. Every sound is synthesised in the browser with the Web Audio API, so nothing is downloaded. Audio starts with your first click or key press, as browsers require.
+
+**While editing**, actions make short sounds:
+- **Bars:** a wooden knock.
+- **Racks:** a ratchet.
+- **Springs:** a boing.
+- **Gears:** a metallic ting.
+- **Wheels:** a rubbery bump.
+- **Propellers:** a whoosh.
+- **Teeth snapping into mesh:** a clink.
+- **Pins and rails:** a snap; freeing a joint plays it in reverse.
+- **Joining bodies:** a clunk; separating them plays it in reverse.
+- **Fixing an angle:** two ticks.
+- **Locking a gear:** a latch.
+- **Hanging a mass:** a thunk.
+- **Deleting:** a pop.
+- **Undo:** a falling blip.
+- **Copy and paste:** blips.
+- **Loading an example:** a chime.
+- **Adding or removing a motor:** it whirs up or down.
+- **Lever:** clicks like a ratchet every 5% of throw as you move it.
+- **Play, pause and reset:** each has its own chime.
+- **Solver failure:** a buzz.
+
+**While running**, the machine is heard as it moves:
+- **Motors** whine with their speed, and strain louder and brighter as their torque rises.
+- **Propellers** whoosh with their spin, chopping the air at the blade-pass rate (blades × rev/s) and humming at it once it is fast.
+- **Gear and rack teeth** tick at their tooth-passing rate, the pitch speed divided by the tooth pitch. Slowly turning gears click tooth by tooth; fast ones whir.
+- **Landings** thud louder for faster impacts, and lower and fuller for heavier ones, using the effective mass the contact stopped. A **slider hitting an end stop** clacks.
+- **Wheels** rumble as they roll and squeal when they skid. **Joints sliding along the ground** scrape.
+- **Fast-moving parts** swish through the air, and **hot friction** sizzles when friction and heating is on.
+
+The simulator reports what these sounds need: impacts with their speed and effective mass, how fast rims roll and slip, how fast joints scrape, motor speeds and torques, and mesh pitch speeds.
+
 ### Limitations
 
 - Everything is in a plane, and bars are uniform rigid rods.

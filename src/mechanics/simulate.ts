@@ -347,6 +347,15 @@ interface ContactState {
   mn: number;
   mt: number;
   anchor: number | null;
+  /** Just made: its impact is still to be reported (see Simulator.events). */
+  fresh: boolean;
+}
+
+/** Something that happened in a step, for sound: a landing on the ground or a slider hitting a stop, with its speed and the effective mass it stopped. */
+export interface SimEvent {
+  kind: 'impact' | 'stop';
+  speed: number;
+  mass: number;
 }
 
 /** A joint, which can touch the ground. */
@@ -393,6 +402,13 @@ export class Simulator {
   dissipated = 0;
   /** Ground contact, or null for none. */
   ground: GroundSettings | null = null;
+  /** Impacts since the UI last emptied this (at most 64 kept), for sound. */
+  readonly events: SimEvent[] = [];
+  /**
+   * After each step, for sound: the fastest a rim rolls along the ground and slips on it, and
+   * the fastest a joint scrapes along it (m/s).
+   */
+  readonly contactMotion = { rolling: 0, slip: 0, scrape: 0 };
   /** Total work done by the motors (J). */
   motorWork = 0;
   /** Total work done by the air on the propellers (J): thrust, rotor drag and air torque. */
@@ -444,6 +460,7 @@ export class Simulator {
   /** Slider end stops: travel and gradient per stop, and the effective mass when touching (per end). */
   private readonly stopBuf: Float64Array;
   private readonly stopMass: (number | null)[];
+  private readonly stopFresh: boolean[];
   private readonly stopGrad: Float64Array;
 
   constructor(readonly sys: NumericSystem) {
@@ -487,6 +504,7 @@ export class Simulator {
     );
     this.stopBuf = new Float64Array(d.sliderStops.length * (n + 1));
     this.stopMass = d.sliderStops.flatMap(() => [null, null]);
+    this.stopFresh = d.sliderStops.flatMap(() => [false, false]);
     this.stopGrad = new Float64Array(n);
     this.Jn = new Float64Array(n);
     this.Jt = new Float64Array(n);
@@ -770,7 +788,7 @@ export class Simulator {
         const wn = this.mobility(q, Jn);
         if (wn < 1e-12) return; // pinned: it cannot move into the ground anyway
         const wt = this.mobility(q, Jt);
-        st = { mn: 1 / wn, mt: wt > 1e-12 ? 1 / wt : 1 / wn, anchor: null };
+        st = { mn: 1 / wn, mt: wt > 1e-12 ? 1 / wt : 1 / wn, anchor: null, fresh: true };
         start(st);
       }
       let vn = 0;
@@ -906,16 +924,39 @@ export class Simulator {
     const g = this.ground;
     const P = this.stageContactPower;
     this.dissipated += ((P[0] + 2 * P[1] + 2 * P[2] + P[3]) / 6) * h;
+    const motion = this.contactMotion;
+    motion.rolling = motion.slip = motion.scrape = 0;
     if (!g) {
       this.contacts.fill(null);
       this.diskContacts.clear();
       return;
     }
-    const { n, sys, q, qd, pos, jac, Jn, candidates, contacts, diskContacts } = this;
+    const { n, sys, q, qd, pos, jac, Jn, Jt, candidates, contacts, diskContacts } = this;
     sys.positions(q, pos);
     sys.jacobians(q, jac);
+    const rate = (J: Float64Array) => {
+      let v = 0;
+      for (let m = 0; m < n; m++) v += J[m] * qd[m];
+      return v;
+    };
     if (diskContacts.size) {
-      const live = new Set(this.disks.flatMap((_, k) => this.diskFeatures(k, g, 0).filter((ft) => ft.gap < 0).map((ft) => ft.key)));
+      const live = new Set<string>();
+      this.disks.forEach((dk, k) => {
+        for (const ft of this.diskFeatures(k, g, 0)) {
+          if (ft.gap >= 0) continue;
+          live.add(ft.key);
+          const st = diskContacts.get(ft.key);
+          if (!st) continue;
+          this.diskJacobians(k, ft.nx, ft.ny);
+          const [vn, vt] = [rate(Jn), rate(Jt)];
+          motion.slip = Math.max(motion.slip, Math.abs(vt));
+          motion.rolling = Math.max(motion.rolling, Math.abs(vt - (dk.phi >= 0 ? dk.radius * qd[dk.phi] : 0))); // the centre's speed along the ground
+          if (st.fresh) {
+            st.fresh = false;
+            this.event('impact', -vn, st.mn);
+          }
+        }
+      });
       for (const key of [...diskContacts.keys()]) if (!live.has(key)) diskContacts.delete(key);
     }
     candidates.forEach((c, ci) => {
@@ -926,10 +967,15 @@ export class Simulator {
         contacts[ci] = null;
         return;
       }
+      if (st.fresh) {
+        st.fresh = false;
+        this.event('impact', -rate(Jn), st.mn);
+      }
       if (st.anchor === null) {
         st.anchor = along;
         return;
       }
+      motion.scrape = Math.max(motion.scrape, Math.abs(rate(Jt)));
       let vn = 0;
       for (let m = 0; m < n; m++) vn += Jn[m] * qd[m];
       const w = CONTACT_OMEGA;
@@ -1018,6 +1064,7 @@ export class Simulator {
           const w = this.mobility(q, g);
           if (w < 1e-12) return;
           mass = stopMass[key] = 1 / w;
+          this.stopFresh[key] = true;
         }
         const w0 = CONTACT_OMEGA;
         const kk = mass * w0 * w0;
@@ -1043,7 +1090,12 @@ export class Simulator {
       let sd = 0;
       for (let m = 0; m < n; m++) sd += stopBuf[o + 1 + m] * qd[m];
       this.stopDepths(k).forEach(([delta], end) => {
-        if (delta <= 0) stopMass[2 * k + end] = null;
+        const key = 2 * k + end;
+        if (delta <= 0) stopMass[key] = null;
+        else if (this.stopFresh[key] && stopMass[key] !== null) {
+          this.stopFresh[key] = false;
+          this.event('stop', Math.abs(sd), stopMass[key]!);
+        }
         if (delta > -(2 * h * Math.abs(sd) + 1e-4)) near = true;
       });
     });
@@ -1112,6 +1164,49 @@ export class Simulator {
   /** Current spin φ of every propeller's blades, keyed by its gear's id. */
   spinAngles(): Map<number, number> {
     return new Map(this.sys.derivation.propellers.map((pr) => [pr.id, pr.spin >= 0 ? this.q[pr.spin] : 0]));
+  }
+
+  private event(kind: SimEvent['kind'], speed: number, mass: number) {
+    if (speed > 0 && this.events.length < 64) this.events.push({ kind, speed, mass });
+  }
+
+  /** Each motor now, for sound: its gear's turn rate in its housing (rad/s), the torque it gives, and its torque at rest (N·m). */
+  motorStates(): { id: number; speed: number; torque: number; stall: number }[] {
+    const { sys, qd } = this;
+    return this.motorParams.map((m, k) => {
+      let w = 0;
+      for (const t of m.terms) w += t.k * qd[t.coord];
+      const tau = sys.params[m.tau];
+      return { id: sys.derivation.motors[k].id, speed: w, torque: tau - (m.b >= 0 ? sys.params[m.b] * w : 0), stall: Math.abs(tau) };
+    });
+  }
+
+  /** Pitch-line speed of every gear and rack mesh now (m/s), in derivation.meshes order. */
+  meshSpeeds(): number[] {
+    const { n, sys, q, qd, meshBuf } = this;
+    sys.meshGrads(q, meshBuf);
+    return sys.derivation.meshes.map((_, k) => {
+      let v = 0;
+      for (let m = 0; m < n; m++) v += meshBuf[k * n + m] * qd[m];
+      return v;
+    });
+  }
+
+  /** The fastest any joint moves now (m/s). */
+  maxJointSpeed(): number {
+    const { n, sys, q, qd, jac } = this;
+    sys.jacobians(q, jac);
+    let best = 0;
+    for (let i = 0; i < sys.pointIndex.size; i++) {
+      let vx = 0;
+      let vy = 0;
+      for (let m = 0; m < n; m++) {
+        vx += jac[i * 2 * n + m] * qd[m];
+        vy += jac[i * 2 * n + n + m] * qd[m];
+      }
+      best = Math.max(best, Math.hypot(vx, vy));
+    }
+    return best;
   }
 
   /** Number of points touching the ground now. */
