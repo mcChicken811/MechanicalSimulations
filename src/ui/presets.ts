@@ -119,8 +119,8 @@ function quickReturn(): Design {
 }
 
 /**
- * A simple Strandbeest: four Jansen legs one after another, each crank half a turn from the
- * next. Every crank carries a gear (joined to it), and the gears are linked by coupling rods
+ * A simple Strandbeest: four Jansen legs one after another, each crank a quarter turn behind
+ * the one before, so the four legs step in turn through the cycle. Every crank carries a gear (joined to it), and the gears are linked by coupling rods
  * between pins at the same place on each gear, so each pair of gears forms a parallelogram and
  * all four cranks turn together, like the side rods of a locomotive. A motor on the last
  * gear drives the whole beest. The frame is held still, so the legs step in place.
@@ -133,7 +133,7 @@ function strandbeest(legs = 4, spacing = 1.1): Design {
   const pinR = 0.08; // coupling pins, at the same angle on every gear
   const pinAngle = Math.PI / 4;
   for (let i = 0; i < legs; i++) {
-    const leg = jansenLeg(Math.PI / 2 + i * Math.PI); // each crank half a turn from the last
+    const leg = jansenLeg(Math.PI / 2 + (i * Math.PI) / 2); // each crank a quarter turn from the last
     const dp = points.length;
     const dl = links.length;
     const dx = i * spacing;

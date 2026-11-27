@@ -158,7 +158,7 @@ The torque enters the gear's equation of motion as the generalized force Q_φ = 
 
 Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
 
-Another example: **Strandbeest with four legs, gear-coupled and motor-driven**. Four Jansen legs stand one after another, each crank half a turn from the next. Each crank carries a gear, and coupling rods join pins at the same place on neighbouring gears. Each pair of gears then forms a parallelogram, so all four cranks turn together, like a locomotive's side rods. A motor on the last gear drives them all. The frame is held still, so the legs step in place.
+Another example: **Strandbeest with four legs, gear-coupled and motor-driven**. Four Jansen legs stand one after another, each crank a quarter turn from the next, so the legs step in turn. Each crank carries a gear, and coupling rods join pins at the same place on neighbouring gears. Each pair of gears then forms a parallelogram, so all four cranks turn together, like a locomotive's side rods. A motor on the last gear drives them all. The frame is held still, so the legs step in place.
 
 ### Ground contact
 
