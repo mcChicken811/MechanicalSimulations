@@ -117,7 +117,77 @@ export interface DGear {
    * friction) like any rim. Joints can still be pinned on it, and it can carry a motor.
    */
   wheel?: boolean;
+  /**
+   * A propeller: a rotor whose spin axis lies in the plane. Its hub moves like a gear's (x, y,
+   * and a yaw θ in the plane, the gear's turn), and its blades spin by φ about the axis, out of
+   * the plane, so they are drawn projected. It touches nothing; the air pushes on it (see
+   * DPropeller). A motor on it spins the blades, its housing being the hub.
+   */
+  propeller?: DPropeller;
 }
+
+/**
+ * A propeller's shape and aerodynamics. Seen in the plane, the rotor disk is edge-on: the blade
+ * line runs through the centre at `angle` (to the edge point picked when drawing), and the spin
+ * axis is square to it, n = (−sin θ, cos θ) with θ the blade line's direction. With n the spin in
+ * rev/s, D = 2R the diameter and ρ the air density (the standard propeller coefficients, made
+ * linear in the advance ratio J = V/(nD) for the inflow):
+ *   thrust along ±n    T = ρ D⁴ C_T n|n| − ρ D³ (C_T / J₀) |n| V_axial
+ *   air torque on φ    Q = −ρ D⁵ C_Q n|n|
+ *   rotor drag (H-force, in the disk's plane)   H = −ρ D³ C_H |n| V_inplane
+ */
+export interface DPropeller {
+  /** Direction of the blade line as drawn (rad). */
+  angle: number;
+  /** Number of blades, 2 to 6. */
+  blades: number;
+  /** +1: a positive spin rate pushes along +n; −1: along −n (the other hand of pitch). */
+  hand?: 1 | -1;
+  /** Static thrust coefficient C_T (0.1 if absent). */
+  ct?: number;
+  /** Torque coefficient C_Q (0.007 if absent; C_P = 2π C_Q). */
+  cq?: number;
+  /** Advance ratio J₀ at which the thrust falls to zero (0.7 if absent). */
+  j0?: number;
+  /** Rotor drag coefficient C_H (0.05 if absent). */
+  ch?: number;
+  /** Air density ρ (kg/m³, 1.225 if absent). */
+  rho?: number;
+}
+
+/** A propeller's aerodynamic coefficients, defaults filled in. */
+export function propellerAero(p: DPropeller) {
+  return { hand: p.hand ?? 1, ct: p.ct ?? 0.1, cq: p.cq ?? 0.007, j0: p.j0 ?? 0.7, ch: p.ch ?? 0.05, rho: p.rho ?? 1.225 };
+}
+
+/** Fraction of a propeller's mass in its hub (a disk of radius 0.12 R); the rest is in the blades. */
+export const PROPELLER_HUB = { mass: 0.2, radius: 0.12, chord: 0.16 };
+
+/**
+ * A propeller's principal moments of inertia about its centre: I₁ about the spin axis, I₂ about
+ * blade 1 (at φ = 0 lying along the blade line in the plane) and I₃ about the third axis (out of
+ * the plane at φ = 0). Blades are uniform rods from the centre to the tip, the hub a thin disk;
+ * a motor adds its housing (a disk of radius 0.15 R across the axis) to the hub. Blades have
+ * a chord of 0.16 R. With three or more blades I₂ = I₃; with two, I₂ is small (the hub and the
+ * blades' chord), so the rotor's yaw inertia I₂ sin²φ + I₃ cos²φ swings widely as it spins.
+ */
+export function propellerInertia(g: DGear): { I1: number; I2: number; I3: number } {
+  const R = g.radius;
+  const mb = g.mass * (1 - PROPELLER_HUB.mass);
+  const mh = g.mass * PROPELLER_HUB.mass;
+  const rh = PROPELLER_HUB.radius * R;
+  const I1 = (mb * R * R) / 3 + 0.5 * mh * rh * rh;
+  const hubT = 0.25 * mh * rh * rh;
+  const motor = g.motor ? 0.25 * (g.motor.mass ?? 0.5) * (0.15 * R) ** 2 : 0;
+  const N = g.propeller?.blades ?? 2;
+  // each blade a plate of chord 0.16 R about its own span: m c²/12 (along blade 1 for two blades, shared out for more)
+  const chord = (mb * (PROPELLER_HUB.chord * R) ** 2) / 12;
+  const [b2, b3] = N === 2 ? [chord, (mb * R * R) / 3] : [(mb * R * R) / 6 + chord / 2, (mb * R * R) / 6 + chord / 2];
+  return { I1, I2: b2 + hubT + motor, I3: b3 + hubT + motor };
+}
+
+/** A new motor for a propeller: fast, as propellers need. */
+export const propellerMotor = (mounted: boolean): DMotor => ({ torque: 0.5, noLoadRpm: 3000, mass: 0.1, mounted });
 
 /**
  * A motor's torque on its gear: τ (N·m, positive turns the gear anticlockwise), falling
@@ -176,7 +246,7 @@ export function motorTorque(m: DMotor): number {
 
 /** A deep copy of a gear, its motor and lever included. */
 export function cloneGear(g: DGear): DGear {
-  return { ...g, ...(g.motor ? { motor: { ...g.motor, ...(g.motor.lever ? { lever: { ...g.motor.lever } } : {}) } } : {}) };
+  return { ...g, ...(g.motor ? { motor: { ...g.motor, ...(g.motor.lever ? { lever: { ...g.motor.lever } } : {}) } } : {}), ...(g.propeller ? { propeller: { ...g.propeller } } : {}) };
 }
 
 /** Radius of a motor's housing, as a disk for its inertia (m). */
@@ -238,7 +308,7 @@ export const sameBody = (x: DBodyRef, y: DBodyRef) => x.kind === y.kind && x.id 
 /** "bar 3", "rack 2" or "gear g1". */
 export function bodyName(d: Design, ref: DBodyRef): string {
   if (ref.kind === 'gear') return gearName(d, ref.id);
-  if (ref.kind === 'motor') return `motor M${gearLabel(ref.id)}`;
+  if (ref.kind === 'motor') return d.gears.find((g) => g.id === ref.id)?.propeller ? gearName(d, ref.id) : `motor M${gearLabel(ref.id)}`; // a propeller's motor housing is its hub
   return `${d.links.find((l) => l.id === ref.id)?.rack ? 'rack' : 'bar'} ${linkLabel(ref.id)}`;
 }
 
@@ -377,7 +447,8 @@ export function gearLabel(id: number): string {
 
 /** "gear g3" or "wheel w3". */
 export function gearName(d: Design, id: number): string {
-  return d.gears.find((g) => g.id === id)?.wheel ? `wheel w${gearLabel(id)}` : `gear g${gearLabel(id)}`;
+  const g = d.gears.find((x) => x.id === id);
+  return g?.propeller ? `propeller P${gearLabel(id)}` : g?.wheel ? `wheel w${gearLabel(id)}` : `gear g${gearLabel(id)}`;
 }
 
 /** Module (pitch diameter per tooth, m) used to choose a tooth count from a radius. */

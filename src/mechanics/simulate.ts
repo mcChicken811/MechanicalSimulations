@@ -395,6 +395,10 @@ export class Simulator {
   ground: GroundSettings | null = null;
   /** Total work done by the motors (J). */
   motorWork = 0;
+  /** Total work done by the air on the propellers (J): thrust, rotor drag and air torque. */
+  airWork = 0;
+  /** Each propeller's thrust along its axis n just now (N), by gear id. */
+  readonly thrust = new Map<number, number>();
   /** Current friction power (W) of every joint then every mesh. */
   readonly power: Float64Array;
   private readonly stagePower: Float64Array[];
@@ -431,6 +435,11 @@ export class Simulator {
   private readonly stageContactPower = new Float64Array(4);
   /** Motor power delivered at each RK4 stage (W). */
   private readonly stageMotorPower = new Float64Array(4);
+  /** Air power on the propellers at each RK4 stage (W). */
+  private readonly stageAirPower = new Float64Array(4);
+  private readonly gearAngleBuf: Float64Array;
+  /** Per propeller, the index of its hub's yaw in gearAngles order (−1 if it cannot turn). */
+  private readonly propHub: number[];
   private readonly motorParams: { terms: { coord: number; k: number }[]; tau: number; b: number }[];
   /** Slider end stops: travel and gradient per stop, and the effective mass when touching (per end). */
   private readonly stopBuf: Float64Array;
@@ -483,6 +492,8 @@ export class Simulator {
     this.Jt = new Float64Array(n);
     this.K2 = new Float64Array((n + nc) * (n + nc));
     this.r2 = new Float64Array(n + nc);
+    this.gearAngleBuf = new Float64Array(sys.gearIds.length);
+    this.propHub = d.propellers.map((pr) => sys.gearIds.indexOf(pr.id));
   }
 
   /** q̈ from M q̈ = f + Q, Φ_q q̈ = γ (Baumgarte-stabilised), solved as one KKT system. */
@@ -498,6 +509,7 @@ export class Simulator {
       f[i] -= this.damping * s;
     }
     this.applyGrab(q, qd, f);
+    this.applyPropellers(q, qd, f, stage);
     this.applyContacts(q, qd, f, stage);
     this.applyStops(q, qd, f, stage);
     if (stage >= 0) {
@@ -1049,6 +1061,59 @@ export class Simulator {
     return true;
   }
 
+  /**
+   * The air on the propellers, as generalized forces. For a spin of n rev/s (n = φ̇ / 2π),
+   * diameter D, air density ρ, hub yaw θ, axis n̂ = (−sin θ, cos θ) and disk line ê = (cos θ, sin θ):
+   *   thrust     T = ±ρ D⁴ C_T n|n| − ρ D³ (C_T/J₀) |n| (v · n̂)    (C_T falling linearly with J = V/(nD))
+   *   rotor drag H = −ρ D³ C_H |n| (v · ê)                         (the H-force, in the disk's plane)
+   *   air torque Q = −ρ D⁵ C_Q n|n| on φ
+   * T n̂ + H ê acts at the centre, Q_q = Jᵀ(T n̂ + H ê); the thrust passes through the centre, so
+   * it does not turn the hub.
+   */
+  private applyPropellers(q: Float64Array, qd: Float64Array, f: Float64Array, stage: number) {
+    const props = this.sys.derivation.propellers;
+    if (stage >= 0) this.stageAirPower[stage] = 0;
+    if (!props.length) return;
+    const { n, sys, pos, jac, gearAngleBuf } = this;
+    sys.positions(q, pos);
+    sys.jacobians(q, jac);
+    sys.gearAngles(q, gearAngleBuf);
+    let power = 0;
+    props.forEach((pr, k) => {
+      const i = sys.pointIndex.get(pr.center);
+      if (i === undefined) return;
+      const th = pr.angle0 + (this.propHub[k] >= 0 ? gearAngleBuf[this.propHub[k]] : 0);
+      const [ex, ey] = [Math.cos(th), Math.sin(th)];
+      const [nx, ny] = [-ey, ex];
+      let vx = 0;
+      let vy = 0;
+      for (let m = 0; m < n; m++) {
+        vx += jac[i * 2 * n + m] * qd[m];
+        vy += jac[i * 2 * n + n + m] * qd[m];
+      }
+      const w = pr.spin >= 0 ? qd[pr.spin] : 0;
+      const rev = w / (2 * Math.PI);
+      const { rho, ct, cq, j0, ch, hand } = pr.aero;
+      const D = 2 * pr.radius;
+      const D3 = D * D * D;
+      const T = hand * rho * D3 * D * ct * rev * Math.abs(rev) - rho * D3 * (ct / j0) * Math.abs(rev) * (vx * nx + vy * ny);
+      const H = -rho * D3 * ch * Math.abs(rev) * (vx * ex + vy * ey);
+      const Q = -rho * D3 * D * D * cq * rev * Math.abs(rev);
+      const Fx = T * nx + H * ex;
+      const Fy = T * ny + H * ey;
+      for (let m = 0; m < n; m++) f[m] += jac[i * 2 * n + m] * Fx + jac[i * 2 * n + n + m] * Fy;
+      if (pr.spin >= 0) f[pr.spin] += Q;
+      power += Fx * vx + Fy * vy + Q * w;
+      if (stage <= 0) this.thrust.set(pr.id, T);
+    });
+    if (stage >= 0) this.stageAirPower[stage] = power;
+  }
+
+  /** Current spin φ of every propeller's blades, keyed by its gear's id. */
+  spinAngles(): Map<number, number> {
+    return new Map(this.sys.derivation.propellers.map((pr) => [pr.id, pr.spin >= 0 ? this.q[pr.spin] : 0]));
+  }
+
   /** Number of points touching the ground now. */
   contactCount(): number {
     return this.contacts.reduce((k, c) => k + (c ? 1 : 0), this.diskContacts.size);
@@ -1176,6 +1241,8 @@ export class Simulator {
     this.t += h;
     const mp = this.stageMotorPower;
     this.motorWork += ((mp[0] + 2 * mp[1] + 2 * mp[2] + mp[3]) / 6) * h;
+    const ap = this.stageAirPower;
+    this.airWork += ((ap[0] + 2 * ap[1] + 2 * ap[2] + ap[3]) / 6) * h;
     this.updateHeat(h);
     this.project();
     this.updateContacts(h);

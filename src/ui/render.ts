@@ -21,11 +21,17 @@ export interface Scene {
   selection: Selection | null;
   hover: Selection | null;
   /** A part being drawn; `meshAt` marks where it will mesh, `side` is a rack's tooth side. */
-  preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear' | 'wheel' | 'rack'; meshAt?: Vec | null; side?: 1 | -1 } | null;
+  preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'rack'; meshAt?: Vec | null; side?: 1 | -1 } | null;
   /** Current rotation of a gear (0 while editing). */
   gearAngle: (id: number) => number;
   /** Current turn of the housing of the motor on a gear, since the drawing (0 while editing). */
   motorAngle?: (id: number) => number;
+  /** Spin φ of a propeller's blades (0 while editing). */
+  spinAngle?: (id: number) => number;
+  /** Spin rate φ̇ of a propeller's blades (rad/s), for its blur. */
+  spinRate?: (id: number) => number;
+  /** A propeller's thrust along its axis (N) while running, for its arrow. */
+  thrust?: (id: number) => number | undefined;
   /** Temperature rise (K) of joints and gear meshes from friction, while simulating. */
   heat?: Heat | null;
   grab: { at: Vec; to: Vec; force: Vec } | null;
@@ -93,13 +99,14 @@ function joinColors(d: Design): Map<string, string> {
     parent.set(k, root);
     return root;
   };
-  const key = (r: DBodyRef) => `${r.kind}:${r.id}`;
+  // a propeller's motor is its hub, so it shares the propeller's colour
+  const key = (r: DBodyRef) => (r.kind === 'motor' && d.gears.some((g) => g.id === r.id && g.propeller) ? `gear:${r.id}` : `${r.kind}:${r.id}`);
   for (const j of d.joins ?? []) parent.set(find(key(j.a)), find(key(j.b)));
   const groups = new Map<string, DBodyRef[]>();
   for (const j of d.joins ?? [])
     for (const r of [j.a, j.b]) {
       const g = groups.get(find(key(r))) ?? [];
-      if (!g.some((x) => x.kind === r.kind && x.id === r.id)) g.push(r);
+      if (!g.some((x) => key(x) === key(r))) g.push(r);
       groups.set(find(key(r)), g);
     }
   const out = new Map<string, string>();
@@ -122,7 +129,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
 
   const phases = toothPhases(s.design);
-  for (const g of s.design.gears) if (g.motor) drawHousing(ctx, v, s, g); // under its gear
+  for (const g of s.design.gears) if (g.motor && !g.propeller) drawHousing(ctx, v, s, g); // under its gear (a propeller draws its own)
   drawGears(ctx, v, s, phases.gears);
   for (const sp of s.design.springs) drawSpring(ctx, v, s, sp);
   for (const l of s.design.links) {
@@ -137,6 +144,15 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     if (s.preview.kind === 'spring') {
       ctx.lineWidth = 2;
       zigzag(ctx, a, b);
+    } else if (s.preview.kind === 'propeller') {
+      // the blade line through the centre, and the axis it will push along
+      const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      line(ctx, [a[0] - dx, a[1] - dy], b);
+      ctx.setLineDash([]);
+      const len = Math.hypot(dx, dy) || 1;
+      arrowLine(ctx, a, [a[0] + (dy / len) * len * 0.5, a[1] - (dx / len) * len * 0.5], C.accent, 2);
     } else if (s.preview.kind === 'gear' || s.preview.kind === 'wheel') {
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 5]);
@@ -691,6 +707,10 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     const selected = isSelected(s, 'gear', g.id);
     const hovered = s.hover?.kind === 'gear' && s.hover.id === g.id;
     const angle = s.gearAngle(g.id);
+    if (g.propeller) {
+      drawPropeller(ctx, v, s, g, color, selected || hovered);
+      continue;
+    }
     if (g.wheel) drawWheel(ctx, v, c, g.radius, angle, color, selected || hovered, g.locked);
     else drawGear(ctx, v, c, g.radius, g.teeth, phases.get(g.id)! + angle, color, selected || hovered, g.locked);
     // spokes to the joints pinned on this gear show that they turn with it
@@ -801,6 +821,17 @@ function drawHousing(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design
  * (forward leans away from the axle), and turns with the housing.
  */
 export function leverGeometry(v: View, centre: Vec, turn: number, g: Design['gears'][number]): { base: Vec; knob: Vec; radius: number } {
+  if (g.propeller) {
+    // on the side of the propeller's motor, leaning towards the blades for forward
+    const th = g.propeller.angle + turn;
+    const [e, n] = [[Math.cos(th), Math.sin(th)], [-Math.sin(th), Math.cos(th)]];
+    const R = g.radius;
+    const base = toScreen(v, [centre[0] + 0.13 * R * e[0] - 0.32 * R * n[0], centre[1] + 0.13 * R * e[1] - 0.32 * R * n[1]]);
+    const t = (g.motor?.lever?.position ?? 0) * 0.6;
+    const [dx, dy] = [Math.cos(t) * e[0] + Math.sin(t) * n[0], Math.cos(t) * e[1] + Math.sin(t) * n[1]];
+    const len = Math.max(0.4 * R * v.scale, 18);
+    return { base, knob: [base[0] + len * dx, base[1] - len * dy], radius: Math.min(Math.max(0.1 * R * v.scale, 6), 12) };
+  }
   const c = toScreen(v, centre);
   const r = Math.max(motorHousingRadius(g) * v.scale, 9);
   const len = Math.max(r * 1.1, 18);
@@ -814,7 +845,7 @@ export function leverGeometry(v: View, centre: Vec, turn: number, g: Design['gea
 
 function drawLever(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number]) {
   const lever = g.motor!.lever!;
-  const { base, knob, radius } = leverGeometry(v, s.pos(g.center), s.motorAngle?.(g.id) ?? 0, g);
+  const { base, knob, radius } = leverGeometry(v, s.pos(g.center), g.propeller ? s.gearAngle(g.id) : (s.motorAngle?.(g.id) ?? 0), g);
   const selected = isSelected(s, 'lever', g.id);
   const hovered = s.hover?.kind === 'lever' && s.hover.id === g.id;
   ctx.save();
@@ -860,6 +891,153 @@ function drawPadlock(ctx: CanvasRenderingContext2D, [x, y]: Vec) {
   ctx.roundRect(x - 5.5, y, 11, 8, 1.5);
   ctx.fill();
   ctx.restore();
+}
+
+/** A line with an arrowhead at its end (screen coordinates). */
+function arrowLine(ctx: CanvasRenderingContext2D, a: Vec, b: Vec, color: string, width: number) {
+  const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+  const len = Math.hypot(dx, dy);
+  if (len < 2) return;
+  const [ux, uy] = [dx / len, dy / len];
+  const head = Math.min(9, len * 0.5);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  line(ctx, a, [b[0] - ux * head * 0.6, b[1] - uy * head * 0.6]);
+  ctx.beginPath();
+  ctx.moveTo(b[0], b[1]);
+  ctx.lineTo(b[0] - ux * head - uy * head * 0.5, b[1] - uy * head + ux * head * 0.5);
+  ctx.lineTo(b[0] - ux * head + uy * head * 0.5, b[1] - uy * head - ux * head * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * A propeller, projected onto the plane. Its spin axis n lies in the plane, square to the blade
+ * line e; blade k, at spin angle a = φ + 2πk/N, points along cos a e + sin a z, so it shows as a
+ * blade foreshortened to cos a of its length, and its chord (pitched 20° to the disk) as
+ * −cos β sin a e + sin β n. Blades behind the plane (sin a < 0) are drawn first, paler. Below
+ * the hub sits its motor, if it has one; an arrow along the axis shows the thrust while running
+ * (which way it will push while editing).
+ */
+function drawPropeller(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number], color: string, highlight: boolean) {
+  const P = g.propeller!;
+  const c = s.pos(g.center);
+  const R = g.radius;
+  const th = P.angle + s.gearAngle(g.id);
+  const phi = s.spinAngle?.(g.id) ?? 0;
+  const e: Vec = [Math.cos(th), Math.sin(th)];
+  const n: Vec = [-Math.sin(th), Math.cos(th)];
+  const at = (u: number, w: number): Vec => toScreen(v, [c[0] + u * e[0] + w * n[0], c[1] + u * e[1] + w * n[1]]);
+  const N = Math.max(2, Math.min(6, Math.round(P.blades)));
+  const beta = (20 * Math.PI) / 180;
+  const hand = P.hand ?? 1;
+  ctx.save();
+  if (highlight) {
+    ctx.strokeStyle = C.accent;
+    ctx.globalAlpha = 0.3;
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    line(ctx, at(-R, 0), at(R, 0));
+    ctx.globalAlpha = 1;
+  }
+  // the rotor disk, edge-on
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 4]);
+  line(ctx, at(-R, 0), at(R, 0));
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+  // motor under the hub
+  if (g.motor) {
+    const joined = groupColors.get(`gear:${g.id}`);
+    const box = [at(-0.13 * R, -0.1 * R), at(0.13 * R, -0.1 * R), at(0.13 * R, -0.5 * R), at(-0.13 * R, -0.5 * R)];
+    ctx.beginPath();
+    box.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    ctx.closePath();
+    ctx.fillStyle = joined ?? '#5d6068';
+    ctx.fill();
+    ctx.strokeStyle = C.ink;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    if (g.motor.mounted !== false && !joined) {
+      const [a1, a2] = [at(-0.2 * R, -0.5 * R), at(0.2 * R, -0.5 * R)];
+      ctx.strokeStyle = C.ground;
+      line(ctx, a1, a2);
+    }
+  }
+  const blades = Array.from({ length: N }, (_, k) => phi + (2 * Math.PI * k) / N).sort((a, b) => Math.sin(a) - Math.sin(b));
+  const blade = (a: number) => {
+    const [ca, sa] = [Math.cos(a), Math.sin(a)];
+    const chord: Vec = [-Math.cos(beta) * sa * hand, Math.sin(beta)]; // in (e, n)
+    const pts: Vec[] = [];
+    const back: Vec[] = [];
+    for (let k = 0; k <= 8; k++) {
+      const r = R * (0.1 + (0.9 * k) / 8);
+      const w = R * (0.2 - (0.1 * k) / 8) * (k === 8 ? 0.6 : 1);
+      pts.push(at(r * ca + 0.5 * w * chord[0], 0.5 * w * chord[1]));
+      back.push(at(r * ca - 0.5 * w * chord[0], -0.5 * w * chord[1]));
+    }
+    ctx.beginPath();
+    [...pts, ...back.reverse()].forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = sa < 0 ? 0.35 : 0.85;
+    ctx.fill();
+    ctx.globalAlpha = sa < 0 ? 0.5 : 1;
+    ctx.strokeStyle = C.ink;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+  // spinning fast, the blades blur into a band along the disk
+  const rate = Math.abs(s.spinRate?.(g.id) ?? 0);
+  if (rate > 15) {
+    const band = [at(-R, 0.09 * R), at(R, 0.09 * R), at(R, -0.09 * R), at(-R, -0.09 * R)];
+    ctx.beginPath();
+    band.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.25 * Math.min(1, rate / 120);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  for (const a of blades) if (Math.sin(a) < 0) blade(a);
+  // the hub: a spinner along the axis
+  const hub = [at(-0.09 * R, -0.08 * R), at(0.09 * R, -0.08 * R), at(0.06 * R, 0.1 * R), at(0, 0.15 * R), at(-0.06 * R, 0.1 * R)];
+  ctx.beginPath();
+  hub.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+  ctx.closePath();
+  ctx.fillStyle = C.ink;
+  ctx.fill();
+  for (const a of blades) if (Math.sin(a) >= 0) blade(a);
+  // thrust arrow: its size while running, the way it pushes for forward spin while editing
+  const T = s.thrust?.(g.id);
+  const sc = toScreen(v, c);
+  const tip = (len: number): Vec => [sc[0] + len * n[0], sc[1] - len * n[1]];
+  if (T === undefined) {
+    ctx.globalAlpha = 0.55;
+    arrowLine(ctx, toScreen(v, [c[0] + 0.18 * R * hand * n[0], c[1] + 0.18 * R * hand * n[1]]), tip(hand * Math.max(0.5 * R * v.scale, 22)), C.muted, 1.5);
+    ctx.globalAlpha = 1;
+  } else if (Math.abs(T) > 1e-3) {
+    const len = Math.sign(T) * Math.min(14 * Math.sqrt(Math.abs(T)) + 6, 160);
+    arrowLine(ctx, toScreen(v, [c[0] + 0.18 * R * Math.sign(T) * n[0], c[1] + 0.18 * R * Math.sign(T) * n[1]]), tip(len + Math.sign(T) * 0.18 * R * v.scale), C.force, 2.5);
+  }
+  ctx.font = 'italic 600 12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  if (showLabels) {
+    const lp = at(R + 0.08, 0);
+    ctx.fillText(`P${gearLabel(g.id)}`, lp[0] + 8, lp[1] + 10);
+  }
+  ctx.restore();
+  if (g.motor?.lever) drawLever(ctx, v, s, g);
+  if (g.locked) drawPadlock(ctx, [sc[0] - 16, sc[1] - 16]);
 }
 
 /** A wheel: a dark tyre round a tinted disk, with spokes that turn with it. */

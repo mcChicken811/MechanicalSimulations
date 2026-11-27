@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEquations } from './derive';
-import { cloneDesign, type Design } from './model';
+import { cloneDesign, propellerInertia, type Design } from './model';
 import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
-import { motorCar } from '../ui/presets';
+import { motorCar, twinRotor } from '../ui/presets';
 
 const G = 9.81;
 
@@ -1292,6 +1292,104 @@ describe('motor speed falloff', () => {
     for (let i = 0; i < 3000; i++) expect(s.step(1e-3)).toBe(true);
     expect(s.qd[0]).toBeCloseTo(-2 * Math.PI, 3); // 60 rpm clockwise, not running away
   });
+});
+
+describe('propellers', () => {
+  // a propeller drawn with its blade line horizontal (axis straight up), centre at the origin
+  const prop = (extra: Partial<Design['gears'][number]> = {}, kind: 'free' | 'fixed' = 'free', aero: Record<string, number> = {}): Design => ({
+    points: [{ id: 0, x: 0, y: 0, kind, mass: 0 }],
+    links: [], springs: [], meshes: [], rackMeshes: [],
+    gears: [{ id: 0, center: 0, radius: 0.3, teeth: 10, mass: 0.2, locked: false, propeller: { angle: 0, blades: 2, ...aero }, ...extra }],
+  });
+
+  it('is a free body with four coordinates, x, y, θ and φ, and the Euler-angle kinetic energy', () => {
+    const d = prop();
+    const der = deriveEquations(d, { gravity: 0 });
+    expect(der.coords.map((c) => c.sym)).toEqual(['x0', 'y0', 'ph0', 'sp0']);
+    const s = new Simulator(new NumericSystem(der));
+    const { I1, I2, I3 } = propellerInertia(d.gears[0]);
+    s.q[3] = 0.7; // φ
+    s.qd.set([0.3, -0.2, 1.5, 40]);
+    const [phi, th, sp] = [0.7, 1.5, 40];
+    const expected = 0.5 * 0.2 * (0.09 + 0.04) + 0.5 * (I1 * sp * sp + I2 * th * th * Math.sin(phi) ** 2 + I3 * th * th * Math.cos(phi) ** 2);
+    expect(s.energy().T).toBeCloseTo(expected, 10);
+  });
+
+  it('in still air, conserves energy and the yaw momentum (I₂ sin²φ + I₃ cos²φ) θ̇ as the blades spin', () => {
+    const d = prop({}, 'free', { rho: 0 });
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: 0 })));
+    const { I2, I3 } = propellerInertia(d.gears[0]);
+    s.qd.set([0, 0, 0.05, 30]);
+    const yaw = () => (I2 * Math.sin(s.q[3]) ** 2 + I3 * Math.cos(s.q[3]) ** 2) * s.qd[2];
+    const [E0, L0] = [s.energy().T, yaw()];
+    let wobble = 0;
+    for (let i = 0; i < 2000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      wobble = Math.max(wobble, Math.abs(s.qd[2] - 0.05));
+    }
+    expect(Math.abs(s.energy().T - E0)).toBeLessThan(1e-6 * E0);
+    expect(Math.abs(yaw() - L0)).toBeLessThan(1e-3 * L0); // to RK4's accuracy through the bursts
+    expect(wobble).toBeGreaterThan(0.5); // a two-bladed rotor yaws in bursts, when its blades stand out of the plane
+  });
+
+  it('on a fixed mount, spins up until motor and air torque balance, with thrust ρD⁴C_T n²', () => {
+    const d = prop({ motor: { torque: 0.5, noLoadRpm: 3000, mass: 0.1, mounted: true } }, 'fixed');
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.map((c) => c.sym)).toEqual(['sp0']); // mounted: the hub cannot move or turn
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 12000; i++) expect(s.step(1e-3)).toBe(true);
+    const w = s.qd[0];
+    const [rho, D, Om] = [1.225, 0.6, (3000 * 2 * Math.PI) / 60];
+    const n = w / (2 * Math.PI);
+    expect(0.5 * (1 - w / Om)).toBeCloseTo(rho * D ** 5 * 0.007 * n * n, 4); // motor torque = air torque
+    expect(s.thrust.get(0)!).toBeCloseTo(rho * D ** 4 * 0.1 * n * n, 4);
+  }, 20000);
+
+  it('flies: a motor-driven propeller climbs, and E − W_m − W_air stays constant', () => {
+    const d = prop({ motor: { torque: 1, noLoadRpm: 3000, mass: 0.1, mounted: false } });
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    const E0 = s.energy().T + s.energy().V;
+    let worst = 0;
+    for (let i = 0; i < 3000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V - s.motorWork - s.airWork - E0));
+    }
+    expect(s.jointPosition(0)![1]).toBeGreaterThan(0.5); // lifted off and climbing
+    expect(Math.abs(s.jointPosition(0)![0])).toBeLessThan(1e-9); // straight up its axis
+    expect(worst).toBeLessThan(1e-3 * s.motorWork);
+  }, 20000);
+
+  it('the twin-rotor drone example lifts off and climbs, with E + W − W_m − W_a constant', () => {
+    const d = twinRotor();
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.map((c) => c.sym)).toEqual(['x0', 'y0', 'th0', 'sp0', 'sp1']); // one rigid frame and two spins
+    const s = new Simulator(new NumericSystem(der));
+    s.ground = { ...d.ground! };
+    const E0 = s.energy().T + s.energy().V;
+    let worst = 0;
+    for (let i = 0; i < 4000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V + s.dissipated - s.motorWork - s.airWork - E0));
+    }
+    expect(s.jointPosition(2)![1]).toBeGreaterThan(0.5);
+    expect(worst).toBeLessThan(1e-4 * s.motorWork);
+  }, 20000);
+
+  it('joined to a pendulum arm through its motor, adds only its spin, and its thrust lifts the arm', () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }, { id: 1, x: 1, y: 0, kind: 'free', mass: 0 }],
+      links: [{ id: 0, a: 0, b: 1, mass: 0.2 }], springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 1, radius: 0.15, teeth: 10, mass: 0.05, locked: false, propeller: { angle: 0, blades: 3 }, motor: { torque: 0.3, noLoadRpm: 6000, mass: 0.05, mounted: false } }],
+      joins: [{ id: 0, a: { kind: 'motor', id: 0 }, b: { kind: 'link', id: 0 } }],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.map((c) => c.sym)).toEqual(['th0', 'sp0']);
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 1500; i++) expect(s.step(1e-3)).toBe(true);
+    expect(s.q[0]).toBeGreaterThan(1); // swung up past the horizontal by the thrust, its axis turning with the arm
+  }, 20000);
 });
 
 describe('motor levers', () => {

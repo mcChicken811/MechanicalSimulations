@@ -90,6 +90,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Put its joints on rails (Slider, X) to make it slide. |
 | Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector, and tick **Tension only** for a cable, ligament or tendon that goes slack when short. |
 | Gears | G | Click a centre, then drag out the radius. If the gear touches another gear or a rack, it snaps into mesh with it. |
+| Propeller | P | Click the centre, then the edge of a blade. The blades spin out of the page about an axis square to that line, and push along it. In empty space it's a free body; start on a joint to mount it there. |
 | Wheel | W | Click a centre, then drag out the radius. A wheel is a gear without teeth: it meshes with nothing, but rolls on the ground. Start on a joint to mount it there; in empty space its axle is free, so it drops and rolls. |
 | Pin | F | Click a joint, then click a bar, rack or gear to pin the joint onto it, or empty space to pin it to the ground. |
 | Slider | X | Click a joint, then the body its rail is on (or empty space for a ground rail), then click to set the rail's direction. Then click where the rail ends on one side and on the other, or press Enter for no ends. |
@@ -179,6 +180,25 @@ The equations panel shows the torque. To drive a bar, such as a crank, join a ge
 Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
 
 Another example: **Strandbeest with four legs, gear-coupled and motor-driven**. Four Jansen legs stand one after another, each crank a quarter turn from the next, so the legs step in turn. Each crank carries a gear, and coupling rods join pins at the same place on neighbouring gears. Each pair of gears then forms a parallelogram, so all four cranks turn together, like a locomotive's side rods. A motor on the last gear drives them all. The frame is held still, so the legs step in place.
+
+### Propellers
+
+A propeller is a 3D rigid body kept to the plane. Its spin axis lies in the plane, so the rotor disk is seen edge-on, and the blades are drawn as their projection onto the page: each blade shows foreshortened as it turns out of the page, and blades behind the page are paler.
+- **Drawing:** with the Propeller tool (P), click the centre, then the edge of a blade. The line from the centre to the edge is the blade line, its length the radius. The spin axis is square to it, and an arrow shows which way it pushes.
+- **Coordinates:** a free propeller has four, x and y of its centre, the hub's yaw θ in the plane, and the blades' spin φ about the axis. They are Euler angles: turn by θ about the axis out of the page, then by φ about the spin axis. Its centre is a joint, so bars can be pinned to it; join it to a body (Join bodies, J) to carry it, which leaves only φ.
+- **Kinetic energy:** in body axes (spin axis, blade 1, third axis) its angular velocity is ω = (φ̇, θ̇ sin φ, θ̇ cos φ). The 3D rigid-body energy ½ m v² + ½ ωᵀ I ω, without the out-of-page coordinate and the tilt out of the plane, is T = ½ m (ẋ² + ẏ²) + ½ (I₁ φ̇² + I₂ θ̇² sin²φ + I₃ θ̇² cos²φ). The blades are rods with a chord of 0.16 R, holding 80% of the mass, and the hub is a small disk. With three or more blades, I₂ = I₃. With two, the yaw inertia I₂ sin²φ + I₃ cos²φ swings widely as the blades turn: a free two-bladed rotor yaws in bursts whenever its blades stand out of the page.
+- **Motor:** by default a propeller has none and is a free body. A motor (O) spins its blades, and its housing is the hub: mounted on the ground, free, or joined to other bodies, as with a gear's housing. Its default is fast, 0.5 N·m and 3000 rpm no-load. A lever (E) works on it too.
+- **No collisions:** a propeller touches nothing.
+- **Braked:** ticking it in the inspector stops the blades spinning.
+
+**The air.** With n the spin in revolutions per second, D the diameter and ρ the air density, the standard propeller model [(NASA)](https://ntrs.nasa.gov/api/citations/20205010582/downloads/Simmons_Propeller_SID_v2.pdf) gives thrust T = C_T ρ n² D⁴ and torque Q = C_Q ρ n² D⁵. The coefficients depend mainly on the advance ratio J = V/(nD). Here:
+- **Thrust along the axis:** T = ±ρD⁴C_T n|n| − ρD³(C_T/J₀)|n| V_axial. The coefficient falls linearly with J and reaches zero at J₀, so a propeller moving along its axis pushes less. It reverses with the spin; tick **Pitch reversed** for a propeller of the other hand.
+- **Air torque against the spin:** Q = −ρD⁵C_Q n|n|.
+- **Rotor drag** across the axis: H = −ρD³C_H |n| v. This is the H-force, linear in both speed and spin rate, as found for quadrotors by [Martin and Salaün](https://arxiv.org/pdf/1712.02402v3.pdf).
+
+The forces act at the centre as Q = J_cᵀ(T n + H e), and the torque acts on φ. They are worked out numerically each step, like ground contact. Their work W_a enters the energy budget, so E + W − W_m − W_a stays constant. The defaults are C_T = 0.1, C_Q = 0.007 (C_P = 2πC_Q ≈ 0.044), J₀ = 0.7, C_H = 0.05 and ρ = 1.225 kg/m³. They are typical of small fixed-pitch propellers, and all of them can be set in the inspector.
+
+Example: **Twin-rotor drone with a lever per motor**. A frame carries a motor and propeller at each end, joined into one rigid body: five coordinates (x, y, θ of the frame and the two spins). Its levers are set a little above hover, so it lifts off and climbs. Pull one lever back and it tilts and flies sideways.
 
 ### Ground contact
 

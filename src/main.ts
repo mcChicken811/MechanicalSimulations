@@ -1,14 +1,14 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, gearName, motorTorque, nextLeverColor, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, gearName, motorTorque, nextLeverColor, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, leverGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -34,7 +34,7 @@ let design: Design = loadDesign() ?? presets[0].build(); // first visit: the Str
 let tool: Tool = 'bar';
 let selection: Selection | null = null;
 let hover: Selection | null = null;
-let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear' | 'wheel'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
+let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
 /** A dragged joint, or (`group`) the parts chosen together, moved by the snapped mouse offset. */
 let dragging: { id: number; pushed: boolean; group?: { start: Vec; applied: Vec } } | null = null;
 /** Parts chosen together by a selection box, Select all or a paste. */
@@ -50,6 +50,7 @@ let sim: Simulator | null = null;
 let simPositions = new Map<number, Vec>();
 let simGearAngles = new Map<number, number>();
 let simMotorAngles = new Map<number, number>();
+let simSpinAngles = new Map<number, number>();
 let running = false;
 let simError: string | null = null;
 let grab: { a: number; b: number; s: number; gear?: { id: number; u: number; v: number } } | null = null;
@@ -260,6 +261,7 @@ function startSim() {
   simHeat = sim.heat();
   simGearAngles = sim.gearAngles();
   simMotorAngles = sim.motorAngles();
+  simSpinAngles = sim.spinAngles();
   simError = null;
   running = true;
   drawing = null;
@@ -302,6 +304,7 @@ function rebuildSim() {
   next.friction = friction;
   next.ground = groundSettings();
   next.motorWork = sim.motorWork; // the energy budget carries on across a parameter change
+  next.airWork = sim.airWork;
   // same topology (only parameters changed), so the heat carries over
   if (next.jointHeat.length === sim.jointHeat.length && next.meshHeat.length === sim.meshHeat.length) {
     next.jointHeat.set(sim.jointHeat);
@@ -330,6 +333,7 @@ function advance(seconds: number) {
   simPositions = sim.jointPositions();
   simGearAngles = sim.gearAngles();
   simMotorAngles = sim.motorAngles();
+  simSpinAngles = sim.spinAngles();
   simHeat = sim.heat();
 }
 
@@ -415,7 +419,7 @@ function leverAt(w: Vec): DGear | null {
   const sp = toScreen(view, w);
   for (const g of design.gears) {
     if (!g.motor?.lever || !design.points.some((p) => p.id === g.center)) continue;
-    const { base, knob, radius } = leverGeometry(view, pos(g.center), motorAngleNow(g.id), g);
+    const { base, knob, radius } = leverGeometry(view, pos(g.center), g.propeller ? gearAngleNow(g.id) : motorAngleNow(g.id), g);
     if (Math.hypot(sp[0] - knob[0], sp[1] - knob[1]) < radius + 4 || segmentDistance(sp, base, knob).d < 5) return g;
   }
   return null;
@@ -430,7 +434,7 @@ function hitTest(w: Vec): Selection | null {
   if (l) return { kind: 'link', id: l.id };
   const sp = springAt(w);
   if (sp) return { kind: 'spring', id: sp.id };
-  const g = gearAt(w) ?? housingAt(w); // a motor's housing selects its gear (with the motor's settings)
+  const g = propellerAt(w) ?? gearAt(w) ?? housingAt(w); // a motor's housing selects its gear (with the motor's settings)
   return g ? { kind: 'gear', id: g.id } : null;
 }
 
@@ -438,7 +442,7 @@ function hitTest(w: Vec): Selection | null {
 function gearAt(w: Vec): DGear | null {
   let best: DGear | null = null;
   for (const g of design.gears) {
-    if (!design.points.some((p) => p.id === g.center)) continue;
+    if (g.propeller || !design.points.some((p) => p.id === g.center)) continue; // a propeller is picked by its blades (propellerAt)
     const c = pos(g.center);
     if (Math.hypot(w[0] - c[0], w[1] - c[1]) < g.radius && (!best || g.radius < best.radius)) best = g;
   }
@@ -449,9 +453,29 @@ const gearAngleNow = (id: number) => (sim ? (simGearAngles.get(id) ?? 0) : 0);
 const motorAngleNow = (id: number) => (sim ? (simMotorAngles.get(id) ?? 0) : 0);
 
 /** The gear whose motor housing (a box from the axle out to one side) contains w. */
+/**
+ * The propeller under w: near its blade line (the rotor disk, edge-on), its hub, or its motor
+ * below the hub.
+ */
+function propellerAt(w: Vec): DGear | null {
+  for (const g of design.gears) {
+    if (!g.propeller || !design.points.some((p) => p.id === g.center)) continue;
+    const c = pos(g.center);
+    const th = g.propeller.angle + gearAngleNow(g.id);
+    const [e, n]: [Vec, Vec] = [[Math.cos(th), Math.sin(th)], [-Math.sin(th), Math.cos(th)]];
+    const [dx, dy] = [w[0] - c[0], w[1] - c[1]];
+    const [u, v] = [dx * e[0] + dy * e[1], dx * n[0] + dy * n[1]];
+    const tol = 8 / view.scale;
+    const R = g.radius;
+    if (Math.abs(u) <= R + tol && Math.abs(v) <= Math.max(0.12 * R, tol)) return g;
+    if (g.motor && Math.abs(u) <= 0.13 * R + tol && v <= 0 && v >= -0.5 * R - tol) return g;
+  }
+  return null;
+}
+
 function housingAt(w: Vec): DGear | null {
   for (const g of design.gears) {
-    if (!g.motor || !design.points.some((p) => p.id === g.center)) continue;
+    if (!g.motor || g.propeller || !design.points.some((p) => p.id === g.center)) continue;
     const c = pos(g.center);
     const r = motorHousingRadius(g);
     const t = -motorAngleNow(g.id);
@@ -596,6 +620,19 @@ function finishSegment() {
     designChanged();
     return;
   }
+  if (d.kind === 'propeller') {
+    const r = length;
+    if (r < 0.03) return;
+    pushUndo();
+    // in empty space its centre is a free joint: a free body of four coordinates, x, y, θ and φ
+    const center = d.fromId ?? addPoint(d.from);
+    const id = nextId(design.gears);
+    const angle = +Math.atan2(d.to[1] - d.from[1], d.to[0] - d.from[0]).toFixed(6);
+    design.gears.push({ id, center, radius: +r.toFixed(4), teeth: 2, mass: +Math.max(0.02, 2 * r * r).toFixed(3), locked: false, propeller: { angle, blades: 2 } });
+    selection = { kind: 'gear', id };
+    designChanged();
+    return;
+  }
   if (d.kind === 'wheel') {
     const r = length;
     if (r < 0.03) return;
@@ -722,7 +759,7 @@ function toggleJoin(a: DBodyRef, b: DBodyRef) {
 function bodyAt(w: Vec): DBodyRef | null {
   const l = linkAt(w);
   if (l) return { kind: 'link', id: l.id };
-  const g = gearAt(w);
+  const g = propellerAt(w) ?? gearAt(w); // a propeller's motor is its hub, so it picks the propeller
   if (g) return { kind: 'gear', id: g.id };
   // the part of a motor's housing outside its gear is the motor
   const h = housingAt(w);
@@ -738,7 +775,7 @@ function joinsHtml(ref: DBodyRef, disabled: string, tag = ''): string {
   const choices: DBodyRef[] = [
     ...design.links.map((l): DBodyRef => ({ kind: 'link', id: l.id })),
     ...design.gears.map((g): DBodyRef => ({ kind: 'gear', id: g.id })),
-    ...design.gears.filter((g) => g.motor).map((g): DBodyRef => ({ kind: 'motor', id: g.id })),
+    ...design.gears.filter((g) => g.motor && !g.propeller).map((g): DBodyRef => ({ kind: 'motor', id: g.id })), // a propeller's motor is the propeller
   ].filter((x) => !sameBody(x, ref) && !findJoin(ref, x) && !(x.id === ref.id && x.kind !== 'link' && ref.kind !== 'link')); // a motor and its own gear: that would lock it
   return `
     <div class="field"><span>One body with</span><span>${
@@ -780,7 +817,7 @@ function machineLows(): Vec[] {
     ...design.points.map((p) => [p.x, p.y] as Vec),
     ...design.gears.flatMap((g) => {
       const c = design.points.find((p) => p.id === g.center);
-      return c ? [[c.x, c.y - g.radius] as Vec] : [];
+      return c && !g.propeller ? [[c.x, c.y - g.radius] as Vec] : []; // a propeller touches nothing
     }),
   ];
 }
@@ -1193,7 +1230,12 @@ canvas.addEventListener('pointerdown', (e) => {
       const link = l && design.links.find((x) => x.id === l.id);
       const spr = springAt(w);
       const gr = gearAt(w);
-      if (l && link && sim.sys.pointIndex.has(link.a)) grab = { a: link.a, b: link.b, s: l.s };
+      const pr = propellerAt(w);
+      if (pr && sim.sys.pointIndex.has(pr.center)) {
+        grab = { a: pr.center, b: pr.center, s: 0 }; // pulled by its centre
+        selection = { kind: 'gear', id: pr.id };
+        renderInspector();
+      } else if (l && link && sim.sys.pointIndex.has(link.a)) grab = { a: link.a, b: link.b, s: l.s };
       else if (spr) {
         selection = { kind: 'spring', id: spr.id };
         renderInspector();
@@ -1218,7 +1260,8 @@ canvas.addEventListener('pointerdown', (e) => {
     case 'rack':
     case 'spring':
     case 'gear':
-    case 'wheel': {
+    case 'wheel':
+    case 'propeller': {
       if (drawing?.clickMode) {
         finishSegment();
         return;
@@ -1302,7 +1345,7 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     case 'motor': {
       const pid = pointAt(w);
-      const g = (pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w);
+      const g = propellerAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
       if (!g) break;
       pushUndo();
       if (g.motor) {
@@ -1310,7 +1353,8 @@ canvas.addEventListener('pointerdown', (e) => {
         removeOrphans();
       } else {
         // its housing starts mounted on the ground if the axle is; otherwise free, to be joined to something
-        g.motor = { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: design.points.find((p) => p.id === g.center)?.kind === 'fixed' };
+        const fixed = design.points.find((p) => p.id === g.center)?.kind === 'fixed';
+        g.motor = g.propeller ? propellerMotor(fixed) : { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: fixed };
         g.locked = false; // a motor needs its gear free to turn
       }
       selection = { kind: 'gear', id: g.id };
@@ -1319,7 +1363,7 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     case 'lever': {
       const pid = pointAt(w);
-      const g = leverAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
+      const g = leverAt(w) ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
       if (!g) break;
       pushUndo();
       if (g.motor?.lever) {
@@ -1327,7 +1371,8 @@ canvas.addEventListener('pointerdown', (e) => {
         selection = { kind: 'gear', id: g.id };
       } else {
         // on a gear without a motor, the motor comes too; the lever starts at the centre
-        g.motor ??= { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: design.points.find((p) => p.id === g.center)?.kind === 'fixed' };
+        const fixed = design.points.find((p) => p.id === g.center)?.kind === 'fixed';
+        g.motor ??= g.propeller ? propellerMotor(fixed) : { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: fixed };
         g.locked = false;
         g.motor.lever = { color: nextLeverColor(design), scale: +Math.max(0.1, Math.abs(g.motor.torque)).toFixed(2), position: 0 };
         selection = { kind: 'lever', id: g.id };
@@ -1337,7 +1382,7 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     case 'lockGear': {
       const pid = pointAt(w);
-      const g = (pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w);
+      const g = propellerAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
       if (!g) break;
       pushUndo();
       g.locked = !g.locked;
@@ -1369,7 +1414,16 @@ canvas.addEventListener('pointermove', (e) => {
     panning.last = sp;
     return;
   }
-  if (drawing?.kind === 'gear' || drawing?.kind === 'wheel') {
+  if (drawing?.kind === 'propeller') {
+    // the edge point: its distance is the radius, its direction the blade line (15° steps with snap on)
+    const r0 = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]);
+    const r = settings.snap ? Math.max(0.05, Math.round(r0 / 0.05) * 0.05) : r0;
+    let a = Math.atan2(w[1] - drawing.from[1], w[0] - drawing.from[0]);
+    if (settings.snap) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12);
+    drawing.to = [drawing.from[0] + r * Math.cos(a), drawing.from[1] + r * Math.sin(a)];
+    drawing.mesh = null;
+    drawing.toId = null;
+  } else if (drawing?.kind === 'gear' || drawing?.kind === 'wheel') {
     const free = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]);
     const { r, mesh } = drawing.kind === 'gear' ? gearRadiusAt(drawing.from, w, drawing.fromId) : { r: settings.snap ? Math.max(0.05, Math.round(free / 0.05) * 0.05) : free, mesh: null };
     const len = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]) || 1;
@@ -1425,7 +1479,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   hover = dragging || grab ? hover : hitTest(w);
-  canvas.style.cursor = sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' ? 'crosshair' : hover ? 'pointer' : 'default';
+  canvas.style.cursor = sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' || tool === 'propeller' ? 'crosshair' : hover ? 'pointer' : 'default';
 });
 
 canvas.addEventListener('pointerup', (e) => {
@@ -1477,7 +1531,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1695,6 +1749,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
   motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
+  propeller: 'Click the centre, then the edge of a blade: the blades turn out of the page about an axis square to that line, and push along it (the arrow). In empty space it is a free body; start on a joint to mount it there. Give it a motor (O) to spin it.',
   lever: 'Click a motor (or a gear, which gets a motor) to give it a control lever; its control appears at the bottom right. Drag the control up or down to set the torque, even while it runs. Click the motor again to remove the lever.',
   angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
   join: 'Click two bodies (bars, racks or gears) to join them into one. Click the same pair again to separate them.',
@@ -1864,6 +1919,110 @@ leverScroll.addEventListener(
   },
   { passive: false },
 );
+
+/** The inspector for a propeller: its shape, mass, aerodynamics, motor and joins. */
+function inspectorPropeller(g: DGear, disabled: string) {
+  const P = g.propeller!;
+  const lab = gearLabel(g.id);
+  const aero = propellerAero(P);
+  const m = g.motor;
+  const joined = joinsOf(design).some((j) => [j.a, j.b].some((r) => r.kind !== 'link' && r.id === g.id));
+  const num = (id: string, label: string, value: number, step: string, title = '', dis = disabled) =>
+    `<label class="field" ${title ? `title="${title}"` : ''}><span>${label}</span><input id="${id}" type="number" step="${step}" value="${+value.toPrecision(4)}" ${dis}></label>`;
+  inspectorEl.innerHTML = `
+    <h4>Propeller P${lab} <span class="muted">(centre ${pointLabel(g.center)})</span></h4>
+    ${num('i-r', 'Radius (m)', g.radius, '0.01')}
+    <label class="field">Blades<input id="i-pb" type="number" min="2" max="6" step="1" value="${P.blades}" ${disabled}></label>
+    ${num('i-m', 'Mass (kg)', g.mass, '0.01')}
+    <label class="field">Blade line (°)<input id="i-pa" type="number" step="5" value="${+((P.angle * 180) / Math.PI).toFixed(2)}" ${disabled}></label>
+    <label class="field">Pitch<span><input id="i-ph" type="checkbox" ${aero.hand < 0 ? 'checked' : ''} ${disabled}> reversed (forward spin pushes the other way)</span></label>
+    <label class="field">Braked<span><input id="i-lock" type="checkbox" ${g.locked ? 'checked' : ''} ${disabled}> blades do not spin</span></label>
+    <details><summary class="muted">Aerodynamics (C<sub>T</sub> ${aero.ct}, C<sub>Q</sub> ${aero.cq}, ρ ${aero.rho})</summary>
+      ${num('i-ct', 'C<sub>T</sub>', aero.ct, '0.01', 'Static thrust coefficient: T = ρ D⁴ C_T n²')}
+      ${num('i-cq', 'C<sub>Q</sub>', aero.cq, '0.001', 'Torque coefficient: Q = ρ D⁵ C_Q n² (power coefficient C_P = 2π C_Q)')}
+      ${num('i-j0', 'J<sub>0</sub>', aero.j0, '0.05', 'Advance ratio V/(nD) at which the thrust falls to zero (about pitch / diameter)')}
+      ${num('i-ch', 'C<sub>H</sub>', aero.ch, '0.01', 'Rotor drag (H-force) coefficient: H = −ρ D³ C_H |n| v, across the axis')}
+      ${num('i-rho', 'Air ρ (kg/m³)', aero.rho, '0.05')}
+    </details>
+    <label class="field">Motor<span><input id="i-motor" type="checkbox" ${m ? 'checked' : ''} ${disabled}> spins it</span></label>
+    ${
+      m
+        ? `${
+            m.lever
+              ? `<div class="field"><span>Torque</span><span>set by <button id="i-golever" style="color:${m.lever.color}">lever L${lab}</button>: ${motorTorque(m).toFixed(2)} N·m</span></div>`
+              : `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${m.torque}"></label>`
+          }
+        <label class="field">No-load speed (rpm)<input id="i-rpm" type="number" min="0" step="100" value="${m.noLoadRpm}"></label>
+        <label class="field">Motor mass (kg)<input id="i-hmass" type="number" min="0.001" step="0.05" value="${m.mass ?? 0.5}" ${disabled}></label>
+        <label class="field">Hub<span><input id="i-mounted" type="checkbox" ${m.mounted !== false ? 'checked' : ''} ${disabled || joined ? 'disabled' : ''}> mounted on the ground</span></label>`
+        : ''
+    }
+    ${joinsHtml({ kind: 'gear', id: g.id }, disabled)}
+    <p class="muted">Its blades spin by φ about an axis in the plane, square to the blade line, and push along it (the arrow). It touches nothing. ${
+      m ? `The motor spins the blades against the hub it is part of; ${joined ? 'joined, the hub is carried by the bodies it is joined to' : m.mounted !== false ? 'the hub is mounted on the ground' : 'the hub is free'}. ` : 'Without a motor it is a free body (x, y, θ, φ); join it to carry it on another body. '
+    }Air: thrust ρD⁴C<sub>T</sub>n² (less as it moves along its axis), torque ρD⁵C<sub>Q</sub>n² against the spin, and rotor drag across the axis.</p>`;
+  bindJoinControls({ kind: 'gear', id: g.id });
+  bindField('#i-r', (v) => (g.radius = Math.max(0.03, Number(v) || 0.03)));
+  bindField('#i-pb', (v) => (P.blades = Math.min(6, Math.max(2, Math.round(Number(v) || 2)))));
+  bindField('#i-m', (v) => (g.mass = Math.max(0.001, Number(v) || 0.001)));
+  bindField('#i-pa', (v) => (P.angle = (((Number(v) || 0) * Math.PI) / 180)));
+  const coeff = (sel: string, key: 'ct' | 'cq' | 'j0' | 'ch' | 'rho', min: number) =>
+    bindField(sel, (v) => {
+      const x = Number(v);
+      if (Number.isFinite(x)) P[key] = Math.max(min, x);
+    });
+  coeff('#i-ct', 'ct', 0);
+  coeff('#i-cq', 'cq', 0);
+  coeff('#i-j0', 'j0', 0.05);
+  coeff('#i-ch', 'ch', 0);
+  coeff('#i-rho', 'rho', 0);
+  inspectorEl.querySelector<HTMLInputElement>('#i-ph')!.addEventListener('change', (e) => {
+    pushUndo();
+    P.hand = (e.target as HTMLInputElement).checked ? -1 : 1;
+    designChanged({ keepInspector: true });
+  });
+  inspectorEl.querySelector<HTMLInputElement>('#i-lock')!.addEventListener('change', (e) => {
+    pushUndo();
+    g.locked = (e.target as HTMLInputElement).checked;
+    designChanged({ keepInspector: true });
+  });
+  inspectorEl.querySelector<HTMLInputElement>('#i-motor')!.addEventListener('change', (e) => {
+    pushUndo();
+    if ((e.target as HTMLInputElement).checked) {
+      g.motor = propellerMotor(design.points.find((p) => p.id === g.center)?.kind === 'fixed');
+      g.locked = false;
+    } else delete g.motor;
+    designChanged();
+  });
+  const motorField = (sel: string, apply: (mm: NonNullable<DGear['motor']>, v: number) => void) =>
+    inspectorEl.querySelector<HTMLInputElement>(sel)?.addEventListener('change', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (!g.motor || !Number.isFinite(v)) return;
+      pushUndo();
+      apply(g.motor, v);
+      designChanged();
+      if (sim) rebuildSim();
+    });
+  motorField('#i-torque', (mm, v) => (mm.torque = v));
+  motorField('#i-rpm', (mm, v) => (mm.noLoadRpm = Math.max(0, v)));
+  motorField('#i-hmass', (mm, v) => (mm.mass = Math.max(0.001, v)));
+  inspectorEl.querySelector<HTMLInputElement>('#i-mounted')?.addEventListener('change', (e) => {
+    if (!g.motor) return;
+    pushUndo();
+    g.motor.mounted = (e.target as HTMLInputElement).checked;
+    designChanged();
+  });
+  inspectorEl.querySelector('#i-golever')?.addEventListener('click', () => {
+    selection = { kind: 'lever', id: g.id };
+    renderInspector();
+  });
+}
+
+/** A propeller's spin rate φ̇ now (rad/s), or null if it cannot spin. */
+function simSpinRate(id: number): number | null {
+  const pr = sim?.sys.derivation.propellers.find((x) => x.id === id);
+  return sim && pr && pr.spin >= 0 ? sim.qd[pr.spin] : null;
+}
 
 /** The inspector for a lever: its colour and scale, where it is set, and removing it. */
 function inspectorLever(g: DGear, lever: NonNullable<NonNullable<DGear['motor']>['lever']>, disabled: string) {
@@ -2153,6 +2312,10 @@ function renderInspector() {
   }
   if (sel?.kind === 'gear') {
     const g = design.gears.find((x) => x.id === sel.id);
+    if (g?.propeller) {
+      inspectorPropeller(g, disabled);
+      return;
+    }
     if (g) {
       const label = (id: number) => `g${gearLabel(id)}`;
       const meshed = design.meshes.filter((m) => m.a === g.id || m.b === g.id);
@@ -2312,11 +2475,13 @@ function heatStatus(s: Simulator): string {
   }
   const { T, V } = s.energy();
   const motors = s.sys.derivation.motors.length > 0;
+  const air = s.sys.derivation.propellers.length > 0;
   const heat = friction.enabled || s.dissipated > 0;
   return (
     (heat ? ` · heat W = <b>${s.dissipated.toFixed(3)} J</b>` : '') +
     (motors ? ` · motor work W<sub>m</sub> = <b>${s.motorWork.toFixed(3)} J</b>` : '') +
-    ` · E${heat ? ' + W' : ''}${motors ? ' − W<sub>m</sub>' : ''} = ${(T + V + s.dissipated - s.motorWork).toFixed(4)} J` +
+    (air ? ` · air work W<sub>a</sub> = <b>${s.airWork.toFixed(3)} J</b>` : '') +
+    ` · E${heat ? ' + W' : ''}${motors ? ' − W<sub>m</sub>' : ''}${air ? ' − W<sub>a</sub>' : ''} = ${(T + V + s.dissipated - s.motorWork - s.airWork).toFixed(4)} J` +
     (hottest > 0.01 ? ` · hottest: ${where} +${hottest.toFixed(1)} K` : '')
   );
 }
@@ -2326,14 +2491,15 @@ function renderStatus() {
   const nRacks = design.links.length - nBars;
   const nSprings = design.springs.length;
   const nWheels = design.gears.filter((g) => g.wheel).length;
-  const nGears = design.gears.length - nWheels;
+  const nProps = design.gears.filter((g) => g.propeller).length;
+  const nGears = design.gears.length - nWheels - nProps;
   if (simError) {
     statusEl.innerHTML = `<span class="err">${simError}</span>`;
     return;
   }
   if (!sim) {
     const dof = derivation ? derivation.coords.length - derivation.constraints.length : 0;
-    statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''}${nWheels ? ` · <b>${nWheels}</b> wheel${nWheels === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom`;
+    statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''}${nWheels ? ` · <b>${nWheels}</b> wheel${nWheels === 1 ? '' : 's'}` : ''}${nProps ? ` · <b>${nProps}</b> propeller${nProps === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom`;
     return;
   }
   const { T, V } = sim.energy();
@@ -2420,6 +2586,9 @@ function frame(now: number) {
     preview: drawing ? { from: drawing.from, to: drawing.to, kind: drawing.kind, meshAt: drawing.mesh?.at ?? null, side: drawing.mesh?.side } : null,
     gearAngle: gearAngleNow,
     motorAngle: motorAngleNow,
+    spinAngle: (id: number) => (sim ? (simSpinAngles.get(id) ?? 0) : 0),
+    spinRate: (id: number) => simSpinRate(id) ?? 0,
+    thrust: (id: number) => (sim ? (sim.thrust.get(id) ?? 0) : undefined),
     heat: sim ? simHeat : null,
     grab: grabScene,
     simulating: !!sim,

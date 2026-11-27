@@ -583,6 +583,35 @@ export function motorCar(): Design {
   };
 }
 
+/**
+ * A twin-rotor drone seen from the side: a frame with a motor and propeller at each end, the
+ * motors joined to the frame (a propeller's motor is its hub). Each motor has a lever, set a
+ * little above hover, so it lifts off the ground and climbs; pull one lever back and the
+ * frame tilts and flies sideways.
+ */
+export function twinRotor(): Design {
+  const y = 0.0001;
+  const rotor = (id: number, center: number, color: string): DGear => ({
+    ...gear(id, center, 0.15, 0.045),
+    teeth: 2,
+    propeller: { angle: 0, blades: 2 },
+    motor: { torque: 0.3, noLoadRpm: 8000, mass: 0.1, mounted: false, lever: { color, scale: 0.3, position: 0.71 } },
+  });
+  return {
+    points: [pt(0, -0.4, y), pt(1, 0.4, y), pt(2, 0, y, 'free', 0.1)], // frame ends and its middle, carrying a battery
+    links: barsM([[0, 2, 0.15], [2, 1, 0.15]]),
+    springs: [],
+    gears: [rotor(0, 0, '#e04f5f'), rotor(1, 1, '#2f9e8f')],
+    meshes: [], rackMeshes: [],
+    joins: [
+      { id: 0, a: { kind: 'gear', id: 0 }, b: { kind: 'link', id: 0 } },
+      { id: 1, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 1 } }, // one rigid frame
+      { id: 2, a: { kind: 'gear', id: 1 }, b: { kind: 'link', id: 1 } },
+    ],
+    ground: straightGround(0, 0, -3, 3, 7, 0.2, 0.8),
+  };
+}
+
 /** A rigid square frame (braced by a diagonal) dropped corner-first onto the floor. */
 function tumblingBox(): Design {
   const s = 0.4;
@@ -984,6 +1013,7 @@ export const presets: Preset[] = [
     }),
   },
   { name: 'Motor car on wheels over hills', group: 'Basics', build: () => motorCar(), follow: true },
+  { name: 'Twin-rotor drone with a lever per motor', group: 'Basics', build: () => twinRotor(), follow: true },
   {
     name: 'Pendulum on a vertical rail',
     group: 'Basics',

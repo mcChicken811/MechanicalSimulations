@@ -129,6 +129,21 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
     parts.push('</section>');
   }
 
+  if (d.propellers.length) {
+    parts.push('<section><h3>Propellers</h3>');
+    parts.push(tex('T = \\tfrac{1}{2} m\\,(\\dot x^2 + \\dot y^2) + \\tfrac{1}{2}\\left(I_1 \\dot\\varphi^2 + I_2\\, \\dot\\theta^2 \\sin^2\\varphi + I_3\\, \\dot\\theta^2 \\cos^2\\varphi\\right)'));
+    parts.push(
+      `<p class="note">A propeller is a 3D rigid body kept to the plane: its hub moves by ${tex('x, y', false)} and yaws by ${tex('\\theta', false)}, and its blades spin by ${tex('\\varphi', false)} about an axis in the plane (Euler angles ${tex('\\theta', false)} then ${tex('\\varphi', false)}). ` +
+        `In body axes (spin axis, blade 1, third axis) its angular velocity is ${tex('\\omega = (\\dot\\varphi,\\ \\dot\\theta\\sin\\varphi,\\ \\dot\\theta\\cos\\varphi)', false)}; the 3D energy ${tex('\\tfrac12 m v^2 + \\tfrac12 \\omega^{\\mathsf T} I\\, \\omega', false)} without ${tex('z', false)} and the tilt out of the plane gives the form above (with three or more blades ${tex('I_2 = I_3', false)}). A motor on it drives ${tex('\\varphi', false)}, its housing being the hub.</p>`,
+    );
+    parts.push(tex('T_{\\text{air}} = \\pm\\rho D^4 C_T\\, n|n| - \\rho D^3 \\tfrac{C_T}{J_0}\\, |n|\\, v_{\\parallel},\\quad H = -\\rho D^3 C_H\\, |n|\\, v_{\\perp},\\quad Q_\\varphi = -\\rho D^5 C_Q\\, n|n|'));
+    parts.push(
+      `<p class="note">The air, with ${tex('n = \\dot\\varphi/2\\pi', false)} the spin in rev/s and ${tex('D', false)} the diameter: thrust along the axis (the standard ${tex('T = C_T \\rho n^2 D^4', false)}, its coefficient falling linearly with the advance ratio ${tex('J = v_{\\parallel}/nD', false)} to zero at ${tex('J_0', false)}), rotor drag across the axis (the H-force), and the air torque against the spin. ` +
+        `They act at the centre, ${tex('Q = J_c^{\\mathsf T}(T_{\\text{air}}\\mathbf n + H\\mathbf e)', false)}, with ${tex('Q_\\varphi', false)} on the spin; evaluated numerically every step. Their work ${tex('W_a', false)} enters the energy budget.</p>`,
+    );
+    parts.push('</section>');
+  }
+
   if (d.sliderStops.length) {
     const m = (v: number | null) => (v === null ? 'no stop' : `${v.toFixed(2)}\u00a0m`);
     parts.push('<section><h3>Slider stops</h3>');

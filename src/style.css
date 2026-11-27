@@ -374,6 +374,16 @@ table.params td {
   bottom: 12px;
   width: 260px;
   padding: 12px 14px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto; /* a long inspector (a propeller with a motor) scrolls */
+}
+
+#inspector details {
+  margin: 6px 0;
+}
+
+#inspector summary {
+  cursor: pointer;
 }
 
 #inspector h4 {

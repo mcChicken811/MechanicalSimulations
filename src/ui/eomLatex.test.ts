@@ -25,8 +25,8 @@ describe('presets', () => {
       for (let i = 0; i < 2000; i++) expect(sim.step(1e-3)).toBe(true);
       const e1 = sim.energy();
       const scale = Math.abs(e0.T) + Math.abs(e0.V) + 1;
-      // motors add work and losses remove it, so the budget E + W − W_motor is what stays put
-      expect(Math.abs(e1.T + e1.V + sim.dissipated - sim.motorWork - e0.T - e0.V) / scale).toBeLessThan(1e-2);
+      // motors and the air on propellers add work and losses remove it, so the budget E + W − W_motor − W_air is what stays put
+      expect(Math.abs(e1.T + e1.V + sim.dissipated - sim.motorWork - sim.airWork - e0.T - e0.V) / scale).toBeLessThan(1e-2);
       expect(sim.constraintError()).toBeLessThan(1e-8);
     });
   }

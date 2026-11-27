@@ -47,9 +47,17 @@
  *    mounted on the ground, free, or joined to other bodies. It turns the gear by τ and its own
  *    housing back by −τ: with the relative angle ρ = φ − ψ, the generalized force is
  *    Q = (τ − b ρ̇) ∂ρ/∂q, b = τ/Ω making the torque fall to zero at the no-load speed Ω.
+ * 14. A propeller is a 3D rigid body kept to the plane: its hub has the gear's coordinates
+ *    (x, y of the centre and the yaw θ in the plane) and its blades spin by φ about the spin
+ *    axis, which lies in the plane (Euler angles θ then φ). Its angular velocity in body axes
+ *    (spin axis, blade 1, third axis) is ω = (φ̇, θ̇ sin φ, θ̇ cos φ), so the 3D rigid-body energy
+ *    with z and the tilt out of the plane left out is
+ *    T = ½ m (ẋ² + ẏ²) + ½ (I₁ φ̇² + I₂ θ̇² sin² φ + I₃ θ̇² cos² φ).
+ *    A motor on it turns φ (its housing is the hub); the air's thrust, drag and torque are
+ *    generalized forces worked out in the simulator each step.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
-import { bodyName, drawnAngle, gearLabel, motorTorque, linkLabel, motorHousingRadius, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
+import { bodyName, drawnAngle, gearLabel, motorTorque, propellerAero, propellerInertia, linkLabel, motorHousingRadius, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
 
 export interface Coordinate {
   sym: string;
@@ -147,6 +155,12 @@ export interface Derivation {
   sliderStops: { joint: number; s: Poly; grad: Poly[]; min: number | null; max: number | null; restitution: number }[];
   /** Motors: the index of the driven gear's φ in q, and the parameter indices of τ and b. */
   motors: { id: number; terms: { coord: number; k: number }[]; tau: string; b: string | null }[];
+  /**
+   * Propellers, for their air forces and drawing: centre joint, radius, drawn blade direction,
+   * the index of the blades' spin φ in q (−1 if braked) and the aerodynamic coefficients. The
+   * hub's yaw is the gear angle (gearAngles, gearCoords).
+   */
+  propellers: { id: number; center: number; radius: number; angle0: number; spin: number; aero: ReturnType<typeof propellerAero> }[];
   /** Rotation ψ of every motor housing (by its gear's id), for drawing. */
   motorAngles: { id: number; angle: Poly }[];
   /** For every gear that turns, the coordinate it turns with one for one (its φ, or its group's angle). */
@@ -197,6 +211,11 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   // Gears: rigid bodies made of a centre joint plus the joints pinned onto them.
   const gears = (design.gears ?? []).filter((gr) => pointById.has(gr.center));
   const gearById = new Map(gears.map((gr) => [gr.id, gr]));
+  /** Whether a gear's own frame cannot turn: a locked gear, or a propeller whose motor is mounted on the ground (its hub). */
+  const hubFixed = (gr: (typeof gears)[number]) => (gr.propeller ? !!gr.motor && gr.motor.mounted !== false : gr.locked);
+  // a propeller's motor housing is its hub: joining the motor joins the propeller
+  const asBody = (r: DBodyRef): DBodyRef => (r.kind === 'motor' && gearById.get(r.id)?.propeller ? { kind: 'gear', id: r.id } : r);
+  const joins = (design.joins ?? []).map((j) => ({ id: j.id, a: asBody(j.a), b: asBody(j.b) }));
   const gearJoints = new Map<number, number[]>(gears.map((gr) => [gr.id, [gr.center]]));
   for (const p of design.points) if (p.gear !== undefined && gearById.has(p.gear) && gearById.get(p.gear)!.center !== p.id) gearJoints.get(p.gear)!.push(p.id);
   const gearsAt = new Map<number, number[]>();
@@ -243,7 +262,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   const housingMass = new Map<number, Poly>();
   const housingInertia = new Map<number, Poly>();
   for (const gr of gears) {
-    if (!gr.motor) continue;
+    if (!gr.motor || gr.propeller) continue; // a propeller's motor is part of its hub
     const lab = gearLabel(gr.id);
     const m = Math.max(gr.motor.mass ?? 0.5, 1e-6);
     housingMass.set(gr.id, param(`mm${gr.id}`, `m_{\\mathrm{M}${lab}}`, m, 'kg'));
@@ -301,9 +320,9 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     return root;
   };
   const exists = (r: DBodyRef) => (r.kind === 'link' ? linkById.has(r.id) : r.kind === 'gear' ? gearById.has(r.id) : !!gearById.get(r.id)?.motor);
-  for (const j of design.joins ?? []) if (!sameBody(j.a, j.b) && exists(j.a) && exists(j.b)) parent.set(find(bodyKey(j.a)), find(bodyKey(j.b)));
+  for (const j of joins) if (!sameBody(j.a, j.b) && exists(j.a) && exists(j.b)) parent.set(find(bodyKey(j.a)), find(bodyKey(j.b)));
   const members = new Map<string, DBodyRef[]>();
-  for (const j of design.joins ?? [])
+  for (const j of joins)
     for (const r of [j.a, j.b])
       if (exists(r)) {
         const root = find(bodyKey(r));
@@ -381,14 +400,16 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     let cos = Poly.const(1);
     let sin = Poly.zero;
     let phi = Poly.zero;
-    if (!gr.locked) {
+    const fixed = hubFixed(gr);
+    if (!fixed) {
       const sym = `ph${gid}`;
-      phi = coord(sym, '\\varphi', lab, 'angle', 0);
+      // a propeller's hub turns by θ in the plane (its blades' spin is φ)
+      phi = gr.propeller ? coord(sym, '\\theta', `P${lab}`, 'angle', 0) : coord(sym, '\\varphi', lab, 'angle', 0);
       cos = Poly.cos([[sym, 1]]);
       sin = Poly.sin([[sym, 1]]);
     }
     gearAngle.set(gid, phi);
-    gearSym.set(gid, gr.locked ? null : `ph${gid}`);
+    gearSym.set(gid, fixed ? null : `ph${gid}`);
     const rot = ([u, v]: [Poly, Poly]): [Poly, Poly] => [u.mul(cos).sub(v.mul(sin)), u.mul(sin).add(v.mul(cos))];
     const [fx, fy] = positions.get(fromPid)!;
     const [fu, fv] = rot(pinOffset(gid, fromPid));
@@ -420,7 +441,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   const placeGroup = (gi: number, fromPid: number) => {
     groupPlaced.add(gi);
     const G = groups[gi];
-    const locked = G.gears.some((g) => g.locked);
+    const locked = G.gears.some((g) => g.locked && !g.propeller); // a braked propeller only stops its blades
     const ref = G.bars[0];
     const refDisk = G.gears[0] ?? G.housings[0]; // a gear, or else a motor housing, gives the frame
     const origin = ref ? ref.a : refDisk.center;
@@ -439,7 +460,8 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
         barAngle.set(ref.id, sym);
       } else if (G.gears.length) {
         sym = `ph${G.gears[0].id}`;
-        coord(sym, '\\varphi', gearLabel(G.gears[0].id), 'angle', 0);
+        if (G.gears[0].propeller) coord(sym, '\\theta', `P${gearLabel(G.gears[0].id)}`, 'angle', 0);
+        else coord(sym, '\\varphi', gearLabel(G.gears[0].id), 'angle', 0);
       } else {
         sym = `ms${refDisk.id}`;
         coord(sym, '\\psi', gearLabel(refDisk.id), 'angle', 0);
@@ -506,7 +528,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     housingSym.set(gr.id, sym);
   };
   const housingsAt = new Map<number, (typeof gears)[number][]>();
-  for (const gr of gears) if (gr.motor) housingsAt.set(gr.center, [...(housingsAt.get(gr.center) ?? []), gr]);
+  for (const gr of gears) if (gr.motor && !gr.propeller) housingsAt.set(gr.center, [...(housingsAt.get(gr.center) ?? []), gr]);
 
   const propagate = () => {
     while (queue.length) {
@@ -574,6 +596,15 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     queue.push(seed.id);
     propagate();
   }
+
+  // ---- propeller spins -----------------------------------------------------------
+  // the blades' spin φ about the axis in the plane, unless braked
+  const spinSym = new Map<number, string>();
+  for (const gr of gears)
+    if (gr.propeller && gearAngle.has(gr.id) && !gr.locked) {
+      spinSym.set(gr.id, `sp${gr.id}`);
+      coord(`sp${gr.id}`, '\\varphi', `P${gearLabel(gr.id)}`, 'angle', 0);
+    }
 
   // ---- gears ----------------------------------------------------------------
   const movable = (e: Poly) => coords.some((c) => e.dependsOn(c.sym));
@@ -756,7 +787,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     return { angle: sym ? Poly.sym(sym) : Poly.zero, sym, at: positions.get(gr.center)! };
   };
   const joinNames = new Map<number, string>();
-  for (const j of design.joins ?? []) {
+  for (const j of joins) {
     if (sameBody(j.a, j.b)) continue;
     // bodies placed as one group are rigid already
     const [ga, gb] = [groupOfBody.get(bodyKey(j.a)), groupOfBody.get(bodyKey(j.b))];
@@ -909,7 +940,29 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     const m = gearMass.get(gr.id)!;
     const R = gearRadius.get(gr.id)!;
     T = T.add(m.scale(0.5).mul(dot(vc, vc)));
-    if (!gr.locked) {
+    if (gr.propeller) {
+      // the 3D rigid body in the plane: ½ (I₁ φ̇² + I₂ θ̇² sin² φ + I₃ θ̇² cos² φ), its motor riding on the hub
+      const lab = gearLabel(gr.id);
+      const { I1, I2, I3 } = propellerInertia(gr);
+      const w = timeDerivative(gearAngle.get(gr.id)!, qs, qds); // θ̇
+      const sp = spinSym.get(gr.id);
+      if (sp) T = T.add(param(`Ia${gr.id}`, `I_{1,\\mathrm{P}${lab}}`, I1, 'kg·m²').mul(Poly.sym(`${sp}_d`)).mul(Poly.sym(`${sp}_d`)).scale(0.5));
+      if (!w.isZero()) {
+        if (Math.abs(I2 - I3) < 1e-15 * Math.max(I3, 1e-300) || !sp) {
+          // three or more blades (I₂ = I₃), or blades that do not spin (held at φ = 0)
+          T = T.add(param(`Ic${gr.id}`, `I_{3,\\mathrm{P}${lab}}`, I3, 'kg·m²').mul(w).mul(w).scale(0.5));
+        } else {
+          const [sn, cs] = [Poly.sin([[sp, 1]]), Poly.cos([[sp, 1]])];
+          const yaw = param(`Ib${gr.id}`, `I_{2,\\mathrm{P}${lab}}`, I2, 'kg·m²').mul(sn).mul(sn).add(param(`Ic${gr.id}`, `I_{3,\\mathrm{P}${lab}}`, I3, 'kg·m²').mul(cs).mul(cs));
+          T = T.add(yaw.mul(w).mul(w).scale(0.5));
+        }
+      }
+      if (gr.motor) {
+        const mm = param(`mm${gr.id}`, `m_{\\mathrm{M}${lab}}`, Math.max(gr.motor.mass ?? 0.5, 1e-6), 'kg');
+        T = T.add(mm.scale(0.5).mul(dot(vc, vc)));
+        if (g) V = V.add(mm.mul(g).mul(rc[1]));
+      }
+    } else if (!gr.locked) {
       const w = timeDerivative(gearAngle.get(gr.id)!, qs, qds); // φ̇: its own coordinate's rate, or its group's
       T = T.add(m.mul(R).mul(R).mul(w).mul(w).scale(0.25)); // ½ I φ̇², I = ½ m R²
     }
@@ -978,12 +1031,14 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   // τ on the gear, −τ on the housing: Q = (τ − b ρ̇) ∂ρ/∂q with ρ = φ − ψ, the gear's turn in the housing
   const motors: Derivation['motors'] = [];
   for (const gr of gears) {
-    if (!gr.motor || !gearAngle.has(gr.id) || !housingAngle.has(gr.id)) continue;
+    if (!gr.motor || !gearAngle.has(gr.id) || (!gr.propeller && !housingAngle.has(gr.id))) continue;
     const lab = gearLabel(gr.id);
-    const rel = gearAngle.get(gr.id)!.sub(housingAngle.get(gr.id)!);
+    // a propeller's motor spins its blades relative to the hub it is part of: ρ = φ_spin
+    const sp = spinSym.get(gr.id);
+    const rel = gr.propeller ? (sp ? Poly.sym(sp) : Poly.zero) : gearAngle.get(gr.id)!.sub(housingAngle.get(gr.id)!);
     const terms = qs.map((q, i) => ({ coord: i, k: rel.diff(q).constantValue() ?? 0 })).filter((t) => t.k !== 0);
     if (!terms.length) {
-      warnings.push(gr.locked ? `Gear g${lab} is locked, so its motor cannot turn it.` : `Motor M${lab} cannot turn gear g${lab}: the gear and the motor's housing are held together.`);
+      warnings.push(gr.propeller ? `Propeller P${lab} is braked, so its motor cannot spin it.` : gr.locked ? `Gear g${lab} is locked, so its motor cannot turn it.` : `Motor M${lab} cannot turn gear g${lab}: the gear and the motor's housing are held together.`);
       continue;
     }
     const tau = param(`tau${gr.id}`, `\\tau_{\\mathrm{g}${lab}}`, motorTorque(gr.motor), 'N·m');
@@ -1071,16 +1126,19 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     motors,
     motorAngles: [...housingAngle].map(([id, angle]) => ({ id, angle })),
     sliderStops,
+    propellers: gears
+      .filter((gr) => gr.propeller && gearAngle.has(gr.id))
+      .map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius, angle0: gr.propeller!.angle, spin: spinSym.has(gr.id) ? coords.findIndex((c) => c.sym === spinSym.get(gr.id)) : -1, aero: propellerAero(gr.propeller!) })),
     gearCoords: [...gearAngle.keys()].map((id) => ({ id, coord: gearCoordOf(id) })).filter((g) => g.coord >= 0),
-    gearDisks: gears.filter((gr) => gearAngle.has(gr.id)).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),
+    gearDisks: gears.filter((gr) => gearAngle.has(gr.id) && !gr.propeller).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),
     phiQ,
     gamma,
     activePoints: active.map((pt) => pt.id),
     joints: active.map((p) => ({
       id: p.id,
       bars: links.filter((l) => l.a === p.id || l.b === p.id || (p.pin?.kind === 'link' && p.pin.id === l.id)).map((l) => ({ link: l.id, a: l.a, b: l.b })),
-      gears: (gearsAt.get(p.id) ?? []).filter((gid) => gearAngle.has(gid) && !gearById.get(gid)!.locked),
-      ground: p.kind === 'fixed' || groundRail(p) !== null || (gearsAt.get(p.id) ?? []).some((gid) => gearById.get(gid)!.locked),
+      gears: (gearsAt.get(p.id) ?? []).filter((gid) => gearAngle.has(gid) && !hubFixed(gearById.get(gid)!)),
+      ground: p.kind === 'fixed' || groundRail(p) !== null || (gearsAt.get(p.id) ?? []).some((gid) => hubFixed(gearById.get(gid)!)),
       rail: groundRail(p),
     })),
     meshes: meshParts.map(({ id, kind, a, b, v }) => ({ id, kind, a, b, pitchGrad: qs.map((q) => v.diff(q)) })),
