@@ -557,6 +557,32 @@ function rimlessWheel(spokes = 8, L = 0.3, slopeDeg = -12): Design {
   };
 }
 
+/**
+ * A little motor car on two wheels over hilly ground. The rear wheel carries the motor, whose
+ * housing is joined to the chassis: the chassis takes the motor's reaction, so it noses up as
+ * the car pulls away and up the slopes. The wheels grip the ground through friction.
+ */
+export function motorCar(): Design {
+  const R = 0.15;
+  const y = R + 1e-4; // resting just on the ground
+  return {
+    points: [pt(0, 0, y), pt(1, 0.7, y), pt(2, 0.3, 0.45, 'free', 0.5)], // rear axle, front axle, cab with its load
+    links: barsM([[0, 1, 1], [0, 2, 0.2], [1, 2, 0.2]]), // chassis and cab frame
+    springs: [],
+    gears: [
+      { ...gear(0, 0, R, 0.5), wheel: true, motor: { torque: -2.5, noLoadRpm: 150, mass: 0.3, mounted: false } }, // clockwise: drives right
+      { ...gear(1, 1, R, 0.5), wheel: true },
+    ],
+    meshes: [], rackMeshes: [],
+    joins: [{ id: 0, a: { kind: 'motor', id: 0 }, b: { kind: 'link', id: 0 } }],
+    ground: {
+      points: [[-2, 0], [1.5, 0], [2.5, 0.25], [3.5, 0.3], [4.5, 0.05], [5.5, -0.15], [6.5, 0.2], [7.5, 0.55], [8.5, 0.6], [9.5, 0.3], [10.5, 0], [12, 0.1], [14, 0]],
+      restitution: 0,
+      friction: 0.9,
+    },
+  };
+}
+
 /** A rigid square frame (braced by a diagonal) dropped corner-first onto the floor. */
 function tumblingBox(): Design {
   const s = 0.4;
@@ -957,6 +983,7 @@ export const presets: Preset[] = [
       rackMeshes: [{ id: 0, gear: 0, rack: 0 }],
     }),
   },
+  { name: 'Motor car on wheels over hills', group: 'Basics', build: () => motorCar(), follow: true },
   {
     name: 'Pendulum on a vertical rail',
     group: 'Basics',

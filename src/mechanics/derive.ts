@@ -620,6 +620,10 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     const gb = gearById.get(mesh.b);
     const lab = `${gearLabel(mesh.a)}–${gearLabel(mesh.b)}`;
     if (!ga || !gb || ga === gb || !gearAngle.has(ga.id) || !gearAngle.has(gb.id)) continue;
+    if (ga.wheel || gb.wheel) {
+      warnings.push(`Gears ${lab}: a wheel has no teeth, so it cannot mesh; the mesh was ignored.`);
+      continue;
+    }
     // θ_c: direction of the line of centres, which must keep its length for the gears to stay in mesh.
     const [rax, ray] = positions.get(ga.center)!;
     const [rbx, rby] = positions.get(gb.center)!;
@@ -656,6 +660,10 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     const gr = gearById.get(rm.gear);
     const rack = links.find((l) => l.id === rm.rack && l.rack);
     if (!gr || !rack || !gearAngle.has(gr.id)) continue;
+    if (gr.wheel) {
+      warnings.push(`Wheel w${gearLabel(gr.id)} has no teeth, so it cannot mesh with rack ${linkLabel(rack.id)}; the mesh was ignored.`);
+      continue;
+    }
     const gl = gearLabel(gr.id);
     const rl = linkLabel(rack.id);
     const lab = `gear g${gl} and rack ${rl}`;
@@ -982,9 +990,10 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     let torque = tau;
     let b: string | null = null;
     if (gr.motor.noLoadRpm > 0) {
-      // the torque falls linearly to zero at the no-load speed: b = τ / Ω
+      // the torque falls linearly to zero at the no-load speed, reached turning the way τ pushes:
+      // b = |τ| / Ω (a clockwise motor, τ < 0, runs free at ω = −Ω)
       b = `bm${gr.id}`;
-      const bp = param(b, `b_{\\mathrm{g}${lab}}`, gr.motor.torque / ((gr.motor.noLoadRpm * 2 * Math.PI) / 60), 'N·m·s');
+      const bp = param(b, `b_{\\mathrm{g}${lab}}`, Math.abs(gr.motor.torque) / ((gr.motor.noLoadRpm * 2 * Math.PI) / 60), 'N·m·s');
       torque = torque.sub(bp.mul(timeDerivative(rel, qs, qds)));
     }
     for (const { coord: i, k } of terms) f[i] = f[i].add(torque.scale(k));

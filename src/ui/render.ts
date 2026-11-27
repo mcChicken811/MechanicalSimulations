@@ -21,7 +21,7 @@ export interface Scene {
   selection: Selection | null;
   hover: Selection | null;
   /** A part being drawn; `meshAt` marks where it will mesh, `side` is a rack's tooth side. */
-  preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear' | 'rack'; meshAt?: Vec | null; side?: 1 | -1 } | null;
+  preview: { from: Vec; to: Vec; kind: 'bar' | 'spring' | 'gear' | 'wheel' | 'rack'; meshAt?: Vec | null; side?: 1 | -1 } | null;
   /** Current rotation of a gear (0 while editing). */
   gearAngle: (id: number) => number;
   /** Current turn of the housing of the motor on a gear, since the drawing (0 while editing). */
@@ -137,7 +137,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     if (s.preview.kind === 'spring') {
       ctx.lineWidth = 2;
       zigzag(ctx, a, b);
-    } else if (s.preview.kind === 'gear') {
+    } else if (s.preview.kind === 'gear' || s.preview.kind === 'wheel') {
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
@@ -691,7 +691,8 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     const selected = isSelected(s, 'gear', g.id);
     const hovered = s.hover?.kind === 'gear' && s.hover.id === g.id;
     const angle = s.gearAngle(g.id);
-    drawGear(ctx, v, c, g.radius, g.teeth, phases.get(g.id)! + angle, color, selected || hovered, g.locked);
+    if (g.wheel) drawWheel(ctx, v, c, g.radius, angle, color, selected || hovered, g.locked);
+    else drawGear(ctx, v, c, g.radius, g.teeth, phases.get(g.id)! + angle, color, selected || hovered, g.locked);
     // spokes to the joints pinned on this gear show that they turn with it
     ctx.save();
     ctx.strokeStyle = color;
@@ -702,7 +703,7 @@ function drawGears(ctx: CanvasRenderingContext2D, v: View, s: Scene, phases: Map
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = color;
-    if (showLabels) ctx.fillText(`g${gearLabel(g.id)}`, sc[0] - 14, sc[1] + 20);
+    if (showLabels) ctx.fillText(`${g.wheel ? 'w' : 'g'}${gearLabel(g.id)}`, sc[0] - 14, sc[1] + 20);
     ctx.restore();
     if (g.locked) drawPadlock(ctx, [sc[0] - 20, sc[1] - 20]);
     if (g.motor) drawMotor(ctx, sc, Math.min(g.radius * v.scale * 0.6, 34), g.motor.torque);
@@ -808,6 +809,52 @@ function drawPadlock(ctx: CanvasRenderingContext2D, [x, y]: Vec) {
   ctx.beginPath();
   ctx.roundRect(x - 5.5, y, 11, 8, 1.5);
   ctx.fill();
+  ctx.restore();
+}
+
+/** A wheel: a dark tyre round a tinted disk, with spokes that turn with it. */
+export function drawWheel(ctx: CanvasRenderingContext2D, v: View, c: Vec, r: number, phase: number, color: string, highlight: boolean, locked = false) {
+  const [x, y] = toScreen(v, c);
+  const R = r * v.scale;
+  if (R < 2) return;
+  const tyre = Math.max(2, Math.min(R * 0.16, 14));
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, R - tyre, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.globalAlpha = locked ? 0.45 : 0.22;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  // the tyre, its outer edge on the rolling radius
+  ctx.beginPath();
+  ctx.arc(x, y, R - tyre / 2, 0, Math.PI * 2);
+  ctx.lineWidth = tyre;
+  ctx.strokeStyle = C.ink;
+  ctx.stroke();
+  if (highlight) {
+    ctx.beginPath();
+    ctx.arc(x, y, R + 1.5, 0, Math.PI * 2);
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = C.accent;
+    ctx.stroke();
+  }
+  // spokes (screen y points down, so world angle φ is screen angle −φ) and the hub
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1.5, Math.min(R * 0.05, 3));
+  ctx.lineCap = 'round';
+  const hub = Math.max(3, R * 0.14);
+  for (let k = 0; k < 5; k++) {
+    const ang = -(phase + (k * 2 * Math.PI) / 5);
+    line(ctx, [x + hub * Math.cos(ang), y + hub * Math.sin(ang)], [x + (R - tyre) * Math.cos(ang), y + (R - tyre) * Math.sin(ang)]);
+  }
+  ctx.beginPath();
+  ctx.arc(x, y, hub, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  // a white mark on the tyre makes the rolling visible
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = Math.max(1.5, tyre * 0.35);
+  line(ctx, [x + (R - tyre * 0.85) * Math.cos(-phase), y + (R - tyre * 0.85) * Math.sin(-phase)], [x + (R - tyre * 0.15) * Math.cos(-phase), y + (R - tyre * 0.15) * Math.sin(-phase)]);
   ctx.restore();
 }
 

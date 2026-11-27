@@ -90,12 +90,13 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Put its joints on rails (Slider, X) to make it slide. |
 | Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector, and tick **Tension only** for a cable, ligament or tendon that goes slack when short. |
 | Gears | G | Click a centre, then drag out the radius. If the gear touches another gear or a rack, it snaps into mesh with it. |
+| Wheel | W | Click a centre, then drag out the radius. A wheel is a gear without teeth: it meshes with nothing, but rolls on the ground. Start on a joint to mount it there; in empty space its axle is free, so it drops and rolls. |
 | Pin | F | Click a joint, then click a bar, rack or gear to pin the joint onto it, or empty space to pin it to the ground. |
 | Slider | X | Click a joint, then the body its rail is on (or empty space for a ground rail), then click to set the rail's direction. Then click where the rail ends on one side and on the other, or press Enter for no ends. |
 | Free joint | N | Removes a joint's constraint: a pin, a rail, or a pin on a body. |
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
-| Lock gear | L | Click a gear to stop it turning. Click again to unlock it. |
-| Motor | O | Click a gear to put a motor on it. Click again to remove it. Set its torque and no-load speed in the gear's inspector. |
+| Lock gear | L | Click a gear or wheel to stop it turning (a braked wheel). Click again to unlock it. |
+| Motor | O | Click a gear or wheel to put a motor on it. Click again to remove it. Set its torque and no-load speed in the gear's inspector. |
 | Fix angle | A | Click one bar, then another, to hold the angle between them at its drawn value. Click the same pair again to free it. |
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body. Click the same pair again to separate them. |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
@@ -112,6 +113,8 @@ Bars and springs that start or end on a gear are pinned to the gear and turn wit
 - **End stops:** past an end, the joint hits a stop, with the same contact model as the ground. The stop is a spring-damper scaled by the effective mass along the rail, applied as a generalized force along ∂s/∂q, where s is the joint's travel along the rail. On a body's rail, the stop pushes the body back as well. The equations panel lists each slider's stops. The **Bead on a swinging rod, with end stops** example shows them working.
 
 A rack is a rigid body like a bar, with the same mass and inertia, and bars attach to its two end joints. A gear meshing with it rolls along its pitch line without slipping, which turns rotation into sliding: the gear centre's position ξ along the rack and its rotation φ satisfy ξ + R(φ − θ_rack) = const. Its centre also stays a distance R from the rack. You can tick **Toothed** in a bar's inspector to turn it into a rack, or untick it to turn a rack back into a bar.
+
+A **wheel** is a uniform disk like a gear, turning about its centre joint, with the same mass, inertia and motor options, and joints can be pinned on it. It has no teeth, so it can't mesh with a gear or rack, and a mesh with one is ignored with a warning. Its tyre touches the ground like any rim: it rolls, gripping with the ground's friction. A locked wheel is braked and skids. Wheels are drawn with a dark tyre and spokes, labelled w1, w2 and so on.
 
 A fixed angle adds the constraint θ_b − θ_a = α, with α the angle as drawn. Two bars that share a joint are welded there into one rigid piece, for example an L-shaped or bent arm. A purple double arc at the joint shows the angle in degrees. Bars that don't touch are joined by a dashed line and stay at their drawn angle to each other wherever they move. If the mechanism already holds that angle, as for two sides of a rigid triangle, the constraint is dropped with a warning, because a duplicate would make the equations singular.
 
@@ -161,7 +164,7 @@ A motor turns its gear with a torque τ, given in N·m; a positive torque turns 
 - **Joined to other bodies:** with **Join bodies**, click the part of the housing outside the gear, or use the gear inspector's **Join to** under the motor. The housing then pushes back on what it's joined to, such as a frame or an arm.
 - **Free:** neither mounted nor joined. The housing spins back the other way.
 
-In the equations, the torque acts on the gear's turn inside its housing, ρ = φ − ψ, as the generalized force Q = (τ − b ρ̇) ∂ρ/∂q with b = τ/Ω. This puts +τ on the gear and −τ on whatever the housing is part of, with nothing pushing from nowhere. The housing has a mass, 0.5 kg by default and set in the inspector, and turns as a disk of 0.6 times the gear's radius.
+In the equations, the torque acts on the gear's turn inside its housing, ρ = φ − ψ, as the generalized force Q = (τ − b ρ̇) ∂ρ/∂q with b = |τ|/Ω (so the torque falls to zero at the no-load speed turning the way it pushes, clockwise for a negative torque). This puts +τ on the gear and −τ on whatever the housing is part of, with nothing pushing from nowhere. The housing has a mass, 0.5 kg by default and set in the inspector, and turns as a disk of 0.6 times the gear's radius.
 
 The equations panel shows the torque. To drive a bar, such as a crank, join a gear to it with **Join bodies**. You can change the torque and the speed while the simulation runs. The status bar adds the motor's work, W_m, to the energy budget, so E + W − W_m stays constant.
 
@@ -171,7 +174,7 @@ Another example: **Strandbeest with four legs, gear-coupled and motor-driven**. 
 
 ### Ground contact
 
-Tick **Ground contact** to add a floor. Joints, bar ends and gear rims land on it, bounce and slide.
+Tick **Ground contact** to add a floor. Joints, bar ends, and gear and wheel rims land on it, bounce, slide and roll.
 
 The ground is a terrain line through waypoints, level beyond the first and the last. A new ground starts flat, just below the machine, with waypoints across it and a metre or more beyond.
 - **Select it** by clicking it in Select mode. Its waypoints show as handles.
@@ -180,7 +183,7 @@ The ground is a terrain line through waypoints, level beyond the first and the l
 
 The ground always stays under the machine while you edit. A waypoint dragged up stops where the ground would touch a joint or gear rim. Moving a part below the ground, by dragging a joint for example, lowers the waypoints around it until the part is above the ground again.
 
-**Contact on a terrain.** Each joint and gear rim is checked against the terrain segment beneath it, using that segment's normal and direction. Friction tracks distance along the terrain line, so its hold doesn't jump at a corner. A bar can't cross a straight stretch before one of its ends does, but it can rest across a peak with both ends in the air. So each peak (a waypoint where the terrain turns downhill) is also checked against the bars, and pushes a bar up where it pokes above it.
+**Contact on a terrain.** Each joint is checked against the terrain segment beneath it, using that segment's normal and direction. A gear or wheel rim is checked against the nearest points of the terrain: each segment its centre is above, and each crest waypoint it is rolling over. So a wheel pivots smoothly over a peak, and in a dip it can rest on both sides at once. A rim's friction acts on its slip, the speed of the tyre against the ground, so a free wheel rolls without slipping and a braked one skids. Friction tracks distance along the terrain line, so its hold doesn't jump at a corner. A bar can't cross a straight stretch before one of its ends does, but it can rest across a peak with both ends in the air. So each peak (a waypoint where the terrain turns downhill) is also checked against the bars, and pushes a bar up where it pokes above it.
 
 - **Restitution** sets how bouncy impacts are: 1 bounces back to the full height, 0 stops dead. A dropped mass rebounds to e² of its drop height.
 - **Friction μ** holds a point where it landed (static friction) until the sideways force reaches μ times the normal force, then lets it slide. A block on a slope stays put when μ > tan α and otherwise slides at g(sin α − μ cos α).
@@ -189,9 +192,10 @@ Contact is a stiff spring and damper at each touching point, applied as a genera
 
 The damper is calibrated so the restitution you set is the one you get. It never pulls the point down, so an uncalibrated damper would bounce higher than the textbook formula predicts. Near the ground each 1 ms step is split into four (or eight for very dead impacts), because contact forces switch on and off within a few milliseconds. Energy lost in impacts and sliding is counted in the heat W, so E + W stays constant. The equations panel describes the contact model in its own section. These forces are computed each step and are not part of the symbolic equations.
 
-Tick **Follow the mechanism** to have the view pan along with something that travels, like the rimless wheel.
+Tick **Follow the mechanism** to have the view pan along with something that travels, like the rimless wheel or the motor car.
 
 Examples:
+- **Motor car on wheels over hills:** two wheels on a chassis, the rear one driven by a motor whose housing is joined to the chassis. It climbs and rolls over the hills, nosing up as it pulls away because the chassis takes the motor's reaction, then cruises at the motor's no-load speed.
 - **Rimless wheel walking down a slope:** McGeer's (1990) simplest passive walker. It walks with no motor, at a steady pace set by the slope.
 - **Box dropped onto the floor**.
 - **Chain dropped onto the floor**.

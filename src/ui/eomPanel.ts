@@ -79,7 +79,7 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
       (d.constraints.length ? `, and ${tex('\\lambda_k', false)} are Lagrange multipliers.` : '.') +
       (d.motors.length
         ? ` ${tex('\\tau_{\\mathrm{g}}', false)} is the torque of the motor on gear g; its housing (turning by ${tex('\\psi', false)}, or mounted on the ground, or joined to other bodies) takes ${tex('-\\tau_{\\mathrm{g}}', false)}, so the torque acts on the gear's turn in its housing, ${tex('\\rho = \\varphi - \\psi', false)}` +
-          (d.motors.some((m) => m.b) ? `; ${tex('b_{\\mathrm{g}} = \\tau_{\\mathrm{g}}/\\Omega_{\\mathrm{g}}', false)} makes it fall to zero at the motor's no-load speed ${tex('\\Omega_{\\mathrm{g}}', false)}.` : '.')
+          (d.motors.some((m) => m.b) ? `; ${tex('b_{\\mathrm{g}} = |\\tau_{\\mathrm{g}}|/\\Omega_{\\mathrm{g}}', false)} makes it fall to zero at the motor's no-load speed ${tex('\\Omega_{\\mathrm{g}}', false)}, turning the way it pushes.` : '.')
         : '') +
       `</p></section>`,
   );

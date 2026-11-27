@@ -1,14 +1,14 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, gearName, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'motor' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'mass' | 'lockGear' | 'motor' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -34,7 +34,7 @@ let design: Design = loadDesign() ?? presets[0].build(); // first visit: the Str
 let tool: Tool = 'bar';
 let selection: Selection | null = null;
 let hover: Selection | null = null;
-let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
+let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear' | 'wheel'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
 /** A dragged joint, or (`group`) the parts chosen together, moved by the snapped mouse offset. */
 let dragging: { id: number; pushed: boolean; group?: { start: Vec; applied: Vec } } | null = null;
 /** Parts chosen together by a selection box, Select all or a paste. */
@@ -463,7 +463,7 @@ function gearRadiusAt(c: Vec, w: Vec, centerId: number | null): { r: number; mes
   const r = Math.hypot(w[0] - c[0], w[1] - c[1]);
   const tol = 14 / view.scale;
   for (const g of design.gears) {
-    if (g.center === centerId) continue;
+    if (g.center === centerId || g.wheel) continue; // a wheel has no teeth to mesh with
     const gc = pos(g.center);
     const d = Math.hypot(gc[0] - c[0], gc[1] - c[1]);
     const touching = d - g.radius;
@@ -501,6 +501,7 @@ function rackTangentAt(from: Vec, to: Vec): { to: Vec; mesh: MeshTarget } | null
   if (len < 1e-6) return null;
   const u: Vec = [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
   for (const g of design.gears) {
+    if (g.wheel) continue;
     const c = pos(g.center);
     const rc: Vec = [c[0] - from[0], c[1] - from[1]];
     const d = Math.hypot(rc[0], rc[1]);
@@ -551,7 +552,7 @@ function removeGear(id: number) {
   for (const p of design.points) if (p.gear === id) delete p.gear;
 }
 
-/** Finish drawing a bar, a spring or a gear. */
+/** Finish drawing a bar, a spring, a gear or a wheel. */
 function finishSegment() {
   const d = drawing;
   drawing = null;
@@ -577,6 +578,19 @@ function finishSegment() {
     design.gears.push({ id, center, radius: +r.toFixed(4), teeth, mass: +Math.max(0.1, 25 * r * r).toFixed(2), locked: false });
     if (other) design.meshes.push({ id: nextId(design.meshes), a: other.id, b: id });
     if (rack) addRackMesh(id, rack, d.mesh?.side);
+    selection = { kind: 'gear', id };
+    designChanged();
+    return;
+  }
+  if (d.kind === 'wheel') {
+    const r = length;
+    if (r < 0.03) return;
+    pushUndo();
+    // A wheel drawn in empty space turns on a free axle (it drops and rolls); drawn on a joint it
+    // turns about that joint, and inside a gear or wheel it rides on it.
+    const center = d.fromId ?? newJoint(d.from);
+    const id = nextId(design.gears);
+    design.gears.push({ id, center, radius: +r.toFixed(4), teeth: teethForRadius(r), mass: +Math.max(0.1, 25 * r * r).toFixed(2), locked: false, wheel: true });
     selection = { kind: 'gear', id };
     designChanged();
     return;
@@ -1179,7 +1193,8 @@ canvas.addEventListener('pointerdown', (e) => {
     case 'bar':
     case 'rack':
     case 'spring':
-    case 'gear': {
+    case 'gear':
+    case 'wheel': {
       if (drawing?.clickMode) {
         finishSegment();
         return;
@@ -1312,8 +1327,9 @@ canvas.addEventListener('pointermove', (e) => {
     panning.last = sp;
     return;
   }
-  if (drawing?.kind === 'gear') {
-    const { r, mesh } = gearRadiusAt(drawing.from, w, drawing.fromId);
+  if (drawing?.kind === 'gear' || drawing?.kind === 'wheel') {
+    const free = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]);
+    const { r, mesh } = drawing.kind === 'gear' ? gearRadiusAt(drawing.from, w, drawing.fromId) : { r: settings.snap ? Math.max(0.05, Math.round(free / 0.05) * 0.05) : free, mesh: null };
     const len = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]) || 1;
     drawing.to = [drawing.from[0] + ((w[0] - drawing.from[0]) / len) * r, drawing.from[1] + ((w[1] - drawing.from[1]) / len) * r];
     drawing.mesh = mesh;
@@ -1367,7 +1383,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   hover = dragging || grab ? hover : hitTest(w);
-  canvas.style.cursor = sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' ? 'crosshair' : hover ? 'pointer' : 'default';
+  canvas.style.cursor = sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' ? 'crosshair' : hover ? 'pointer' : 'default';
 });
 
 canvas.addEventListener('pointerup', (e) => {
@@ -1419,7 +1435,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', o: 'motor', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', m: 'mass', l: 'lockGear', o: 'motor', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1628,14 +1644,15 @@ const hints: Record<Tool, string> = {
   rack: 'Drag to draw a rack (a toothed bar). Pass along a gear and it snaps tangent and meshes. Lock its joints on rails to make it slide.',
   spring: 'Drag, or click twice, to draw a spring between joints. An end in empty space is anchored to the ground.',
   gear: 'Click a centre and drag out the radius. Touch another gear or a rack to mesh with it. Bars drawn on a gear are pinned to it.',
+  wheel: 'Click a centre and drag out the radius. A wheel has no teeth: it meshes with nothing but rolls on the ground with friction. Start on a joint to mount it there (in empty space its axle is free, so it drops and rolls). Bars drawn on it are pinned to it.',
   pin: 'Click a joint, then the bar, rack or gear to pin it on (it moves with that body), or empty space to pin it to the ground.',
   slider: 'Click a joint, then the body its rail is on (or empty space for a ground rail), then set the rail\'s direction.',
 
   free: 'Click a joint to remove its constraint: a pin, a rail, or a pin on a body.',
   delete: 'Click a joint, bar, rack, spring or gear to delete it.',
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
-  lockGear: 'Click a gear to lock it so it cannot turn. Click again to unlock it.',
-  motor: 'Click a gear to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
+  lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
+  motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
   angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
   join: 'Click two bodies (bars, racks or gears) to join them into one. Click the same pair again to separate them.',
 };
@@ -1745,7 +1762,7 @@ function renderInspector() {
         p.kind === 'fixed'
           ? 'pinned to the ground'
           : p.gear !== undefined
-            ? `pinned on gear g${gearLabel(p.gear)}`
+            ? `pinned on ${gearName(design, p.gear)}`
             : p.pin
               ? `pinned on ${bodyName(design, p.pin)}`
               : rail
@@ -1812,7 +1829,7 @@ function renderInspector() {
           '<span class="muted">none</span>'
         }</span></div>
         ${lockable.length ? `<label class="field">Fix angle to<select id="i-angle" ${disabled}><option value="">choose a bar…</option>${lockable.map((k) => `<option value="${k.id}">bar ${linkLabel(k.id)} (${pointLabel(k.a)}–${pointLabel(k.b)})</option>`).join('')}</select></label>` : ''}`;
-      const candidates = design.gears.filter((g) => !meshed.some((m) => m.gear === g.id));
+      const candidates = design.gears.filter((g) => !g.wheel && !meshed.some((m) => m.gear === g.id));
       inspectorEl.innerHTML = `
         <h4>${l.rack ? 'Rack' : 'Bar'} ${linkLabel(l.id)} <span class="muted">(${pointLabel(l.a)}–${pointLabel(l.b)})</span></h4>
         <label class="field">Mass (kg)<input id="i-mass" type="number" min="0.01" step="0.1" value="${l.mass}" ${disabled}></label>
@@ -1907,16 +1924,17 @@ function renderInspector() {
       const label = (id: number) => `g${gearLabel(id)}`;
       const meshed = design.meshes.filter((m) => m.a === g.id || m.b === g.id);
       const partner = (m: { a: number; b: number }) => (m.a === g.id ? m.b : m.a);
-      const candidates = design.gears.filter((x) => x.id !== g.id && !meshed.some((m) => partner(m) === x.id));
+      const wheel = !!g.wheel;
+      const candidates = wheel ? [] : design.gears.filter((x) => x.id !== g.id && !x.wheel && !meshed.some((m) => partner(m) === x.id));
       const racked = design.rackMeshes.filter((m) => m.gear === g.id);
-      const rackCandidates = design.links.filter((l) => l.rack && !racked.some((m) => m.rack === l.id));
+      const rackCandidates = wheel ? [] : design.links.filter((l) => l.rack && !racked.some((m) => m.rack === l.id));
       const I = 0.5 * g.mass * g.radius * g.radius;
       inspectorEl.innerHTML = `
-        <h4>Gear ${label(g.id)} <span class="muted">(centre ${pointLabel(g.center)})</span></h4>
+        <h4>${wheel ? `Wheel w${gearLabel(g.id)}` : `Gear ${label(g.id)}`} <span class="muted">(centre ${pointLabel(g.center)})</span></h4>
         <label class="field">Radius (m)<input id="i-r" type="number" min="0.03" step="0.01" value="${g.radius}" ${disabled}></label>
-        <label class="field">Teeth<input id="i-n" type="number" min="6" max="300" step="1" value="${g.teeth}" ${disabled}></label>
+        ${wheel ? '' : `<label class="field">Teeth<input id="i-n" type="number" min="6" max="300" step="1" value="${g.teeth}" ${disabled}></label>`}
         <label class="field">Mass (kg)<input id="i-m" type="number" min="0.01" step="0.1" value="${g.mass}" ${disabled}></label>
-        <label class="field">Locked<span><input id="i-lock" type="checkbox" ${g.locked ? 'checked' : ''} ${disabled}> does not turn</span></label>
+        <label class="field">Locked<span><input id="i-lock" type="checkbox" ${g.locked ? 'checked' : ''} ${disabled}> ${wheel ? 'braked: does not turn' : 'does not turn'}</span></label>
         <label class="field">Motor<span><input id="i-motor" type="checkbox" ${g.motor ? 'checked' : ''} ${disabled}> drives it</span></label>
         ${
           g.motor
@@ -1929,10 +1947,13 @@ function renderInspector() {
         ${joinsHtml({ kind: 'motor', id: g.id }, disabled, 'm')}
         <p class="muted">The motor turns the gear by τ and its own housing back by −τ. ${joined ? 'Its housing is joined to other bodies, so they take the reaction.' : g.motor.mounted !== false ? 'Its housing is mounted on the ground, which takes the reaction.' : 'Its housing is free, so it spins back the other way; join it to a frame to hold it.'}</p>`;
         })()}
-        <p class="muted">${g.motor.noLoadRpm > 0 ? `Torque τ(1 − ω/Ω): ${g.motor.torque} N·m at rest, falling to 0 at ${g.motor.noLoadRpm} rpm, like a DC motor.` : 'A constant torque, whatever the speed.'} Positive turns the gear anticlockwise. You can change these while it runs.</p>`
+        <p class="muted">${g.motor.noLoadRpm > 0 ? `Torque τ − (|τ|/Ω)ω: ${g.motor.torque} N·m at rest, falling to 0 at ${g.motor.noLoadRpm} rpm turning the way it pushes, like a DC motor.` : 'A constant torque, whatever the speed.'} Positive turns the gear anticlockwise. You can change these while it runs.</p>`
             : ''
         }
-        <div class="field"><span>Meshes with</span><span>${
+        ${
+          wheel
+            ? ''
+            : `<div class="field"><span>Meshes with</span><span>${
           [
             ...meshed.map((m) => `${label(partner(m))} <button data-unmesh="${m.id}" title="Remove this mesh" ${disabled}>×</button>`),
             ...racked.map((m) => `rack ${linkLabel(m.rack)} <button data-unrack="${m.id}" title="Remove this mesh" ${disabled}>×</button>`),
@@ -1945,12 +1966,13 @@ function renderInspector() {
                 ...rackCandidates.map((l) => `<option value="r${l.id}">rack ${linkLabel(l.id)}</option>`),
               ].join('')}</select></label>`
             : ''
+        }`
         }
         ${joinsHtml({ kind: 'gear', id: g.id }, disabled)}
-        <p class="muted">Uniform disk, I = ½mR² = ${I.toFixed(4)} kg·m². Bars drawn on it are pinned to it.</p>`;
+        <p class="muted">${wheel ? 'A wheel: no teeth, so it meshes with nothing; it rolls on the ground, its tyre gripping with the ground friction. ' : ''}Uniform disk, I = ½mR² = ${I.toFixed(4)} kg·m². Bars drawn on it are pinned to it.</p>`;
       bindJoinControls({ kind: 'gear', id: g.id });
       bindField('#i-r', (v) => (g.radius = Math.max(0.03, Number(v) || 0.03)));
-      bindField('#i-n', (v) => (g.teeth = Math.min(300, Math.max(6, Math.round(Number(v) || 6)))));
+      if (!wheel) bindField('#i-n', (v) => (g.teeth = Math.min(300, Math.max(6, Math.round(Number(v) || 6)))));
       bindField('#i-m', (v) => (g.mass = Math.max(0.01, Number(v) || 0.01)));
       inspectorEl.querySelector<HTMLInputElement>('#i-lock')!.addEventListener('change', (e) => {
         pushUndo();
@@ -2062,14 +2084,15 @@ function renderStatus() {
   const nBars = design.links.filter((l) => !l.rack).length;
   const nRacks = design.links.length - nBars;
   const nSprings = design.springs.length;
-  const nGears = design.gears.length;
+  const nWheels = design.gears.filter((g) => g.wheel).length;
+  const nGears = design.gears.length - nWheels;
   if (simError) {
     statusEl.innerHTML = `<span class="err">${simError}</span>`;
     return;
   }
   if (!sim) {
     const dof = derivation ? derivation.coords.length - derivation.constraints.length : 0;
-    statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom`;
+    statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''}${nWheels ? ` · <b>${nWheels}</b> wheel${nWheels === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom`;
     return;
   }
   const { T, V } = sim.energy();

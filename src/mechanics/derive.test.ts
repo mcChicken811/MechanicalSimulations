@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { deriveEquations } from './derive';
 import type { Design } from './model';
 import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
+import { motorCar } from '../ui/presets';
 
 const G = 9.81;
 
@@ -1145,6 +1146,115 @@ describe('terrain ground', () => {
   }, 20000);
 });
 
+describe('wheels', () => {
+  const wheelAt = (x: number, y: number, R: number, extra: Partial<Design['gears'][number]> = {}): Design => ({
+    points: [{ id: 0, x, y, kind: 'free', mass: 0 }],
+    links: [], springs: [], meshes: [], rackMeshes: [],
+    gears: [{ id: 0, center: 0, radius: R, teeth: 13, mass: 2, locked: false, wheel: true, ...extra }],
+  });
+  // the true distance from a point to the terrain polyline
+  const distance = (pts: [number, number][], [x, y]: [number, number]) => {
+    let best = Infinity;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const [[x0, y0], [x1, y1]] = [pts[i], pts[i + 1]];
+      const [dx, dy] = [x1 - x0, y1 - y0];
+      const u = Math.min(1, Math.max(0, ((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy)));
+      best = Math.min(best, Math.hypot(x - x0 - u * dx, y - y0 - u * dy));
+    }
+    return best;
+  };
+
+  it('cannot mesh: a gear mesh or rack mesh with a wheel is ignored, with a warning', () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }, { id: 1, x: 0.5, y: 0, kind: 'fixed', mass: 0 }],
+      links: [], springs: [], rackMeshes: [],
+      gears: [{ id: 0, center: 0, radius: 0.2, teeth: 13, mass: 1, locked: false, wheel: true }, { id: 1, center: 1, radius: 0.3, teeth: 20, mass: 1, locked: false }],
+      meshes: [{ id: 0, a: 0, b: 1 }],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length).toBe(2); // both turn freely
+    expect(der.warnings.some((w) => w.includes('wheel has no teeth'))).toBe(true);
+  });
+
+  it('rolls over a crest without sinking into the peak, and E + W stays constant', () => {
+    const R = 0.25;
+    const b = (12 * Math.PI) / 180;
+    // up 12° to a peak at x = 0, then down 12°
+    const pts: [number, number][] = [[-4, -4 * Math.tan(b)], [0, 0], [4, -4 * Math.tan(b)]];
+    const x0 = -0.5;
+    const d = wheelAt(x0 - R * Math.sin(b), x0 * Math.tan(b) + R * Math.cos(b) + 1e-4, R);
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.ground = { points: pts, restitution: 0, friction: 1 };
+    // rolling uphill at 1.6 m/s: slow enough to stay on the ground as it pivots over the peak
+    s.qd[0] = 1.6 * Math.cos(b);
+    s.qd[1] = 1.6 * Math.sin(b);
+    s.qd[2] = -1.6 / R;
+    const E0 = s.energy().T + s.energy().V;
+    let [closest, worst, onPeak] = [Infinity, 0, 0];
+    for (let i = 0; i < 1500; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const c = s.jointPosition(0)!;
+      if (Math.abs(c[0]) < 0.3) closest = Math.min(closest, distance(pts, c));
+      if (Math.abs(c[0]) < 0.04 && s.contactCount() > 0) onPeak++;
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V + s.dissipated - E0));
+    }
+    expect(s.jointPosition(0)![0]).toBeGreaterThan(0.5); // over the top and rolling down the far side
+    expect(onPeak).toBeGreaterThan(10); // it touched the peak as it went over
+    expect(closest).toBeGreaterThan(R - 2e-3); // the rim rode over the waypoint, never sinking into it
+    expect(worst).toBeLessThan(0.02 * E0);
+  }, 20000);
+
+  it('settles at the bottom of a V, resting on both sides at once', () => {
+    const R = 0.2;
+    const b = (30 * Math.PI) / 180;
+    const pts: [number, number][] = [[-2, 2 * Math.tan(b)], [0, 0], [2, 2 * Math.tan(b)]];
+    const s = new Simulator(new NumericSystem(deriveEquations(wheelAt(-0.4, 0.4 * Math.tan(b) + R / Math.cos(b) + 0.01, R), { gravity: G })));
+    s.ground = { points: pts, restitution: 0, friction: 0.8 };
+    s.damping = 1;
+    for (let i = 0; i < 6000; i++) expect(s.step(1e-3)).toBe(true);
+    const c = s.jointPosition(0)!;
+    expect(Math.abs(c[0])).toBeLessThan(2e-3);
+    expect(c[1]).toBeCloseTo(R / Math.cos(b), 3); // touching both sides, not sunk into one
+    expect(s.contactCount()).toBe(2);
+  }, 20000);
+
+  it('the motor car example drives over all its hills, and E + W − W_m stays constant', () => {
+    const d = motorCar();
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.ground = { ...d.ground! };
+    const E0 = s.energy().T + s.energy().V;
+    let worst = 0;
+    for (let i = 0; i < 8000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V + s.dissipated - s.motorWork - E0));
+    }
+    expect(s.jointPosition(0)![0]).toBeGreaterThan(14); // past the last hill
+    expect(worst).toBeLessThan(0.002 * s.motorWork);
+  }, 30000);
+
+  it('drives itself along with a motor, its housing joined to the chassis', () => {
+    // two wheels on a chassis bar, the rear one driven, the motor housing joined to the chassis
+    const R = 0.15;
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: R + 1e-4, kind: 'free', mass: 0 }, { id: 1, x: 0.6, y: R + 1e-4, kind: 'free', mass: 0 }],
+      links: [{ id: 0, a: 0, b: 1, mass: 1 }], springs: [], meshes: [], rackMeshes: [],
+      gears: [
+        { id: 0, center: 0, radius: R, teeth: 10, mass: 0.5, locked: false, wheel: true, motor: { torque: -0.3, noLoadRpm: 0, mass: 0.3, mounted: false } },
+        { id: 1, center: 1, radius: R, teeth: 10, mass: 0.5, locked: false, wheel: true },
+      ],
+      joins: [{ id: 0, a: { kind: 'motor', id: 0 }, b: { kind: 'link', id: 0 } }],
+    };
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.ground = straightGroundSettings(0, 0, 0, 1);
+    for (let i = 0; i < 1000; i++) expect(s.step(1e-3)).toBe(true);
+    const [a, c] = [s.jointPosition(0)!, s.jointPosition(1)!];
+    expect(a[0]).toBeGreaterThan(0.1); // a clockwise torque drives the car to the right
+    expect(Math.abs(c[1] - a[1])).toBeLessThan(0.05); // the reaction tips the chassis back only a little
+  }, 20000);
+});
+
 describe('terrain peaks against bars', () => {
   it('holds up a bar lying across a peak, though both its ends are in the air', () => {
     // a bar 1 m long dropped flat onto a sharp peak at x = 0
@@ -1168,6 +1278,19 @@ describe('terrain peaks against bars', () => {
     const midY = (p.get(0)![1] + p.get(1)![1]) / 2;
     expect(midY).toBeGreaterThan(0.19); // resting on the peak at 0.2, not fallen through it
     expect(worst).toBeLessThan(5e-3);
+  });
+});
+
+describe('motor speed falloff', () => {
+  it('a clockwise motor (τ < 0) settles at its no-load speed turning clockwise, ω = −Ω', () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }],
+      links: [], springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 0, radius: 0.2, teeth: 13, mass: 1, locked: false, motor: { torque: -0.5, noLoadRpm: 60 } }],
+    };
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    for (let i = 0; i < 3000; i++) expect(s.step(1e-3)).toBe(true);
+    expect(s.qd[0]).toBeCloseTo(-2 * Math.PI, 3); // 60 rpm clockwise, not running away
   });
 });
 

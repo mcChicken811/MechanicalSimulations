@@ -112,11 +112,17 @@ export interface DGear {
   locked: boolean;
   /** A motor driving the gear, its stator fixed to the ground. */
   motor?: DMotor;
+  /**
+   * A wheel: a disk with no teeth, so it meshes with nothing; it rolls on the ground (with
+   * friction) like any rim. Joints can still be pinned on it, and it can carry a motor.
+   */
+  wheel?: boolean;
 }
 
 /**
  * A motor's torque on its gear: τ (N·m, positive turns the gear anticlockwise), falling
- * linearly with the gear's speed to zero at the no-load speed, τ (1 − ω/Ω), like a DC motor.
+ * linearly with the gear's speed to zero at the no-load speed, τ − (|τ|/Ω) ω, like a DC motor
+ * (so a clockwise motor, τ < 0, runs free at ω = −Ω).
  * A no-load speed of 0 means a constant torque.
  */
 export interface DMotor {
@@ -191,7 +197,7 @@ export const sameBody = (x: DBodyRef, y: DBodyRef) => x.kind === y.kind && x.id 
 
 /** "bar 3", "rack 2" or "gear g1". */
 export function bodyName(d: Design, ref: DBodyRef): string {
-  if (ref.kind === 'gear') return `gear g${gearLabel(ref.id)}`;
+  if (ref.kind === 'gear') return gearName(d, ref.id);
   if (ref.kind === 'motor') return `motor M${gearLabel(ref.id)}`;
   return `${d.links.find((l) => l.id === ref.id)?.rack ? 'rack' : 'bar'} ${linkLabel(ref.id)}`;
 }
@@ -327,6 +333,11 @@ export function nextId(items: readonly { id: number }[]): number {
 
 export function gearLabel(id: number): string {
   return `${id + 1}`;
+}
+
+/** "gear g3" or "wheel w3". */
+export function gearName(d: Design, id: number): string {
+  return d.gears.find((g) => g.id === id)?.wheel ? `wheel w${gearLabel(id)}` : `gear g${gearLabel(id)}`;
 }
 
 /** Module (pitch diameter per tooth, m) used to choose a tooth count from a radius. */

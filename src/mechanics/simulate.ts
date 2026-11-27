@@ -194,9 +194,10 @@ export interface Heat {
 }
 
 /**
- * Ground contact, as compliant (penalty) contact. Every joint and the lowest point of every
- * gear rim is checked against the ground line; a bar cannot reach below the ground before one
- * of its ends does, so its joints cover it. A point that has sunk by δ is pushed out along the
+ * Ground contact, as compliant (penalty) contact. Every joint is checked against the ground
+ * line, and every gear or wheel rim against the nearest points of the terrain (a slope, or a
+ * waypoint it rolls over); a bar cannot reach below the ground before one of its ends does,
+ * so its joints cover it, except at a terrain peak (see applyPeaks). A point that has sunk by δ is pushed out along the
  * ground normal n and held by friction along the ground t, through Q = Jᵀ(F_n n + F_t t):
  *   F_n = max(0, k δ + c δ̇),   k = m ω²,   c = 2 ζ m ω,   ζ set from the restitution e
  *   |F_t| ≤ μ F_n: a stiff spring-damper to where the point first touched (static friction),
@@ -236,6 +237,27 @@ class Terrain {
     this.s0 = [0];
     for (let i = 1; i < points.length; i++) this.s0.push(this.s0[i - 1] + Math.hypot(this.xs[i] - this.xs[i - 1], this.ys[i] - this.ys[i - 1]));
   }
+  private segs: TerrainSegment[] | null = null;
+  /**
+   * The terrain as straight pieces, left to right: the level run in from the left, the segments
+   * between waypoints, and the level run out to the right. Waypoint k joins pieces k and k + 1.
+   */
+  segments(): TerrainSegment[] {
+    if (this.segs) return this.segs;
+    const { xs, ys, s0 } = this;
+    const far = 1e6;
+    const last = xs.length - 1;
+    const piece = (x0: number, y0: number, x1: number, y1: number, s: number): TerrainSegment => {
+      const L = Math.hypot(x1 - x0, y1 - y0) || 1e-12;
+      const [tx, ty] = [(x1 - x0) / L, (y1 - y0) / L];
+      return { x0, y0, x1, y1, tx, ty, nx: -ty, ny: tx, L, s };
+    };
+    const out = [piece(xs[0] - far, ys[0], xs[0], ys[0], -far)];
+    for (let i = 0; i < last; i++) out.push(piece(xs[i], ys[i], xs[i + 1], ys[i + 1], s0[i]));
+    out.push(piece(xs[last], ys[last], xs[last] + far, ys[last], s0[last]));
+    return (this.segs = out);
+  }
+
   /** The segment under x: its start point, unit direction t, normal n = k × t, and arc length at its start. */
   at(x: number): { x0: number; y0: number; tx: number; ty: number; nx: number; ny: number; s: number } {
     const { xs, ys, s0 } = this;
@@ -252,6 +274,20 @@ class Terrain {
     const L = Math.hypot(dx, dy) || 1;
     return { x0: xs[lo], y0: ys[lo], tx: dx / L, ty: dy / L, nx: -dy / L, ny: dx / L, s: s0[lo] };
   }
+}
+
+/** A straight piece of the terrain: its ends, direction t, normal n = k × t, length, and arc length at its start. */
+interface TerrainSegment {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  tx: number;
+  ty: number;
+  nx: number;
+  ny: number;
+  L: number;
+  s: number;
 }
 
 /** Response rate ω of every contact (rad/s): resting objects sink g/ω² ≈ 0.16 mm. */
@@ -313,10 +349,29 @@ interface ContactState {
   anchor: number | null;
 }
 
-/** Something that can touch the ground: a joint, or the bottom of a gear's rim. */
+/** A joint, which can touch the ground. */
 interface ContactCandidate {
   point: number;
-  gear?: { phi: number; radius: number };
+}
+
+/** A gear or wheel rim: its centre's point index, its angle coordinate (−1 if it cannot turn) and radius. */
+interface Disk {
+  point: number;
+  phi: number;
+  radius: number;
+}
+
+/**
+ * Where a rim touches (or nearly touches) the terrain: the inside of a segment, or a waypoint
+ * at a crest. n points from the touching point to the rim's centre; gap is the distance between
+ * them less the radius.
+ */
+interface DiskFeature {
+  key: string;
+  gap: number;
+  nx: number;
+  ny: number;
+  along: number;
 }
 
 export const defaultFriction = (): FrictionSettings => ({ enabled: false, pin: 0.02, rail: 0.5, mesh: 0.5, coolingTime: 4, heatCapacity: 0.02 });
@@ -361,6 +416,9 @@ export class Simulator {
   private readonly mu: Float64Array;
   private readonly candidates: ContactCandidate[];
   private readonly contacts: (ContactState | null)[];
+  private readonly disks: Disk[];
+  /** Rim contacts in progress, by "disk:feature" (see diskFeatures). */
+  private readonly diskContacts = new Map<string, ContactState>();
   /** Bars, by the point indices of their ends, for the terrain's peaks to push on. */
   private readonly bars: { ia: number; ib: number }[];
   /** Peak–bar contacts in progress, by "peak:bar": the effective mass along the bar's normal. */
@@ -407,10 +465,8 @@ export class Simulator {
     this.meshBuf = new Float64Array(d.meshes.length * n);
     const paramIndex = new Map(d.params.map((p, i) => [p.sym, i]));
     this.motorParams = d.motors.map((m) => ({ terms: m.terms, tau: paramIndex.get(m.tau)!, b: m.b ? paramIndex.get(m.b)! : -1 }));
-    this.candidates = [
-      ...[...sys.pointIndex.values()].map((point) => ({ point })),
-      ...d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, gear: { phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius } })),
-    ];
+    this.candidates = [...sys.pointIndex.values()].map((point) => ({ point }));
+    this.disks = d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius }));
     this.contacts = this.candidates.map(() => null);
     const seen = new Set<number>();
     this.bars = d.joints.flatMap((j) =>
@@ -570,9 +626,9 @@ export class Simulator {
   private contactGeometry(c: ContactCandidate, g: GroundSettings): { gap: number; along: number } {
     const { n, pos, jac, Jn, Jt } = this;
     const i = c.point;
-    let px = pos[2 * i];
-    let py = pos[2 * i + 1];
-    // the terrain segment under the point (under a gear's centre for its rim)
+    const px = pos[2 * i];
+    const py = pos[2 * i + 1];
+    // the terrain segment under the point
     const seg = this.terrain(g).at(px);
     const { nx, ny, tx, ty } = seg;
     for (let m = 0; m < n; m++) {
@@ -581,15 +637,56 @@ export class Simulator {
       Jn[m] = nx * jx + ny * jy;
       Jt[m] = tx * jx + ty * jy;
     }
-    if (c.gear) {
-      // the lowest point of the rim, r = −R n from the centre, moves with the disk:
-      // ṙ_p = ṙ_c + φ̇ k × r and k × r = R t, so φ̇ adds R φ̇ along the ground only
-      const R = c.gear.radius;
-      px -= R * nx;
-      py -= R * ny;
-      if (c.gear.phi >= 0) Jt[c.gear.phi] += R;
-    }
     return { gap: nx * (px - seg.x0) + ny * (py - seg.y0), along: seg.s + tx * (px - seg.x0) + ty * (py - seg.y0) };
+  }
+
+  /**
+   * The places where rim `k` touches the terrain, or is within `margin` of it (pos filled): the
+   * inside of each segment its centre is above (at a valley it can touch both sides), and each
+   * waypoint at a crest whose corner region holds the centre (where it rolls over the peak).
+   */
+  private diskFeatures(k: number, g: GroundSettings, margin: number): DiskFeature[] {
+    const { point, radius: R } = this.disks[k];
+    const cx = this.pos[2 * point];
+    const cy = this.pos[2 * point + 1];
+    const reach = R + margin;
+    const segs = this.terrain(g).segments();
+    const out: DiskFeature[] = [];
+    segs.forEach((sg, i) => {
+      if (cx < Math.min(sg.x0, sg.x1) - reach || cx > Math.max(sg.x0, sg.x1) + reach) return;
+      const [rx, ry] = [cx - sg.x0, cy - sg.y0];
+      const u = rx * sg.tx + ry * sg.ty;
+      const h = rx * sg.nx + ry * sg.ny; // height of the centre above the segment's line
+      // inside the segment, and above it (a centre behind the line is on the far side of a cliff)
+      if (u > 0 && u < sg.L && h > 0 && h < reach) out.push({ key: `${k}:s${i}`, gap: h - R, nx: sg.nx, ny: sg.ny, along: sg.s + u });
+      const next = segs[i + 1];
+      if (!next) return;
+      // the waypoint joining this segment to the next: touched at its corner when the centre is past
+      // this segment's end and short of the next one's start, which happens only at a crest
+      const [vx, vy] = [cx - sg.x1, cy - sg.y1];
+      if (vx * sg.tx + vy * sg.ty < 0 || vx * next.tx + vy * next.ty > 0) return;
+      const dist = Math.hypot(vx, vy);
+      if (dist > 1e-9 && dist < reach) out.push({ key: `${k}:v${i}`, gap: dist - R, nx: vx / dist, ny: vy / dist, along: next.s });
+    });
+    return out;
+  }
+
+  /**
+   * Fill Jn, Jt for rim k touching at a point with normal n (towards the centre): that point,
+   * r = −R n from the centre, moves with the disk, ṙ_p = ṙ_c + φ̇ k × r, and k × r = R t
+   * (t = (n_y, −n_x)), so the spin adds R φ̇ along the ground only.
+   */
+  private diskJacobians(k: number, nx: number, ny: number) {
+    const { n, jac, Jn, Jt } = this;
+    const { point: i, phi, radius } = this.disks[k];
+    const [tx, ty] = [ny, -nx];
+    for (let m = 0; m < n; m++) {
+      const jx = jac[i * 2 * n + m];
+      const jy = jac[i * 2 * n + n + m];
+      Jn[m] = nx * jx + ny * jy;
+      Jt[m] = tx * jx + ty * jy;
+    }
+    if (phi >= 0) Jt[phi] += radius;
   }
 
   private terrainCache: { of: GroundSettings; terrain: Terrain } | null = null;
@@ -653,16 +750,16 @@ export class Simulator {
     sys.positions(q, pos);
     sys.jacobians(q, jac);
     let power = 0;
-    candidates.forEach((c, ci) => {
-      const { gap, along } = this.contactGeometry(c, g);
-      if (gap >= 0) return;
-      let st = contacts[ci];
+    // one touching point: Jn, Jt filled; its state is created when it first touches
+    const push = (gap: number, along: number, rolling: boolean, state: () => ContactState | undefined | null, start: (st: ContactState) => void) => {
+      let st = state();
       if (!st) {
         // a new contact: the effective masses it pushes against, along n and along t
         const wn = this.mobility(q, Jn);
         if (wn < 1e-12) return; // pinned: it cannot move into the ground anyway
         const wt = this.mobility(q, Jt);
-        st = contacts[ci] = { mn: 1 / wn, mt: wt > 1e-12 ? 1 / wt : 1 / wn, anchor: null };
+        st = { mn: 1 / wn, mt: wt > 1e-12 ? 1 / wt : 1 / wn, anchor: null };
+        start(st);
       }
       let vn = 0;
       let vt = 0;
@@ -670,9 +767,22 @@ export class Simulator {
         vn += Jn[m] * qd[m];
         vt += Jt[m] * qd[m];
       }
-      const { Fn, Ft, loss } = this.contactForce(st, g, -gap, vn, vt, along, !!c.gear);
+      const { Fn, Ft, loss } = this.contactForce(st, g, -gap, vn, vt, along, rolling);
       for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
       power += loss;
+    };
+    candidates.forEach((c, ci) => {
+      const { gap, along } = this.contactGeometry(c, g);
+      if (gap < 0) push(gap, along, false, () => contacts[ci], (st) => (contacts[ci] = st));
+    });
+    const { diskContacts } = this;
+    this.disks.forEach((_, k) => {
+      for (const ft of this.diskFeatures(k, g, 0)) {
+        if (ft.gap >= 0) continue;
+        this.diskJacobians(k, ft.nx, ft.ny);
+        // a rolling rim has no fixed contact point: its friction is viscous, on the slip speed
+        push(ft.gap, ft.along, true, () => diskContacts.get(ft.key), (st) => diskContacts.set(ft.key, st));
+      }
     });
     power += this.applyPeaks(q, qd, f, g);
     if (stage >= 0) this.stageContactPower[stage] = power;
@@ -786,11 +896,16 @@ export class Simulator {
     this.dissipated += ((P[0] + 2 * P[1] + 2 * P[2] + P[3]) / 6) * h;
     if (!g) {
       this.contacts.fill(null);
+      this.diskContacts.clear();
       return;
     }
-    const { n, sys, q, qd, pos, jac, Jn, candidates, contacts } = this;
+    const { n, sys, q, qd, pos, jac, Jn, candidates, contacts, diskContacts } = this;
     sys.positions(q, pos);
     sys.jacobians(q, jac);
+    if (diskContacts.size) {
+      const live = new Set(this.disks.flatMap((_, k) => this.diskFeatures(k, g, 0).filter((ft) => ft.gap < 0).map((ft) => ft.key)));
+      for (const key of [...diskContacts.keys()]) if (!live.has(key)) diskContacts.delete(key);
+    }
     candidates.forEach((c, ci) => {
       const st = contacts[ci];
       if (!st) return;
@@ -799,7 +914,6 @@ export class Simulator {
         contacts[ci] = null;
         return;
       }
-      if (c.gear) return; // a rolling rim has no fixed contact point: friction is viscous there
       if (st.anchor === null) {
         st.anchor = along;
         return;
@@ -845,6 +959,13 @@ export class Simulator {
       const { gap } = this.contactGeometry(c, g);
       if (gap < 0) V += 0.5 * st.mn * CONTACT_OMEGA * CONTACT_OMEGA * gap * gap;
     });
+    if (this.diskContacts.size)
+      this.disks.forEach((_, k) => {
+        for (const ft of this.diskFeatures(k, g, 0)) {
+          const st = this.diskContacts.get(ft.key);
+          if (st && ft.gap < 0) V += 0.5 * st.mn * CONTACT_OMEGA * CONTACT_OMEGA * ft.gap * ft.gap;
+        }
+      });
     return V;
   }
 
@@ -919,7 +1040,7 @@ export class Simulator {
 
   /** Number of points touching the ground now. */
   contactCount(): number {
-    return this.contacts.reduce((k, c) => k + (c ? 1 : 0), 0);
+    return this.contacts.reduce((k, c) => k + (c ? 1 : 0), this.diskContacts.size);
   }
 
   /** Generalized force of the mouse spring: Q = Jᵀ F at the grabbed material point. */
@@ -988,7 +1109,7 @@ export class Simulator {
   /** Whether any point touches the ground or could reach it within the next step. */
   private nearGround(h: number): boolean {
     const g = this.ground!;
-    if (this.contacts.some((c) => c) || this.peakContacts.size) return true;
+    if (this.contacts.some((c) => c) || this.peakContacts.size || this.diskContacts.size) return true;
     const { n, sys, q, qd, pos, jac, Jn, candidates } = this;
     sys.positions(q, pos);
     sys.jacobians(q, jac);
@@ -997,12 +1118,22 @@ export class Simulator {
       if (delta > -0.01) nearPeak = true; // a bar within a centimetre of a peak
     });
     if (nearPeak) return true;
-    return candidates.some((c) => {
-      const { gap } = this.contactGeometry(c, g);
+    const closing = () => {
       let vn = 0;
       for (let m = 0; m < n; m++) vn += Jn[m] * qd[m];
-      return gap < 2 * h * Math.max(0, -vn) + 1e-4;
-    });
+      return 2 * h * Math.max(0, -vn) + 1e-4;
+    };
+    const near = candidates.some((c) => this.contactGeometry(c, g).gap < closing());
+    // a rim: any feature within reach, then whether it closes the gap within the step
+    return (
+      near ||
+      this.disks.some((_, k) =>
+        this.diskFeatures(k, g, 0.25).some((ft) => {
+          this.diskJacobians(k, ft.nx, ft.ny);
+          return ft.gap < closing();
+        }),
+      )
+    );
   }
 
   /** One classical RK4 step. */
