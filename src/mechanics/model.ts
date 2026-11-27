@@ -248,6 +248,12 @@ export interface DPid {
   lever?: DLever;
   /** Colour of the controller, its sensor and the wire between them. */
   color: string;
+  /**
+   * Which way it pushes: 'auto' (if absent) finds it when the simulation starts and does nothing
+   * if the motor cannot move the quantity; 'forward' takes a positive torque to raise the
+   * quantity and 'reverse' to lower it, overriding the check.
+   */
+  direction?: 'auto' | 'forward' | 'reverse';
 }
 
 /** Display unit of a quantity. */

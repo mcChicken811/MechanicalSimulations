@@ -376,13 +376,23 @@ export interface ControllerSpec {
   kd: number;
   max: number;
   target: number;
+  /**
+   * Which way it pushes: 'auto' finds the way the motor moves the quantity when it starts (and
+   * does nothing if the motor cannot move it); 'forward' takes a positive torque to raise the
+   * quantity, 'reverse' to lower it, whatever the check finds. 'auto' if absent.
+   */
+  direction?: PidDirection;
 }
+
+export type PidDirection = 'auto' | 'forward' | 'reverse';
 
 /** A running controller: its spec and what it is doing now. */
 export interface Controller extends ControllerSpec {
   integral: number;
-  /** +1 if a positive torque raises the measurement, −1 if it lowers it, 0 if the motor cannot move it. */
+  /** The sign it pushes with: +1 takes a positive torque to raise the measurement, −1 to lower it, 0 (auto only) does nothing. */
   sign: number;
+  /** What the check found when it started (or its direction was last set): +1, −1, or 0 if the motor cannot move the quantity. */
+  detected: number;
   /** Measurement, error and output (N·m) at the last step. */
   y: number;
   e: number;
@@ -1330,24 +1340,37 @@ export class Simulator {
   setControllers(specs: ControllerSpec[], carry: Controller[] = []) {
     this.controllers = specs.map((sp) => {
       const old = carry.find((c) => c.motor === sp.motor && c.sensor.quantity === sp.sensor.quantity);
-      const c: Controller = { ...sp, integral: old?.integral ?? 0, sign: 0, y: 0, e: 0, u: 0, prevY: null, dFilt: 0, lastAngle: old?.lastAngle ?? null };
-      const k = this.sys.derivation.motors.findIndex((m) => m.id === sp.motor);
-      const row = this.measure(c, this.q, this.qd).row;
-      if (k >= 0 && row) {
-        const g = new Float64Array(this.n);
-        for (const t of this.motorParams[k].terms) g[t.coord] += t.k;
-        const r = this.response(this.q, g, row);
-        c.sign = Math.abs(r) > 1e-9 ? Math.sign(r) : 0;
-      }
+      const c: Controller = { ...sp, integral: old?.integral ?? 0, sign: 0, detected: 0, y: 0, e: 0, u: 0, prevY: null, dFilt: 0, lastAngle: old?.lastAngle ?? null };
+      this.applyDirection(c);
       return c;
     });
     this.runControllers(0);
   }
 
-  /** Change a controller's target or gains while it runs (keeping its integral). */
-  tuneController(motor: number, change: Partial<Pick<ControllerSpec, 'kp' | 'ki' | 'kd' | 'max' | 'target'>>) {
+  /** Check which way the motor moves the quantity now, and set the sign the controller pushes with. */
+  private applyDirection(c: Controller) {
+    c.detected = 0;
+    const k = this.sys.derivation.motors.findIndex((m) => m.id === c.motor);
+    const row = this.measure(c, this.q, this.qd).row;
+    if (k >= 0 && row) {
+      const g = new Float64Array(this.n);
+      for (const t of this.motorParams[k].terms) g[t.coord] += t.k;
+      const r = this.response(this.q, g, row);
+      c.detected = Math.abs(r) > 1e-9 ? Math.sign(r) : 0;
+    }
+    c.sign = c.direction === 'forward' ? 1 : c.direction === 'reverse' ? -1 : c.detected;
+  }
+
+  /** Change a controller's target, gains or direction while it runs (keeping its integral). */
+  tuneController(motor: number, change: Partial<Pick<ControllerSpec, 'kp' | 'ki' | 'kd' | 'max' | 'target' | 'direction'>>) {
     const c = this.controllers.find((x) => x.motor === motor);
-    if (c) Object.assign(c, change);
+    if (!c) return;
+    Object.assign(c, change);
+    if (change.direction !== undefined) {
+      const was = c.sign;
+      this.applyDirection(c); // 'auto' checks again, here and now
+      if (c.sign !== was) c.integral = 0; // what it had built up pushed the other way
+    }
   }
 
   /** rowᵀ A g: how the quantity with gradient `row` accelerates under the generalized force g. */

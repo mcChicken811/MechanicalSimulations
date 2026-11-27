@@ -191,7 +191,12 @@ The equations panel shows the torque. To drive a bar, such as a crank, join a ge
   - The output u is the motor's torque, kept within ±the motor's **max torque**.
   - The derivative acts on the measurement (exactly, from the jacobians, for positions and angles; smoothed for rates), so moving the target gives no kick.
   - The integral pauses while the output is at its limit, so it doesn't wind up.
-- **Sign:** s = ±1 is the way the motor actually moves the quantity. It is found when the simulation starts from rowᵀ A g, with A the constrained inverse inertia, row = ∂y/∂q and g the motor's generalized-force direction. So the controller can't push the wrong way. If the motor can't move the quantity at all, it says so and does nothing.
+- **Pushing direction:** s = ±1, chosen in the controller's inspector, and changeable while it runs.
+  - **Auto (default):** s is the way the motor actually moves the quantity, found when the simulation starts from rowᵀ A g, with A the constrained inverse inertia, row = ∂y/∂q and g the motor's generalized-force direction. So the controller can't push the wrong way. If the motor can't move the quantity there, the controller says so and switches off. That happens when nothing connects the motor to the quantity, or when the machine starts at a dead point for it, such as a crank drawn pointing right with its tip's x measured.
+  - **Forward:** s = +1, so a positive torque raises the quantity.
+  - **Reverse:** s = −1, so a positive torque lowers it.
+
+  Forward and Reverse override the check, so they drive the controller from a dead point anyway. The menu shows what the check found. Changing the direction clears the integral, because what it had built up pushed the other way.
 - **Units:** quantities are in m, m/s, °, °/s and rpm, and the gains are in N·m per unit. The starting gains suit the quantity and scale with the motor's torque. Gains, target and limit can all be changed while it runs; the inspector shows the measurement, target, error and torque live. The controller runs every 1 ms step.
 
 Examples:

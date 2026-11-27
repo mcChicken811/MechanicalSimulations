@@ -1483,6 +1483,40 @@ describe('PID controllers', () => {
     expect(s.jointPosition(1)![1]).toBeCloseTo(0.3, 2);
   }, 20000);
 
+  it('pushing direction: auto switches off at a dead point, forward and reverse drive it anyway', () => {
+    // the arm drawn pointing right, measuring its tip's x: turning either way moves x not at all at first
+    const tipX = (direction: 'auto' | 'forward' | 'reverse') => {
+      const s = new Simulator(new NumericSystem(deriveEquations(arm(), { gravity: 0 })));
+      s.setControllers([{ motor: 0, sensor: { quantity: 'x', point: 1 }, kp: 20, ki: 5, kd: 4, max: 4, target: 0.5, direction }]);
+      const c = s.controllers[0];
+      expect(c.detected).toBe(0);
+      for (let i = 0; i < 6000; i++) s.step(1e-3);
+      return { c, x: s.jointPosition(1)![0], y: s.jointPosition(1)![1] };
+    };
+    const auto = tipX('auto');
+    expect(auto.c.sign).toBe(0);
+    expect(auto.x).toBeCloseTo(1, 9); // off: nothing moves
+    const fwd = tipX('forward');
+    expect(fwd.x).toBeCloseTo(0.5, 2);
+    expect(fwd.y).toBeLessThan(0); // pushing with the sign reversed for this quantity: it turns the arm down to x = 0.5
+    const rev = tipX('reverse');
+    expect(rev.x).toBeCloseTo(0.5, 2);
+    expect(rev.y).toBeGreaterThan(0); // and up
+  }, 20000);
+
+  it('changing the direction while running checks again (auto) or overrides, and clears the integral', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(arm(), { gravity: G })));
+    s.setControllers([{ ...armController(45), direction: 'reverse' }]);
+    expect(s.controllers[0].sign).toBe(-1); // overridden, though the check finds +1
+    expect(s.controllers[0].detected).toBe(1);
+    for (let i = 0; i < 500; i++) s.step(1e-3);
+    s.tuneController(0, { direction: 'auto' });
+    expect(s.controllers[0].sign).toBe(1);
+    expect(s.controllers[0].integral).toBe(0);
+    for (let i = 0; i < 10000; i++) s.step(1e-3);
+    expect(s.controllers[0].y).toBeCloseTo(45, 0); // recovering from having been pushed the wrong way
+  }, 20000);
+
   it('controls a propeller\'s spin rate in rpm', () => {
     const d: Design = {
       points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }], links: [], springs: [], meshes: [], rackMeshes: [],

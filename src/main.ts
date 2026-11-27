@@ -291,7 +291,7 @@ function startSim() {
   sim.ground = groundSettings();
   sim.setControllers(controllerSpecs());
   for (const c of sim.controllers)
-    if (c.sign === 0) flash(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures, so the controller does nothing.`);
+    if (c.sign === 0) flash(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures here, so the controller does nothing. Set its pushing direction to Forward or Reverse to drive it anyway.`);
   if (sim.ground && belowGround()) flash('Some joints start below the ground, so it pushes them up.');
   simPositions = sim.jointPositions();
   simHeat = sim.heat();
@@ -2060,7 +2060,7 @@ function controllerSpecs(): ControllerSpec[] {
       if (!sg) return [];
       sensor = { quantity, gear: sg.id, center: sg.center, angle0: sg.propeller?.angle ?? 0 };
     }
-    return [{ motor: g.id, sensor, kp: pc.kp, ki: pc.ki, kd: pc.kd, max: Math.abs(g.motor!.torque), target: pidTarget(pc) }];
+    return [{ motor: g.id, sensor, kp: pc.kp, ki: pc.ki, kd: pc.kd, max: Math.abs(g.motor!.torque), target: pidTarget(pc), direction: pc.direction ?? 'auto' }];
   });
 }
 
@@ -2071,8 +2071,15 @@ function pidLiveText(g: DGear): string {
   if (!pc.sensor) return 'no sensor yet';
   const c = sim?.controllers.find((x) => x.motor === g.id);
   if (!c) return `${fmtQ(drawnValue(pc.sensor.body, pc.sensor.quantity), q)} as drawn; target ${fmtQ(pidTarget(pc), q)}`;
-  if (c.sign === 0) return 'its motor cannot move this quantity';
+  if (c.sign === 0) return 'off: its motor cannot move this quantity here (choose Forward or Reverse to drive it anyway)';
   return `${fmtQ(c.y, q)} → ${fmtQ(c.target, q)} (error ${fmtQ(c.e, q)}); torque ${c.u.toFixed(3)} N·m${Math.abs(c.u) >= Math.abs(c.max) - 1e-9 ? ' (at its limit)' : ''}`;
+}
+
+/** What the automatic check found, for the direction menu (only known while it runs). */
+function detectedText(g: DGear): string {
+  const c = sim?.controllers.find((x) => x.motor === g.id);
+  if (!c) return ' (checked when it starts)';
+  return c.detected > 0 ? ' (found: forward)' : c.detected < 0 ? ' (found: reverse)' : ' (found: cannot move it, off)';
 }
 
 /** The inspector for a PID controller: its sensor, target, gains and limit, and what it is doing. */
@@ -2097,10 +2104,15 @@ function inspectorPid(g: DGear, pc: DPid, disabled: string) {
     ${num('i-ki', `K<sub>i</sub> (N·m per ${unit}·s)`, pc.ki, 'Integral gain: removes the steady error a constant load leaves')}
     ${num('i-kd', `K<sub>d</sub> (N·m·s per ${unit})`, pc.kd, 'Derivative gain: damps, acting on the rate of the measurement')}
     ${num('i-pmax', 'Max torque (N·m)', Math.abs(g.motor!.torque), "The motor's torque limit; the output stays within ±this")}
+    <label class="field" title="Which way the controller pushes. Auto checks how the motor moves the quantity when it starts, and switches off if it cannot; Forward and Reverse override that."><span>Pushing direction</span><select id="i-pdir">
+      <option value="auto" ${(pc.direction ?? 'auto') === 'auto' ? 'selected' : ''}>Auto${detectedText(g)}</option>
+      <option value="forward" ${pc.direction === 'forward' ? 'selected' : ''}>Forward: + torque raises it</option>
+      <option value="reverse" ${pc.direction === 'reverse' ? 'selected' : ''}>Reverse: + torque lowers it</option>
+    </select></label>
     <label class="field">Colour<input id="i-pcolor" type="color" value="${pc.color}"></label>
     <div class="field"><span>Now</span><span id="i-plive">${pidLiveText(g)}</span></div>
     <div class="field"><span></span><span><button id="i-premove" ${disabled}>Remove controller</button></span></div>
-    <p class="muted">Torque u = s (K<sub>p</sub> e + K<sub>i</sub> ∫e dt − K<sub>d</sub> dy/dt), e = target − y, kept within ±max torque; the integral pauses while the output is at its limit, and the derivative acts on the measurement, so moving the target gives no kick. s = ±1 is the way the motor moves the quantity, found when it starts. Gains, target and limit can be changed while it runs.</p>`;
+    <p class="muted">Torque u = s (K<sub>p</sub> e + K<sub>i</sub> ∫e dt − K<sub>d</sub> dy/dt), e = target − y, kept within ±max torque; the integral pauses while the output is at its limit, and the derivative acts on the measurement, so moving the target gives no kick. s = ±1 is the pushing direction: on Auto, the way the motor moves the quantity, found when it starts (off if it cannot move it there, as at a dead point); Forward and Reverse fix it. Gains, target, limit and direction can be changed while it runs.</p>`;
   const bindNum = (sel: string, apply: (v: number) => void, live?: () => void) =>
     inspectorEl.querySelector<HTMLInputElement>(sel)!.addEventListener('change', (e) => {
       const v = Number((e.target as HTMLInputElement).value);
@@ -2121,6 +2133,14 @@ function inspectorPid(g: DGear, pc: DPid, disabled: string) {
     (v) => (g.motor!.torque = Math.max(1e-3, Math.abs(v))),
     () => sim && rebuildSim(), // b = max / Ω changes as well
   );
+  inspectorEl.querySelector<HTMLSelectElement>('#i-pdir')!.addEventListener('change', (e) => {
+    pushUndo();
+    pc.direction = (e.target as HTMLSelectElement).value as DPid['direction'];
+    sim?.tuneController(g.id, { direction: pc.direction });
+    designChanged({ keepInspector: true });
+    const live = inspectorEl.querySelector('#i-plive');
+    if (live) live.textContent = pidLiveText(g);
+  });
   inspectorEl.querySelector<HTMLInputElement>('#i-pcolor')!.addEventListener('input', (e) => {
     pc.color = (e.target as HTMLInputElement).value;
     inspectorEl.querySelector<HTMLElement>('h4 span')!.style.color = pc.color;
