@@ -162,7 +162,16 @@ Another example: **Strandbeest with four legs, gear-coupled and motor-driven**. 
 
 ### Ground contact
 
-Tick **Ground contact** to add a floor. When you tick it, the floor starts just below the lowest joint or gear rim; set its height and slope in the settings. Joints, bar ends and gear rims land on it, bounce and slide. A bar can't cross a flat ground before one of its ends does, so checking every joint covers all bars, racks and point masses.
+Tick **Ground contact** to add a floor. Joints, bar ends and gear rims land on it, bounce and slide.
+
+The ground is a terrain line through waypoints, level beyond the first and the last. A new ground starts flat, just below the machine, with waypoints across it and a metre or more beyond.
+- **Select it** by clicking it in Select mode. Its waypoints show as handles.
+- **Drag a waypoint** up or down to shape hills and dips, or set its x and height in the inspector.
+- **Double-click** the ground to add a waypoint. **Delete** removes the selected one; a ground keeps at least two.
+
+The ground always stays under the machine while you edit. A waypoint dragged up stops where the ground would touch a joint or gear rim. Moving a part below the ground, by dragging a joint for example, lowers the waypoints around it until the part is above the ground again.
+
+**Contact on a terrain.** Each joint and gear rim is checked against the terrain segment beneath it, using that segment's normal and direction. Friction tracks distance along the terrain line, so its hold doesn't jump at a corner. A bar can't cross a straight stretch before one of its ends does, but it can rest across a peak with both ends in the air. So each peak (a waypoint where the terrain turns downhill) is also checked against the bars, and pushes a bar up where it pokes above it.
 
 - **Restitution** sets how bouncy impacts are: 1 bounces back to the full height, 0 stops dead. A dropped mass rebounds to e² of its drop height.
 - **Friction μ** holds a point where it landed (static friction) until the sideways force reaches μ times the normal force, then lets it slide. A block on a slope stays put when μ > tan α and otherwise slides at g(sin α − μ cos α).
@@ -182,7 +191,7 @@ Examples:
 
 - Everything is in a plane, and bars are uniform rigid rods.
 - Gears are external spur gears and straight racks. There are no ring gears.
-- Parts only collide with the ground, not with each other, and the ground is a flat line, possibly sloped. Contact is slightly soft: resting parts sink about 0.16 mm, and fast impacts a few millimetres.
+- Parts only collide with the ground, not with each other. The ground is a terrain line through waypoints, and very steep bars, over 60°, only touch it at their ends. Contact is slightly soft: resting parts sink about 0.16 mm, and fast impacts a few millimetres.
 - Springs have no mass, and friction is viscous (proportional to speed).
 - Motors push against the ground. A motor on a gear that rides on a moving part does not push back on that part.
 

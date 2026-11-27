@@ -31,8 +31,7 @@ export function enableLongEquations(el: HTMLElement) {
 
 /** The ground, as the equations panel describes it (slope in degrees). */
 export interface GroundNote {
-  y: number;
-  slope: number;
+  points: [number, number][];
   restitution: number;
   friction: number;
   zeta: number;
@@ -115,12 +114,12 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
   }
 
   if (ground) {
-    const t = Math.tan((ground.slope * Math.PI) / 180);
     parts.push('<section><h3>Ground contact</h3>');
-    parts.push(tex(`Q_c = \\sum_{\\text{touching } p} J_p^{\\mathsf T}\\left(F_n\\,\\mathbf n + F_t\\,\\mathbf t\\right),\\quad y_{\\text{ground}} = ${ground.y.toFixed(3)}${t ? ` ${t > 0 ? '+' : '-'} ${Math.abs(t).toFixed(3)}\\,x` : ''}`));
+    parts.push(tex(`Q_c = \\sum_{\\text{touching } p} J_p^{\\mathsf T}\\left(F_n\\,\\mathbf n + F_t\\,\\mathbf t\\right)`));
     parts.push(tex('F_n = \\max\\left(0,\\ m_p\\omega^2\\delta_p + 2\\zeta\\, m_p\\omega\\,\\dot\\delta_p\\right),\\qquad |F_t| \\le \\mu F_n'));
     parts.push(
-      `<p class="note">Every joint, and the lowest point of every gear rim, is checked against the ground (a bar cannot cross it before one of its ends does). ` +
+      `<p class="note">The ground is a terrain line through ${ground.points.length} waypoints, level beyond the first and the last; ${tex('\\mathbf n', false)} and ${tex('\\mathbf t', false)} are the normal and direction of the segment under each point. ` +
+        `Every joint, and the lowest point of every gear rim, is checked against it (a bar cannot cross a segment before one of its ends does). ` +
         `A point sunk by ${tex('\\delta_p', false)} is pushed out by a spring-damper scaled by the effective mass ${tex('m_p', false)} it pushes against, ` +
         `so every contact responds at ${tex(`\\omega = ${ground.omega}\\ \\mathrm{rad/s}`, false)} whatever it carries. ` +
         `${tex(`\\zeta = ${ground.zeta.toFixed(3)}`, false)} gives the restitution ${tex(`e = ${ground.restitution.toFixed(2)}`, false)}; ` +

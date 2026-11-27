@@ -184,17 +184,79 @@ export function bodyName(d: Design, ref: DBodyRef): string {
 }
 
 /**
- * A flat ground the mechanism can land on: the line through (0, y), rising at `slope`
- * degrees to the right. Joints, bar ends and gear rims cannot pass below it.
+ * The ground the mechanism can land on: a terrain line through waypoints (sorted by x), flat
+ * beyond the first and the last. Joints, bar ends and gear rims cannot pass below it.
  */
 export interface DGround {
-  y: number;
-  /** Degrees; positive rises to the right. */
-  slope: number;
+  points: [number, number][];
   /** Coefficient of restitution of impacts, 0 (dead stop) to 1 (perfect bounce). */
   restitution: number;
   /** Coulomb friction coefficient μ. */
   friction: number;
+}
+
+/** A straight ground through (0, y) rising at `slopeDeg`, as `n` waypoints from x0 to x1. */
+export function straightGround(y: number, slopeDeg: number, x0: number, x1: number, n: number, restitution: number, friction: number): DGround {
+  const t = Math.tan((slopeDeg * Math.PI) / 180);
+  const points = Array.from({ length: n }, (_, i) => {
+    const x = x0 + ((x1 - x0) * i) / (n - 1);
+    return [+x.toFixed(4), +(y + t * x).toFixed(4)] as [number, number];
+  });
+  return { points, restitution, friction };
+}
+
+/** How much of the ground's height at x comes from waypoint i (linear between waypoints, level beyond). */
+export function waypointWeight(pts: [number, number][], i: number, x: number): number {
+  const n = pts.length;
+  if (i === 0 && x <= pts[0][0]) return 1;
+  if (i === n - 1 && x >= pts[n - 1][0]) return 1;
+  if (i > 0 && x > pts[i - 1][0] && x <= pts[i][0]) return (x - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0] || 1);
+  if (i < n - 1 && x >= pts[i][0] && x < pts[i + 1][0]) return (pts[i + 1][0] - x) / (pts[i + 1][0] - pts[i][0] || 1);
+  return 0;
+}
+
+/** The highest waypoint i can be while the ground stays `clearance` below every point in `lows`. */
+export function groundCeiling(g: DGround, i: number, lows: [number, number][], clearance: number): number {
+  let top = Infinity;
+  for (const [x, y] of lows) {
+    const w = waypointWeight(g.points, i, x);
+    if (w < 1e-6) continue;
+    const others = groundHeight(g, x) - w * g.points[i][1]; // the rest of the terrain's height there
+    top = Math.min(top, (y - clearance - others) / w);
+  }
+  return top;
+}
+
+/** Lower the ground wherever one of `lows` is less than `clearance` above it. Returns whether it moved. */
+export function lowerGroundUnder(g: DGround, lows: [number, number][], clearance: number): boolean {
+  let any = false;
+  for (let pass = 0; pass < 4; pass++) {
+    let moved = false;
+    for (const [x, y] of lows) {
+      const dip = groundHeight(g, x) - (y - clearance);
+      if (dip <= 1e-9) continue;
+      // lower the waypoints carrying the ground there, both by the dip, so it drops by the dip
+      g.points.forEach((p, k) => {
+        if (waypointWeight(g.points, k, x) > 0) p[1] = +(p[1] - dip).toFixed(4);
+      });
+      moved = any = true;
+    }
+    if (!moved) break;
+  }
+  return any;
+}
+
+/** Height of the ground at x: on the terrain line, or level with its end waypoint beyond it. */
+export function groundHeight(g: DGround, x: number): number {
+  const p = g.points;
+  if (x <= p[0][0]) return p[0][1];
+  for (let i = 1; i < p.length; i++)
+    if (x <= p[i][0]) {
+      const [x0, y0] = p[i - 1];
+      const [x1, y1] = p[i];
+      return x1 === x0 ? y1 : y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
+    }
+  return p[p.length - 1][1];
 }
 
 export interface Design {
@@ -284,5 +346,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground } } : {}) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map((g) => ({ ...g })), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
 }

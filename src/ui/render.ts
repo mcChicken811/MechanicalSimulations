@@ -36,8 +36,10 @@ export interface Scene {
   box?: { from: Vec; to: Vec } | null;
   /** A rail being placed with the Slider tool: through `at`, at `angle` degrees, with the ends chosen so far (m along it). */
   railPreview?: { at: Vec; angle: number; ends?: number[] } | null;
-  /** The ground line, if there is one (slope in degrees). */
-  ground?: { y: number; slope: number } | null;
+  /** The ground's terrain waypoints, if there is a ground. */
+  ground?: [number, number][] | null;
+  /** The ground is selected: its waypoints show as handles, `waypoint` the selected one. */
+  groundSelected?: { waypoint: number | null } | null;
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
 }
@@ -113,7 +115,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
   drawGrid(ctx, w, h, v);
-  if (s.ground) drawGroundLine(ctx, w, h, v, s.ground);
+  if (s.ground) drawGroundLine(ctx, w, h, v, s.ground, s.groundSelected ?? null);
 
   for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
 
@@ -217,33 +219,59 @@ function drawFixedAngle(ctx: CanvasRenderingContext2D, v: View, s: Scene, aId: n
 }
 
 /** The ground: a line across the view, rising at its slope, shaded and hatched below. */
-function drawGroundLine(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, g: { y: number; slope: number }) {
-  const t = Math.tan((g.slope * Math.PI) / 180);
+/**
+ * The ground: its terrain line through the waypoints, level beyond the ends, shaded and hatched
+ * below. When it is selected, the waypoints show as handles to drag up and down.
+ */
+function drawGroundLine(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, pts: [number, number][], sel: { waypoint: number | null } | null) {
   const [x0] = toWorld(v, [0, 0]);
   const [x1] = toWorld(v, [w, 0]);
-  const a = toScreen(v, [x0, g.y + t * x0]);
-  const b = toScreen(v, [x1, g.y + t * x1]);
+  const path: Vec[] = [
+    toScreen(v, [Math.min(x0, pts[0][0]) - 1, pts[0][1]]),
+    ...pts.map((p) => toScreen(v, p)),
+    toScreen(v, [Math.max(x1, pts[pts.length - 1][0]) + 1, pts[pts.length - 1][1]]),
+  ];
+  const bottom = Math.max(...path.map((p) => p[1])) + h;
   ctx.save();
-  ctx.fillStyle = 'rgba(107,110,118,0.10)';
+  ctx.fillStyle = sel ? 'rgba(224,123,57,0.10)' : 'rgba(107,110,118,0.10)';
   ctx.beginPath();
-  ctx.moveTo(a[0], a[1]);
-  ctx.lineTo(b[0], b[1]);
-  ctx.lineTo(w, Math.max(a[1], b[1]) + h);
-  ctx.lineTo(0, Math.max(a[1], b[1]) + h);
+  ctx.moveTo(path[0][0], path[0][1]);
+  for (const p of path.slice(1)) ctx.lineTo(p[0], p[1]);
+  ctx.lineTo(path[path.length - 1][0], bottom);
+  ctx.lineTo(path[0][0], bottom);
   ctx.closePath();
   ctx.fill();
-  ctx.strokeStyle = C.ground;
-  ctx.lineWidth = 2;
-  line(ctx, a, b);
-  // hatching under the line
+  ctx.strokeStyle = sel ? C.accent : C.ground;
+  ctx.lineWidth = sel ? 2.5 : 2;
+  ctx.beginPath();
+  ctx.moveTo(path[0][0], path[0][1]);
+  for (const p of path.slice(1)) ctx.lineTo(p[0], p[1]);
+  ctx.stroke();
+  // hatching under each segment
   ctx.lineWidth = 1;
   ctx.globalAlpha = 0.5;
-  const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-  const [ux, uy] = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
-  for (let d = 0; d < len; d += 14) {
-    const p: Vec = [a[0] + ux * d, a[1] + uy * d];
-    line(ctx, p, [p[0] - 8, p[1] + 10]);
+  ctx.strokeStyle = C.ground;
+  for (let i = 1; i < path.length; i++) {
+    const [a, b] = [path[i - 1], path[i]];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 1 || Math.max(a[0], b[0]) < -20 || Math.min(a[0], b[0]) > w + 20) continue;
+    const [ux, uy] = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+    for (let d = 0; d < len; d += 14) {
+      const p: Vec = [a[0] + ux * d, a[1] + uy * d];
+      if (p[0] < -20 || p[0] > w + 20) continue;
+      line(ctx, p, [p[0] - 8, p[1] + 10]);
+    }
   }
+  ctx.globalAlpha = 1;
+  if (sel)
+    pts.forEach((p, i) => {
+      const [sx, sy] = toScreen(v, p);
+      ctx.fillStyle = i === sel.waypoint ? C.accent : '#fff';
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth = 2;
+      ctx.fillRect(sx - 5, sy - 5, 10, 10);
+      ctx.strokeRect(sx - 5, sy - 5, 10, 10);
+    });
   ctx.restore();
 }
 

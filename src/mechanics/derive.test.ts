@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEquations } from './derive';
 import type { Design } from './model';
-import { NumericSystem, Simulator } from './simulate';
+import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
 
 const G = 9.81;
 
@@ -806,9 +806,10 @@ describe('human hand preset', () => {
 
 describe('ground contact', () => {
   const free = (points: Design['points'], extra: Partial<Design> = {}): Design => ({ points, links: [], springs: [], gears: [], meshes: [], rackMeshes: [], ...extra });
+  // a straight ground through (0, y) at a slope (rad)
   const run = (d: Design, ground: { y: number; slope: number; restitution: number; friction: number }) => {
     const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
-    s.ground = ground;
+    s.ground = straightGroundSettings(ground.y, ground.slope, ground.restitution, ground.friction);
     return s;
   };
 
@@ -875,7 +876,8 @@ describe('ground contact', () => {
     const { presets } = await import('../ui/presets');
     const design = presets.find((p) => p.name.startsWith('Rimless wheel'))!.build();
     const g = design.ground!;
-    const s = run(design, { y: g.y, slope: (g.slope * Math.PI) / 180, restitution: g.restitution, friction: g.friction });
+    const s = new Simulator(new NumericSystem(deriveEquations(design, { gravity: G })));
+    s.ground = { points: g.points, restitution: g.restitution, friction: g.friction };
     const hubX = () => s.jointPosition(0)![0];
     for (let i = 0; i < 3000; i++) expect(s.step(1e-3)).toBe(true);
     const x3 = hubX();
@@ -1098,4 +1100,73 @@ describe('four-legged Strandbeest preset', () => {
     const e = s.energy();
     expect(Math.abs(e.T + e.V + s.dissipated - s.motorWork - E0)).toBeLessThan(1e-2);
   }, 30000);
+});
+
+describe('terrain ground', () => {
+  it('keeps the ground under the machine: a waypoint stops below the parts, and gives way under them', async () => {
+    const { groundCeiling, groundHeight, lowerGroundUnder, straightGround } = await import('./model');
+    const g = straightGround(0, 0, -2, 2, 5, 0.3, 0.8); // waypoints at x = −2, −1, 0, 1, 2
+    const lows: [number, number][] = [[0.5, 0.4]]; // a joint at (0.5, 0.4)
+    // waypoint 2 (x = 0) carries half the ground at x = 0.5: it may rise to 2 × (0.4 − 0.002)
+    expect(groundCeiling(g, 2, lows, 0.002)).toBeCloseTo(0.796, 9);
+    // move the joint below the ground: the waypoints either side drop until it is above again
+    expect(lowerGroundUnder(g, [[0.5, -0.3]], 0.002)).toBe(true);
+    expect(groundHeight(g, 0.5)).toBeCloseTo(-0.302, 9);
+    expect(g.points[0][1]).toBe(0); // the rest of the ground stays put
+  });
+
+  it('a mass slides down into a V-shaped valley and settles at the bottom', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations({ points: [{ id: 0, x: -0.6, y: 0.31, kind: 'free', mass: 1 }], links: [], springs: [], gears: [], meshes: [], rackMeshes: [] }, { gravity: G })));
+    s.ground = { points: [[-2, 1], [0, 0], [2, 1]], restitution: 0, friction: 0.05 };
+    s.damping = 0.5;
+    for (let i = 0; i < 8000; i++) expect(s.step(1e-3)).toBe(true);
+    const p = s.jointPosition(0)!;
+    expect(Math.abs(p[0])).toBeLessThan(0.05); // at the bottom of the valley
+    expect(p[1]).toBeGreaterThan(-0.01);
+  }, 20000);
+
+  it("a gear rolls on, past a change of slope, at each slope's own acceleration", () => {
+    const R = 0.2;
+    const b = (15 * Math.PI) / 180;
+    // down 15° to x = 1, then level
+    const pts: [number, number][] = [[-3, 3 * Math.tan(b)], [1, -1 * Math.tan(b)], [5, -1 * Math.tan(b)]];
+    const d: Design = { points: [{ id: 0, x: -R * Math.sin(b), y: R * Math.cos(b) + 2e-4, kind: 'free', mass: 0 }], links: [], springs: [], meshes: [], rackMeshes: [], gears: [{ id: 0, center: 0, radius: R, teeth: 13, mass: 2, locked: false }] };
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.ground = { points: pts, restitution: 0, friction: 1 };
+    const x = () => s.jointPosition(0)![0];
+    for (let i = 0; i < 200; i++) s.step(1e-3);
+    const [x1, t1] = [x(), 0.2];
+    for (let i = 0; i < 400; i++) s.step(1e-3);
+    const [x2, t2] = [x(), 0.6];
+    expect((2 * (x2 - x1)) / (t2 * t2 - t1 * t1) / Math.cos(b)).toBeCloseTo((G * Math.sin(b)) / 1.5, 1); // on the slope
+    for (let i = 0; i < 2400; i++) expect(s.step(1e-3)).toBe(true);
+    expect(x()).toBeGreaterThan(1.3); // carried on over the level part
+    expect(s.jointPosition(0)![1]).toBeCloseTo(-Math.tan(b) + R, 2); // rolling on the level ground
+  }, 20000);
+});
+
+describe('terrain peaks against bars', () => {
+  it('holds up a bar lying across a peak, though both its ends are in the air', () => {
+    // a bar 1 m long dropped flat onto a sharp peak at x = 0
+    const d: Design = {
+      points: [
+        { id: 0, x: -0.5, y: 0.3, kind: 'free', mass: 0 },
+        { id: 1, x: 0.5, y: 0.3, kind: 'free', mass: 0 },
+      ],
+      links: [{ id: 0, a: 0, b: 1, mass: 1 }], springs: [], gears: [], meshes: [], rackMeshes: [],
+    };
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.ground = { points: [[-3, -1], [0, 0.2], [3, -1]], restitution: 0.1, friction: 0.8 };
+    const E0 = s.energy().T + s.energy().V;
+    let worst = 0;
+    for (let i = 0; i < 400; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V + s.dissipated - E0));
+    }
+    const p = s.jointPositions();
+    const midY = (p.get(0)![1] + p.get(1)![1]) / 2;
+    expect(midY).toBeGreaterThan(0.19); // resting on the peak at 0.2, not fallen through it
+    expect(worst).toBeLessThan(5e-3);
+  });
 });

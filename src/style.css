@@ -163,6 +163,13 @@ kbd {
   accent-color: var(--primary);
 }
 
+.settings .ground-tip {
+  margin: 2px 2px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .settings label.numrow {
   justify-content: space-between;
 }

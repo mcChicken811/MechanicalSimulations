@@ -1,7 +1,7 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, clearConstraint, cloneDesign, drawnAngle, emptyDesign, railOf, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, clearConstraint, cloneDesign, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
@@ -71,7 +71,16 @@ function loadDesign(): Design | null {
     if (!Array.isArray(d.gears) || d.gears.some((g) => typeof (g as Partial<DGear>).center !== 'number')) d.gears = [];
     if (!Array.isArray(d.meshes)) d.meshes = [];
     d.meshes = d.meshes.filter((m) => d.gears.some((g) => g.id === m.a) && d.gears.some((g) => g.id === m.b));
-    if (d.ground && (typeof d.ground.y !== 'number' || typeof d.ground.slope !== 'number')) delete d.ground;
+    // a ground saved as a straight line (height and slope) becomes waypoints across the machine
+    const old = d.ground as unknown as { y?: number; slope?: number; restitution: number; friction: number } | undefined;
+    if (old && !Array.isArray((old as unknown as DGround).points)) {
+      if (typeof old.y === 'number' && typeof old.slope === 'number') {
+        const xs = d.points.map((p) => p.x);
+        const [lo, hi] = xs.length ? [Math.min(...xs) - 2, Math.max(...xs) + 2] : [-2, 2];
+        d.ground = straightGround(old.y, old.slope, lo, hi, 9, old.restitution ?? 0.3, old.friction ?? 0.8);
+      } else delete d.ground;
+    }
+    if (d.ground && (d.ground.points.length < 2 || d.ground.points.some((p) => !Array.isArray(p) || p.length !== 2))) delete d.ground;
     if (!Array.isArray(d.angles)) d.angles = []; // saved before fixed angles existed
     d.angles = d.angles.filter((a) => a.a !== a.b && d.links.some((l) => l.id === a.a) && d.links.some((l) => l.id === a.b));
     if (!Array.isArray(d.joins)) d.joins = []; // saved before joins existed
@@ -99,12 +108,14 @@ function undo() {
   selection = null;
   multi = null;
   constrain = null;
+  groundSel = null;
   syncGroundUI();
   designChanged();
 }
 
 /** Call after every edit of the design. */
 function designChanged(opts: { keepInspector?: boolean } = {}) {
+  keepGroundUnder(); // the ground gives way under anything moved below it
   localStorage.setItem(STORAGE_KEY, JSON.stringify(design));
   scheduleDerive();
   if (!opts.keepInspector) renderInspector();
@@ -256,6 +267,7 @@ function startSim() {
   boxSel = null;
   constrain = null;
   resetTrail();
+  groundSel = null;
   renderInspector();
   refreshControls();
 }
@@ -700,10 +712,10 @@ function bindJoinControls(ref: DBodyRef) {
 }
 
 // ---- ground contact ----------------------------------------------------------------
-/** The design's ground in the simulator's units (slope in radians), or null. */
+/** The design's ground for the simulator, or null. */
 function groundSettings(): GroundSettings | null {
   const g = design.ground;
-  return g ? { y: g.y, slope: (g.slope * Math.PI) / 180, restitution: g.restitution, friction: g.friction } : null;
+  return g ? { points: g.points.map((p) => [p[0], p[1]] as [number, number]), restitution: g.restitution, friction: g.friction } : null;
 }
 
 function groundNote() {
@@ -711,19 +723,81 @@ function groundNote() {
   return g ? { ...g, zeta: dampingRatio(g.restitution), omega: CONTACT_OMEGA } : null;
 }
 
-/** Whether any joint of the design lies below its ground. */
+/** The lowest points of the machine: every joint, and the bottom of every gear rim. */
+function machineLows(): Vec[] {
+  return [
+    ...design.points.map((p) => [p.x, p.y] as Vec),
+    ...design.gears.flatMap((g) => {
+      const c = design.points.find((p) => p.id === g.center);
+      return c ? [[c.x, c.y - g.radius] as Vec] : [];
+    }),
+  ];
+}
+
+/** How far the ground stays below the machine while editing (m). */
+const GROUND_CLEARANCE = 0.002;
+
+/** Whether any part of the design lies below its ground. */
 function belowGround(): boolean {
   const g = design.ground;
-  if (!g) return false;
-  const t = Math.tan((g.slope * Math.PI) / 180);
-  return design.points.some((p) => p.y < g.y + t * p.x - 1e-3);
+  return !!g && machineLows().some(([x, y]) => y < groundHeight(g, x) - 1e-3);
+}
+
+/** The highest waypoint i can go while the ground stays under every part of the machine. */
+function waypointCeiling(i: number): number {
+  return groundCeiling(design.ground!, i, machineLows(), GROUND_CLEARANCE);
+}
+
+/** Lower the ground wherever a part of the machine has gone below it (editing only). */
+function keepGroundUnder() {
+  if (design.ground && !sim) lowerGroundUnder(design.ground, machineLows(), GROUND_CLEARANCE);
+}
+
+/** A new ground: waypoints across the machine and beyond, just below its lowest part. */
+function defaultGround(): DGround {
+  const lows = machineLows();
+  const xs = lows.map((p) => p[0]);
+  const [lo, hi] = xs.length ? [Math.min(...xs), Math.max(...xs)] : [0, 0];
+  const mid = (lo + hi) / 2;
+  const half = Math.max(1.5, (hi - lo) / 2 + 1);
+  const y = lows.length ? Math.floor((Math.min(...lows.map((p) => p[1])) - GROUND_CLEARANCE - 5e-4) * 100) / 100 : 0;
+  return straightGround(y, 0, +(mid - half).toFixed(2), +(mid + half).toFixed(2), 9, 0.3, 0.8);
+}
+
+/** The ground is selected (with the waypoint chosen, if any), or null. */
+let groundSel: { waypoint: number | null } | null = null;
+/** A waypoint being dragged up or down. */
+let groundDrag: { index: number; pushed: boolean } | null = null;
+
+/** Distance in pixels from a screen point to the ground's terrain line (with its level ends). */
+function groundDistance(w: Vec): number {
+  const g = design.ground;
+  if (!g) return Infinity;
+  return Math.abs(w[1] - groundHeight(g, w[0])) * view.scale;
+}
+
+/** The waypoint handle under the pointer, if the ground is selected. */
+function waypointAt(w: Vec): number | null {
+  const g = design.ground;
+  if (!g || !groundSel) return null;
+  let best: number | null = null;
+  let bestD = 9 / view.scale;
+  g.points.forEach(([x, y], i) => {
+    const d = Math.hypot(x - w[0], y - w[1]);
+    if (d < bestD) [best, bestD] = [i, d];
+  });
+  return best;
+}
+
+/** Move waypoint i to height y, but never above the machine. */
+function setWaypointHeight(i: number, y: number) {
+  const g = design.ground!;
+  g.points[i][1] = +Math.min(y, waypointCeiling(i)).toFixed(4);
 }
 
 const groundBox = $<HTMLInputElement>('#ground');
 const groundPanel = $<HTMLDivElement>('#ground-settings');
 const groundInputs = {
-  y: $<HTMLInputElement>('#ground-y'),
-  slope: $<HTMLInputElement>('#ground-slope'),
   restitution: $<HTMLInputElement>('#ground-e'),
   friction: $<HTMLInputElement>('#ground-mu'),
 };
@@ -734,9 +808,8 @@ function syncGroundUI() {
   const g = design.ground;
   groundBox.checked = !!g;
   groundPanel.hidden = !g;
+  if (!g) groundSel = null;
   if (!g) return;
-  groundInputs.y.value = String(g.y);
-  groundInputs.slope.value = String(g.slope);
   groundInputs.restitution.value = String(g.restitution);
   groundInputs.friction.value = String(g.friction);
   groundOut.restitution.textContent = g.restitution.toFixed(2);
@@ -753,26 +826,44 @@ function groundChanged() {
 
 groundBox.addEventListener('change', () => {
   pushUndo();
-  if (groundBox.checked) {
-    // just below the lowest joint or gear rim, so nothing starts in the ground
-    const lows = [...design.points.map((p) => p.y), ...design.gears.map((g) => (design.points.find((p) => p.id === g.center)?.y ?? 0) - g.radius)];
-    const y = lows.length ? Math.floor((Math.min(...lows) - 5e-4) * 100) / 100 : 0;
-    design.ground = { y, slope: 0, restitution: 0.3, friction: 0.8 };
-  } else delete design.ground;
+  if (groundBox.checked) design.ground = defaultGround();
+  else delete design.ground;
+  groundSel = null;
   groundChanged();
+  renderInspector();
 });
-for (const key of ['y', 'slope', 'restitution', 'friction'] as const) {
+for (const key of ['restitution', 'friction'] as const) {
   groundInputs[key].addEventListener('input', () => {
     const g = design.ground;
     const v = Number(groundInputs[key].value);
     if (!g || !Number.isFinite(v)) return;
-    g[key] = key === 'slope' ? Math.max(-45, Math.min(45, v)) : key === 'y' ? v : Math.max(0, v);
+    g[key] = Math.max(0, v);
     if (sim) sim.ground = groundSettings();
-    if (key === 'restitution' || key === 'friction') groundOut[key].textContent = g[key].toFixed(2);
+    groundOut[key].textContent = g[key].toFixed(2);
   });
   groundInputs[key].addEventListener('change', groundChanged);
 }
 syncGroundUI();
+
+/** Double-click on the ground (Select tool): add a waypoint there, on the terrain as it is. */
+canvas.addEventListener('dblclick', (e) => {
+  const g = design.ground;
+  if (!g || sim || tool !== 'select') return;
+  const w = toWorld(view, screenOf(e as unknown as PointerEvent));
+  if (groundDistance(w) > 9) return;
+  pushUndo();
+  const x = +w[0].toFixed(3);
+  const p: [number, number] = [x, +groundHeight(g, x).toFixed(4)];
+  const at = g.points.findIndex((q) => q[0] > x);
+  if (at < 0) g.points.push(p);
+  else if (g.points[at][0] - x > 1e-3 && (at === 0 || x - g.points[at - 1][0] > 1e-3)) g.points.splice(at, 0, p);
+  else return;
+  selection = null;
+  multi = null;
+  groundSel = { waypoint: g.points.indexOf(p) };
+  groundChanged();
+  renderInspector();
+});
 
 // ---- groups: box selection, copy and paste ------------------------------------------
 const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const;
@@ -1075,7 +1166,24 @@ canvas.addEventListener('pointerdown', (e) => {
       break;
     }
     case 'select': {
+      // the selected ground's waypoints come first: grab one to drag it up or down
+      const wp = waypointAt(w);
+      if (wp !== null) {
+        groundSel = { waypoint: wp };
+        groundDrag = { index: wp, pushed: false };
+        renderInspector();
+        break;
+      }
       const hit = hitTest(w);
+      if (!hit && design.ground && groundDistance(w) < 8) {
+        // the ground itself: select it, showing its waypoints
+        selection = null;
+        multi = null;
+        groundSel = { waypoint: null };
+        renderInspector();
+        break;
+      }
+      groundSel = null;
       const group = liveMulti();
       if (hit && group && inParts(group, hit)) {
         // drag the whole group
@@ -1194,6 +1302,14 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   if (boxSel) boxSel.to = w;
+  if (groundDrag && design.ground) {
+    const y = settings.snap ? Math.round(w[1] / 0.01) * 0.01 : w[1];
+    if (!groundDrag.pushed) {
+      pushUndo();
+      groundDrag.pushed = true;
+    }
+    setWaypointHeight(groundDrag.index, y);
+  }
   if (constrain && constrain.body !== undefined && !constrain.ends) constrain.angle = railAngle(constrain.joint, w, constrain.body);
   if (dragging?.group && multi) {
     const g = dragging.group;
@@ -1229,6 +1345,12 @@ canvas.addEventListener('pointermove', (e) => {
 
 canvas.addEventListener('pointerup', (e) => {
   const sp = screenOf(e);
+  if (groundDrag) {
+    const moved = groundDrag.pushed;
+    groundDrag = null;
+    if (moved) groundChanged();
+    renderInspector();
+  }
   if (panning) {
     panning = null;
     return;
@@ -1300,9 +1422,19 @@ window.addEventListener('keydown', (e) => {
     renderInspector();
   } else if (k === 'enter' && constrain?.ends) {
     finishSlider(); // the ends chosen so far; none makes an unlimited rail
+  } else if ((k === 'delete' || k === 'backspace') && !sim && groundSel?.waypoint != null && design.ground && !selection) {
+    // remove the selected waypoint (a ground needs at least two)
+    if (design.ground.points.length > 2) {
+      pushUndo();
+      design.ground.points.splice(groundSel.waypoint, 1);
+      groundSel = { waypoint: null };
+      groundChanged();
+      renderInspector();
+    } else flash('The ground needs at least two waypoints.');
   } else if (k === 'escape') {
     drawing = null;
     constrain = null;
+    groundSel = null;
     selection = null;
     multi = null;
     boxSel = null;
@@ -1322,6 +1454,7 @@ toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.t
 
 function setTool(t: Tool) {
   constrain = null;
+  groundSel = null;
   if (t !== 'select') multi = null;
   tool = t;
   angleFirst = null;
@@ -1353,6 +1486,7 @@ clearBtn.addEventListener('click', () => {
   selection = null;
   multi = null;
   constrain = null;
+  groundSel = null;
   syncGroundUI();
   designChanged();
 });
@@ -1375,6 +1509,7 @@ presetSel.addEventListener('change', () => {
   selection = null;
   multi = null;
   constrain = null;
+  groundSel = null;
   syncGroundUI();
   settings.gravity = !p.topView; // a top view lies in the horizontal plane
   $<HTMLInputElement>('#gravity').checked = settings.gravity;
@@ -1502,6 +1637,53 @@ function refreshControls() {
 // ---- inspector ------------------------------------------------------------------
 function renderInspector() {
   const disabled = sim ? 'disabled' : '';
+  if (!sim && groundSel && design.ground && !selection) {
+    const g = design.ground;
+    const i = groundSel.waypoint !== null && groundSel.waypoint < g.points.length ? groundSel.waypoint : null;
+    inspectorEl.innerHTML = `
+      <h4>Ground</h4>
+      <div class="field"><span>Waypoints</span><span>${g.points.length}</span></div>
+      ${
+        i !== null
+          ? `<label class="field">Waypoint ${i + 1}: x (m)<input id="i-gx" type="number" step="0.05" value="${g.points[i][0]}"></label>
+      <label class="field">Height (m)<input id="i-gy" type="number" step="0.01" value="${g.points[i][1]}"></label>
+      <div class="field"><span></span><span><button id="i-gdel" ${g.points.length <= 2 ? 'disabled' : ''}>Remove waypoint</button></span></div>`
+          : ''
+      }
+      <p class="muted">Drag a waypoint up or down. It stops where the ground would touch the machine, and the ground drops under anything you move below it. Double-click the ground to add a waypoint; Delete removes the selected one. Restitution and friction are in the settings on the left.</p>`;
+    if (i !== null) {
+      const commit = () => {
+        groundChanged();
+        renderInspector();
+      };
+      inspectorEl.querySelector<HTMLInputElement>('#i-gx')!.addEventListener('change', (e) => {
+        const v = Number((e.target as HTMLInputElement).value);
+        if (!Number.isFinite(v)) return;
+        pushUndo();
+        // stays between its neighbours, so the waypoints keep their order
+        const lo = i > 0 ? g.points[i - 1][0] + 1e-3 : -Infinity;
+        const hi = i < g.points.length - 1 ? g.points[i + 1][0] - 1e-3 : Infinity;
+        g.points[i][0] = Math.min(hi, Math.max(lo, v));
+        keepGroundUnder();
+        commit();
+      });
+      inspectorEl.querySelector<HTMLInputElement>('#i-gy')!.addEventListener('change', (e) => {
+        const v = Number((e.target as HTMLInputElement).value);
+        if (!Number.isFinite(v)) return;
+        pushUndo();
+        setWaypointHeight(i, v);
+        commit();
+      });
+      inspectorEl.querySelector<HTMLButtonElement>('#i-gdel')!.addEventListener('click', () => {
+        if (g.points.length <= 2) return;
+        pushUndo();
+        g.points.splice(i, 1);
+        groundSel = { waypoint: null };
+        commit();
+      });
+    }
+    return;
+  }
   const group = sim ? null : liveMulti();
   if (group && !selection) {
     const n = partCount(group);
@@ -1877,6 +2059,13 @@ function fitView(box?: { x: [number, number]; y: [number, number] }) {
   const top = 50;
   const bottom = H - 70;
   const pts = box ? ([[box.x[0], box.y[0]], [box.x[1], box.y[1]]] as Vec[]) : design.points.map((p) => [p.x, p.y] as Vec);
+  // with a ground, show the ground under the machine too
+  const g = design.ground;
+  if (!box && g && pts.length) {
+    const xs = pts.map((p) => p[0]);
+    const [lo, hi] = [Math.min(...xs), Math.max(...xs)];
+    pts.push([lo, groundHeight(g, lo)], [hi, groundHeight(g, hi)], ...g.points.filter((p) => p[0] > lo && p[0] < hi));
+  }
   const empty = !pts.length;
   if (empty) pts.push([0, 0]);
   const xs = pts.map((p) => p[0]);
@@ -1927,7 +2116,8 @@ function frame(now: number) {
     grab: grabScene,
     simulating: !!sim,
     labels: settings.labels,
-    ground: design.ground ? { y: design.ground.y, slope: design.ground.slope } : null,
+    ground: design.ground ? design.ground.points : null,
+    groundSelected: !sim && design.ground ? groundSel : null,
     multi: sim ? null : liveMulti(),
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
     railPreview:

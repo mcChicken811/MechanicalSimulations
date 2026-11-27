@@ -202,16 +202,56 @@ export interface Heat {
  * sets the damping ratio ζ, calibrated for the clamped force (see clampedRestitution).
  */
 export interface GroundSettings {
-  /** Height of the ground line at x = 0 (m). */
-  y: number;
-  /** Slope (rad); positive rises to the right. */
-  slope: number;
+  /** The terrain's waypoints, sorted by x; level beyond the first and the last. */
+  points: [number, number][];
   restitution: number;
   friction: number;
 }
 
+/** A straight ground through (0, y) at `slope` radians, as simulator settings (for tests and simple cases). */
+export function straightGroundSettings(y: number, slope: number, restitution: number, friction: number): GroundSettings {
+  const t = Math.tan(slope);
+  return { points: [[-1e3, y - 1e3 * t], [1e3, y + 1e3 * t]], restitution, friction };
+}
+
+/**
+ * The terrain line, ready for queries: for an x, the segment under it (or the level extension
+ * beyond an end), its normal n and direction t, and the distance along the terrain from the
+ * first waypoint to the segment's start (so friction anchors stay put across segments).
+ */
+class Terrain {
+  private readonly xs: number[];
+  private readonly ys: number[];
+  private readonly s0: number[];
+  constructor(points: [number, number][]) {
+    this.xs = points.map((p) => p[0]);
+    this.ys = points.map((p) => p[1]);
+    this.s0 = [0];
+    for (let i = 1; i < points.length; i++) this.s0.push(this.s0[i - 1] + Math.hypot(this.xs[i] - this.xs[i - 1], this.ys[i] - this.ys[i - 1]));
+  }
+  /** The segment under x: its start point, unit direction t, normal n = k × t, and arc length at its start. */
+  at(x: number): { x0: number; y0: number; tx: number; ty: number; nx: number; ny: number; s: number } {
+    const { xs, ys, s0 } = this;
+    const last = xs.length - 1;
+    if (x <= xs[0]) return { x0: xs[0], y0: ys[0], tx: 1, ty: 0, nx: 0, ny: 1, s: 0 };
+    if (x >= xs[last]) return { x0: xs[last], y0: ys[last], tx: 1, ty: 0, nx: 0, ny: 1, s: s0[last] };
+    let [lo, hi] = [0, last];
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (xs[mid] <= x) lo = mid;
+      else hi = mid;
+    }
+    const [dx, dy] = [xs[hi] - xs[lo], ys[hi] - ys[lo]];
+    const L = Math.hypot(dx, dy) || 1;
+    return { x0: xs[lo], y0: ys[lo], tx: dx / L, ty: dy / L, nx: -dy / L, ny: dx / L, s: s0[lo] };
+  }
+}
+
 /** Response rate ω of every contact (rad/s): resting objects sink g/ω² ≈ 0.16 mm. */
 export const CONTACT_OMEGA = 250;
+
+/** The deepest a terrain peak can be inside a bar and still count as touching it (m). */
+const PEAK_REACH = 0.05;
 
 /** Largest contact damping ratio: 2ζω h stays within RK4's stable range at the 1 ms step. */
 const MAX_ZETA = 4;
@@ -314,6 +354,10 @@ export class Simulator {
   private readonly mu: Float64Array;
   private readonly candidates: ContactCandidate[];
   private readonly contacts: (ContactState | null)[];
+  /** Bars, by the point indices of their ends, for the terrain's peaks to push on. */
+  private readonly bars: { ia: number; ib: number }[];
+  /** Peak–bar contacts in progress, by "peak:bar": the effective mass along the bar's normal. */
+  private readonly peakContacts = new Map<string, number>();
   private readonly Jn: Float64Array;
   private readonly Jt: Float64Array;
   private readonly K2: Float64Array;
@@ -361,6 +405,14 @@ export class Simulator {
       ...d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, gear: { phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius } })),
     ];
     this.contacts = this.candidates.map(() => null);
+    const seen = new Set<number>();
+    this.bars = d.joints.flatMap((j) =>
+      j.bars.flatMap((b) => {
+        if (seen.has(b.link)) return [];
+        seen.add(b.link);
+        return [{ ia: sys.pointIndex.get(b.a)!, ib: sys.pointIndex.get(b.b)! }];
+      }),
+    );
     this.stopBuf = new Float64Array(d.sliderStops.length * (n + 1));
     this.stopMass = d.sliderStops.flatMap(() => [null, null]);
     this.stopGrad = new Float64Array(n);
@@ -508,11 +560,12 @@ export class Simulator {
    */
   private contactGeometry(c: ContactCandidate, g: GroundSettings): { gap: number; along: number } {
     const { n, pos, jac, Jn, Jt } = this;
-    const [nx, ny] = [-Math.sin(g.slope), Math.cos(g.slope)];
-    const [tx, ty] = [Math.cos(g.slope), Math.sin(g.slope)];
     const i = c.point;
     let px = pos[2 * i];
     let py = pos[2 * i + 1];
+    // the terrain segment under the point (under a gear's centre for its rim)
+    const seg = this.terrain(g).at(px);
+    const { nx, ny, tx, ty } = seg;
     for (let m = 0; m < n; m++) {
       const jx = jac[i * 2 * n + m];
       const jy = jac[i * 2 * n + n + m];
@@ -527,7 +580,14 @@ export class Simulator {
       py -= R * ny;
       if (c.gear.phi >= 0) Jt[c.gear.phi] += R;
     }
-    return { gap: nx * px + ny * (py - g.y), along: tx * px + ty * (py - g.y) };
+    return { gap: nx * (px - seg.x0) + ny * (py - seg.y0), along: seg.s + tx * (px - seg.x0) + ty * (py - seg.y0) };
+  }
+
+  private terrainCache: { of: GroundSettings; terrain: Terrain } | null = null;
+  /** The ground's terrain, rebuilt when the ground settings change. */
+  private terrain(g: GroundSettings): Terrain {
+    if (this.terrainCache?.of !== g) this.terrainCache = { of: g, terrain: new Terrain(g.points) };
+    return this.terrainCache.terrain;
   }
 
   /** gᵀ A g: how readily the mechanism moves along g, A being the constrained inverse inertia. */
@@ -605,7 +665,106 @@ export class Simulator {
       for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
       power += loss;
     });
+    power += this.applyPeaks(q, qd, f, g);
     if (stage >= 0) this.stageContactPower[stage] = power;
+  }
+
+  /**
+   * The terrain's peaks (waypoints where it turns downhill) against the middles of bars: a bar
+   * can rest across a peak with both ends above the ground, where the joint checks cannot see
+   * it. If a peak is above the bar's line within its span, the bar is pushed up there, along its
+   * normal, by the same contact force (F = max(0, kδ + cδ̇), k = mω² with m the effective mass of
+   * that point along the normal), with viscous friction along the bar up to μF. Returns the
+   * power dissipated. With pos and jac filled.
+   */
+  private applyPeaks(q: Float64Array, qd: Float64Array, f: Float64Array, g: GroundSettings): number {
+    const { n, pos, jac, Jn, Jt, bars, peakContacts } = this;
+    const peaks = this.terrainPeaks(g);
+    if (!peaks.length || !bars.length) return 0;
+    const w0 = CONTACT_OMEGA;
+    const zeta = dampingRatio(g.restitution);
+    let power = 0;
+    const live = new Set<string>();
+    for (const [pi, [vx, vy]] of peaks.entries()) {
+      bars.forEach(({ ia, ib }, bi) => {
+        const [ax, ay, bx, by] = [pos[2 * ia], pos[2 * ia + 1], pos[2 * ib], pos[2 * ib + 1]];
+        const [dx, dy] = [bx - ax, by - ay];
+        const L = Math.hypot(dx, dy);
+        if (L < 1e-9) return;
+        const s = ((vx - ax) * dx + (vy - ay) * dy) / (L * L);
+        if (s <= 0.01 || s >= 0.99) return; // the ends are the joints' own contacts
+        // the bar's normal on the upper side (a bar steeper than 60° is left to its ends)
+        let [nx, ny] = [-dy / L, dx / L];
+        if (ny < 0) [nx, ny] = [-nx, -ny];
+        if (ny < 0.5) return;
+        const delta = (vx - ax) * nx + (vy - ay) * ny; // how far the peak pokes above the bar
+        // a real contact sinks millimetres; a peak far "above" the line is beside the bar, not in it
+        if (delta <= 0 || delta > PEAK_REACH) return;
+        const key = `${pi}:${bi}`;
+        live.add(key);
+        // rows of the bar's material point at s: (1 − s) J_a + s J_b, along n and along the bar
+        const [tx, ty] = [dx / L, dy / L];
+        for (let m = 0; m < n; m++) {
+          const jx = (1 - s) * jac[ia * 2 * n + m] + s * jac[ib * 2 * n + m];
+          const jy = (1 - s) * jac[ia * 2 * n + n + m] + s * jac[ib * 2 * n + n + m];
+          Jn[m] = nx * jx + ny * jy;
+          Jt[m] = tx * jx + ty * jy;
+        }
+        let mass = peakContacts.get(key);
+        if (mass === undefined) {
+          const wn = this.mobility(q, Jn);
+          if (wn < 1e-12) return;
+          mass = 1 / wn;
+          peakContacts.set(key, mass);
+        }
+        let vn = 0;
+        let vt = 0;
+        for (let m = 0; m < n; m++) {
+          vn += Jn[m] * qd[m];
+          vt += Jt[m] * qd[m];
+        }
+        const kk = mass * w0 * w0;
+        let Fn = kk * delta - 2 * zeta * mass * w0 * vn; // δ̇ = −v_n (the peak stands still)
+        if (Fn < 0) Fn = 0;
+        let Ft = -2 * mass * w0 * vt;
+        const lim = g.friction * Fn;
+        Ft = Math.max(-lim, Math.min(lim, Ft));
+        for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
+        power += vn * (kk * delta - Fn) - Ft * vt;
+      });
+    }
+    for (const key of [...peakContacts.keys()]) if (!live.has(key)) peakContacts.delete(key);
+    return power;
+  }
+
+  /** For each peak and bar: how far the peak pokes above the bar's middle (−∞ if it cannot touch). With pos filled. */
+  private peakDepths(g: GroundSettings, each: (key: string, delta: number) => void) {
+    const { pos, bars } = this;
+    for (const [pi, [vx, vy]] of this.terrainPeaks(g).entries())
+      bars.forEach(({ ia, ib }, bi) => {
+        const [ax, ay, bx, by] = [pos[2 * ia], pos[2 * ia + 1], pos[2 * ib], pos[2 * ib + 1]];
+        const [dx, dy] = [bx - ax, by - ay];
+        const L = Math.hypot(dx, dy);
+        if (L < 1e-9) return;
+        const s = ((vx - ax) * dx + (vy - ay) * dy) / (L * L);
+        if (s <= 0.01 || s >= 0.99) return;
+        let [nx, ny] = [-dy / L, dx / L];
+        if (ny < 0) [nx, ny] = [-nx, -ny];
+        if (ny < 0.5) return;
+        const delta = (vx - ax) * nx + (vy - ay) * ny;
+        if (delta <= PEAK_REACH) each(`${pi}:${bi}`, delta);
+      });
+  }
+
+  private peakCache: { of: GroundSettings; peaks: [number, number][] } | null = null;
+  /** The terrain's convex corners (where it turns downhill), counting the level ends. */
+  private terrainPeaks(g: GroundSettings): [number, number][] {
+    if (this.peakCache?.of === g) return this.peakCache.peaks;
+    const p = g.points;
+    const slope = (i: number) => (i < 0 || i >= p.length - 1 ? 0 : (p[i + 1][1] - p[i][1]) / (p[i + 1][0] - p[i][0] || 1e-9));
+    const peaks = p.filter((_, i) => slope(i - 1) - slope(i) > 1e-3); // a real corner, not rounding in a straight run
+    this.peakCache = { of: g, peaks };
+    return peaks;
   }
 
   /**
@@ -662,6 +821,13 @@ export class Simulator {
     const g = this.ground;
     if (!g) return V;
     const { sys, q, pos, jac, candidates, contacts } = this;
+    if (this.peakContacts.size) {
+      sys.positions(q, pos);
+      this.peakDepths(g, (key, delta) => {
+        const m = this.peakContacts.get(key);
+        if (m !== undefined && delta > 0) V += 0.5 * m * CONTACT_OMEGA * CONTACT_OMEGA * delta * delta;
+      });
+    }
     sys.positions(q, pos);
     sys.jacobians(q, jac);
     candidates.forEach((c, ci) => {
@@ -813,10 +979,15 @@ export class Simulator {
   /** Whether any point touches the ground or could reach it within the next step. */
   private nearGround(h: number): boolean {
     const g = this.ground!;
-    if (this.contacts.some((c) => c)) return true;
+    if (this.contacts.some((c) => c) || this.peakContacts.size) return true;
     const { n, sys, q, qd, pos, jac, Jn, candidates } = this;
     sys.positions(q, pos);
     sys.jacobians(q, jac);
+    let nearPeak = false;
+    this.peakDepths(g, (_, delta) => {
+      if (delta > -0.01) nearPeak = true; // a bar within a centimetre of a peak
+    });
+    if (nearPeak) return true;
     return candidates.some((c) => {
       const { gap } = this.contactGeometry(c, g);
       let vn = 0;

@@ -1,4 +1,4 @@
-import { teethForRadius, type Design, type DGear, type DJoin, type DLink, type DPoint, type DSpring, type PointKind } from '../mechanics/model';
+import { straightGround, teethForRadius, type Design, type DGear, type DJoin, type DLink, type DPoint, type DSpring, type PointKind } from '../mechanics/model';
 
 const pt = (id: number, x: number, y: number, kind: PointKind = 'free', mass = 0): DPoint => ({ id, x, y, kind, mass });
 const bars = (pairs: [number, number][], mass = 1) => pairs.map(([a, b], id) => ({ id, a, b, mass }));
@@ -553,7 +553,7 @@ function rimlessWheel(spokes = 8, L = 0.3, slopeDeg = -12): Design {
     meshes: [],
     rackMeshes: [],
     joins: links.slice(1).map((l, i) => ({ id: i, a: { kind: 'link' as const, id: 0 }, b: { kind: 'link' as const, id: l.id } })),
-    ground: { y: 0, slope: slopeDeg, restitution: 0, friction: 1 },
+    ground: straightGround(0, slopeDeg, -3, 45, 13, 0, 1), // a long slope to walk down
   };
 }
 
@@ -575,7 +575,7 @@ function tumblingBox(): Design {
     gears: [],
     meshes: [],
     rackMeshes: [],
-    ground: { y: 0, slope: 0, restitution: 0.4, friction: 0.6 },
+    ground: straightGround(0, 0, -2, 2, 9, 0.4, 0.6),
   };
 }
 
@@ -595,7 +595,7 @@ function droppedChain(n = 12, len = 0.1): Design {
     gears: [],
     meshes: [],
     rackMeshes: [],
-    ground: { y: 0, slope: 0, restitution: 0.1, friction: 0.7 },
+    ground: straightGround(0, 0, -2, 2, 9, 0.1, 0.7),
   };
 }
 

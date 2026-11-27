@@ -85,8 +85,7 @@
         </div>
         <label class="check" title="A ground that joints, bar ends and gear rims cannot pass through. Impacts and sliding lose energy, counted as heat W."><input type="checkbox" id="ground" /> Ground contact</label>
         <div id="ground-settings" hidden>
-          <label class="numrow">Height (m)<input type="number" id="ground-y" step="0.05" /></label>
-          <label class="numrow">Slope (°)<input type="number" id="ground-slope" step="1" min="-45" max="45" /></label>
+          <p class="ground-tip">Click the ground to select it, then drag its waypoints up and down. Double-click it to add a waypoint.</p>
           <label class="slider">Restitution <output id="ground-e-out"></output><input type="range" id="ground-e" min="0" max="1" step="0.05" /></label>
           <label class="slider">Friction μ <output id="ground-mu-out"></output><input type="range" id="ground-mu" min="0" max="1.5" step="0.05" /></label>
         </div>
