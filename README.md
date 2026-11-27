@@ -158,6 +158,8 @@ The torque enters the gear's equation of motion as the generalized force Q_φ = 
 
 Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
 
+Another example: **Strandbeest with four legs, gear-coupled and motor-driven**. Four Jansen legs stand one after another, each crank half a turn from the next. Each crank carries a gear, and coupling rods join pins at the same place on neighbouring gears. Each pair of gears then forms a parallelogram, so all four cranks turn together, like a locomotive's side rods. A motor on the last gear drives them all. The frame is held still, so the legs step in place.
+
 ### Ground contact
 
 Tick **Ground contact** to add a floor. When you tick it, the floor starts just below the lowest joint or gear rim; set its height and slope in the settings. Joints, bar ends and gear rims land on it, bounce and slide. A bar can't cross a flat ground before one of its ends does, so checking every joint covers all bars, racks and point masses.

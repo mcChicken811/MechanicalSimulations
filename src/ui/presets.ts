@@ -1,4 +1,4 @@
-import { teethForRadius, type Design, type DGear, type DPoint, type DSpring, type PointKind } from '../mechanics/model';
+import { teethForRadius, type Design, type DGear, type DJoin, type DLink, type DPoint, type DSpring, type PointKind } from '../mechanics/model';
 
 const pt = (id: number, x: number, y: number, kind: PointKind = 'free', mass = 0): DPoint => ({ id, x, y, kind, mass });
 const bars = (pairs: [number, number][], mass = 1) => pairs.map(([a, b], id) => ({ id, a, b, mass }));
@@ -116,6 +116,42 @@ function quickReturn(): Design {
     rackMeshes: [],
     joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'gear', id: 0 } }],
   };
+}
+
+/**
+ * A simple Strandbeest: four Jansen legs one after another, each crank half a turn from the
+ * next. Every crank carries a gear (joined to it), and the gears are linked by coupling rods
+ * between pins at the same place on each gear, so each pair of gears forms a parallelogram and
+ * all four cranks turn together, like the side rods of a locomotive. A motor on the last
+ * gear drives the whole beest. The frame is held still, so the legs step in place.
+ */
+function strandbeest(legs = 4, spacing = 1.1): Design {
+  const points: DPoint[] = [];
+  const links: DLink[] = [];
+  const gears: DGear[] = [];
+  const joins: DJoin[] = [];
+  const pinR = 0.08; // coupling pins, at the same angle on every gear
+  const pinAngle = Math.PI / 4;
+  for (let i = 0; i < legs; i++) {
+    const leg = jansenLeg(Math.PI / 2 + i * Math.PI); // each crank half a turn from the last
+    const dp = points.length;
+    const dl = links.length;
+    const dx = i * spacing;
+    for (const p of leg.points) points.push({ ...p, id: p.id + dp, x: p.x + dx });
+    for (const l of leg.links) links.push({ ...l, id: l.id + dl, a: l.a + dp, b: l.b + dp });
+    const axle = dp; // joint 0 of each leg is its crank axle
+    gears.push({ ...gear(i, axle, 0.12, 0.4), ...(i === legs - 1 ? { motor: { torque: 8, noLoadRpm: 40 } } : {}) });
+    joins.push({ id: i, a: { kind: 'link', id: dl }, b: { kind: 'gear', id: i } }); // the crank turns with its gear
+  }
+  // coupling pins and rods
+  const pinIds = gears.map((g) => {
+    const c = points.find((p) => p.id === g.center)!;
+    const id = points.length;
+    points.push(pin(id, c.x + pinR * Math.cos(pinAngle), c.y + pinR * Math.sin(pinAngle), g.id));
+    return id;
+  });
+  for (let i = 0; i + 1 < pinIds.length; i++) links.push({ id: links.length, a: pinIds[i], b: pinIds[i + 1], mass: 0.2 });
+  return { points, links, springs: [], gears, meshes: [], rackMeshes: [], joins };
 }
 
 /**
@@ -653,6 +689,7 @@ export interface Preset {
 export const presets: Preset[] = [
   { name: 'Strandbeest leg (Jansen linkage)', group: 'Famous mechanisms', build: () => jansenLeg() },
   { name: 'Strandbeest leg driven by a crank motor', group: 'Famous mechanisms', build: () => drivenJansenLeg() },
+  { name: 'Strandbeest with four legs, gear-coupled and motor-driven', group: 'Famous mechanisms', build: () => strandbeest() },
   { name: 'Quick-return mechanism (crank and slotted lever)', group: 'Famous mechanisms', build: () => quickReturn() },
   {
     // James Watt, 1781. The planet gear is fixed to the connecting rod (bars E–P and E–Q make

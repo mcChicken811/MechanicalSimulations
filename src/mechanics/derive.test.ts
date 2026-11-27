@@ -1078,3 +1078,24 @@ describe('slider ranges', () => {
     expect(Math.abs(e.T + e.V + s.dissipated - E0)).toBeLessThan(5e-3);
   }, 20000);
 });
+
+describe('four-legged Strandbeest preset', () => {
+  it('keeps all four cranks in step through the coupling rods as the motor turns them', async () => {
+    const { presets } = await import('../ui/presets');
+    const der = deriveEquations(presets.find((p) => p.name.startsWith('Strandbeest with four'))!.build(), { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(1);
+    expect(der.warnings).toEqual([]);
+    const s = new Simulator(new NumericSystem(der));
+    const E0 = s.energy().T + s.energy().V;
+    let drift = 0;
+    for (let i = 0; i < 5000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const a = [...s.gearAngles().values()];
+      for (const x of a) drift = Math.max(drift, Math.abs(x - a[0]));
+    }
+    expect([...s.gearAngles().values()][3] / (2 * Math.PI)).toBeGreaterThan(2); // through several dead centres
+    expect(drift).toBeLessThan(1e-6); // the parallelograms keep every gear at the same angle
+    const e = s.energy();
+    expect(Math.abs(e.T + e.V + s.dissipated - s.motorWork - E0)).toBeLessThan(1e-2);
+  }, 30000);
+});
