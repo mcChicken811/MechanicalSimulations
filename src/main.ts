@@ -1,15 +1,15 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, gearName, motorTorque, nextLeverColor, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
-import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
+import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type ControllerSpec, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
-import { drawScene, leverGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
+import { drawScene, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -289,6 +289,9 @@ function startSim() {
   sim.damping = settings.damping;
   sim.friction = friction;
   sim.ground = groundSettings();
+  sim.setControllers(controllerSpecs());
+  for (const c of sim.controllers)
+    if (c.sign === 0) flash(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures, so the controller does nothing.`);
   if (sim.ground && belowGround()) flash('Some joints start below the ground, so it pushes them up.');
   simPositions = sim.jointPositions();
   simHeat = sim.heat();
@@ -300,7 +303,7 @@ function startSim() {
   drawing = null;
   dragging = null;
   // springs and motors stay editable while running; a selected joint draws its path
-  if (selection?.kind !== 'spring' && selection?.kind !== 'point' && selection?.kind !== 'gear' && selection?.kind !== 'lever') selection = null;
+  if (selection?.kind !== 'spring' && selection?.kind !== 'point' && selection?.kind !== 'gear' && selection?.kind !== 'lever' && selection?.kind !== 'pid') selection = null;
   multi = null;
   boxSel = null;
   constrain = null;
@@ -339,6 +342,7 @@ function rebuildSim() {
   next.ground = groundSettings();
   next.motorWork = sim.motorWork; // the energy budget carries on across a parameter change
   next.airWork = sim.airWork;
+  next.setControllers(controllerSpecs(), sim.controllers);
   // same topology (only parameters changed), so the heat carries over
   if (next.jointHeat.length === sim.jointHeat.length && next.meshHeat.length === sim.meshHeat.length) {
     next.jointHeat.set(sim.jointHeat);
@@ -453,9 +457,25 @@ const springAt = (w: Vec) => segmentAt(w, design.springs);
 function leverAt(w: Vec): DGear | null {
   const sp = toScreen(view, w);
   for (const g of design.gears) {
-    if (!g.motor?.lever || !design.points.some((p) => p.id === g.center)) continue;
-    const { base, knob, radius } = leverGeometry(view, pos(g.center), g.propeller ? gearAngleNow(g.id) : motorAngleNow(g.id), g);
+    if (!leverOf(g.motor) || !design.points.some((p) => p.id === g.center)) continue;
+    const { base, knob, radius } = leverGeometry(view, pos(g.center), motorTurnNow(g), g);
     if (Math.hypot(sp[0] - knob[0], sp[1] - knob[1]) < radius + 4 || segmentDistance(sp, base, knob).d < 5) return g;
+  }
+  return null;
+}
+
+/** The turn of what a motor's lever and PID box ride on: its housing, or a propeller's hub. */
+const motorTurnNow = (g: DGear) => (g.propeller ? gearAngleNow(g.id) : motorAngleNow(g.id));
+
+/** The motor whose PID controller box is under w. */
+function pidAt(w: Vec): DGear | null {
+  const sp = toScreen(view, w);
+  for (const g of design.gears) {
+    if (!g.motor?.pid || !design.points.some((p) => p.id === g.center)) continue;
+    const P = pidGeometry(view, pos(g.center), motorTurnNow(g), g);
+    const [dx, dy] = [sp[0] - P.c[0], sp[1] - P.c[1]];
+    const [u, v] = [dx * Math.cos(P.rot) + dy * Math.sin(P.rot), -dx * Math.sin(P.rot) + dy * Math.cos(P.rot)];
+    if (Math.abs(u) <= P.w / 2 + 3 && Math.abs(v) <= P.h / 2 + 3) return g;
   }
   return null;
 }
@@ -463,6 +483,8 @@ function leverAt(w: Vec): DGear | null {
 function hitTest(w: Vec): Selection | null {
   const lv = leverAt(w); // small, and drawn on top
   if (lv) return { kind: 'lever', id: lv.id };
+  const pc = pidAt(w);
+  if (pc) return { kind: 'pid', id: pc.id };
   const p = pointAt(w);
   if (p !== null) return { kind: 'point', id: p };
   const l = linkAt(w);
@@ -743,6 +765,14 @@ function constrainHint(): string {
 }
 
 function removeOrphans() {
+  // sensors on bodies that are gone
+  for (const g of design.gears) {
+    const sn = g.motor?.pid?.sensor;
+    if (!sn) continue;
+    const { kind, id } = sn.body;
+    const there = kind === 'point' ? design.points.some((p) => p.id === id) : kind === 'link' ? design.links.some((l) => l.id === id) : design.gears.some((x) => x.id === id);
+    if (!there) g.motor!.pid!.sensor = null;
+  }
   // pins and rails on bodies that are gone
   for (const p of design.points) {
     if (p.pin && !bodyExists(design, p.pin)) delete p.pin;
@@ -997,7 +1027,7 @@ canvas.addEventListener('dblclick', (e) => {
 });
 
 // ---- groups: box selection, copy and paste ------------------------------------------
-const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears' } as const; // a lever goes with its motor's gear
+const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears', pid: 'gears' } as const; // a lever goes with its motor's gear
 const inParts = (s: PartSet, sel: Selection) => s[partsKey[sel.kind]].has(sel.id);
 
 /** The parts chosen together, without any that have since been deleted (null if none are left). */
@@ -1085,7 +1115,13 @@ function deleteSelection(sel: Selection | null) {
     if (m?.lever) {
       m.torque = motorTorque(m); // the motor keeps the torque the lever was giving
       delete m.lever;
+    } else if (m?.pid?.lever) {
+      m.pid.offset = pidTarget(m.pid); // the controller keeps the target the lever had set
+      delete m.pid.lever;
     }
+  } else if (sel.kind === 'pid') {
+    const m = design.gears.find((g) => g.id === sel.id)?.motor;
+    if (m) delete m.pid;
   } else {
     design.springs = design.springs.filter((l) => l.id !== sel.id);
   }
@@ -1265,12 +1301,20 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (e.button !== 0) return;
+  if (pidPick && !sim) {
+    pickSensorAt(w, sp); // choosing what a PID controller measures, whatever the tool
+    return;
+  }
 
   if (sim) {
     const lv = leverAt(w);
-    const pid = lv ? null : pointAt(w, null, true);
+    const pc = lv ? null : pidAt(w);
+    const pid = lv || pc ? null : pointAt(w, null, true);
     if (lv) {
       selection = { kind: 'lever', id: lv.id }; // worked from its control in the dock
+      renderInspector();
+    } else if (pc) {
+      selection = { kind: 'pid', id: pc.id }; // tunable while it runs
       renderInspector();
     } else if (pid !== null) {
       sfx('grab');
@@ -1417,7 +1461,25 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     case 'lever': {
       const pid = pointAt(w);
-      const g = leverAt(w) ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
+      // on a PID controller (or the lever it has): the lever sets its target
+      const onLever = leverAt(w);
+      const onPid = pidAt(w) ?? (onLever?.motor?.pid ? onLever : null);
+      if (onPid?.motor?.pid) {
+        const pc = onPid.motor.pid;
+        pushUndo();
+        sfx(pc.lever ? 'delete' : 'lever');
+        if (pc.lever) {
+          pc.offset = pidTarget(pc); // the target stays where the lever had it
+          delete pc.lever;
+          selection = { kind: 'pid', id: onPid.id };
+        } else {
+          pc.lever = { color: nextLeverColor(design), scale: LEVER_TARGET_SCALE[pc.sensor?.quantity ?? 'angle'], position: 0 };
+          selection = { kind: 'lever', id: onPid.id };
+        }
+        designChanged();
+        break;
+      }
+      const g = onLever ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
       if (!g) break;
       pushUndo();
       sfx(g.motor?.lever ? 'delete' : 'lever');
@@ -1425,6 +1487,7 @@ canvas.addEventListener('pointerdown', (e) => {
         delete g.motor.lever;
         selection = { kind: 'gear', id: g.id };
       } else {
+        if (g.motor?.pid) delete g.motor.pid; // a lever on the motor takes the PID controller's place
         // on a gear without a motor, the motor comes too; the lever starts at the centre
         const fixed = design.points.find((p) => p.id === g.center)?.kind === 'fixed';
         g.motor ??= g.propeller ? propellerMotor(fixed) : { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: fixed };
@@ -1433,6 +1496,30 @@ canvas.addEventListener('pointerdown', (e) => {
         selection = { kind: 'lever', id: g.id };
       }
       designChanged();
+      break;
+    }
+    case 'pid': {
+      const pid = pointAt(w);
+      const g = pidAt(w) ?? leverAt(w) ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
+      if (!g) break;
+      pushUndo();
+      if (g.motor?.pid) {
+        sfx('delete');
+        delete g.motor.pid;
+        selection = { kind: 'gear', id: g.id };
+        designChanged();
+        break;
+      }
+      // the controller takes the lever's place; a gear without a motor gets one
+      const fixed = design.points.find((p) => p.id === g.center)?.kind === 'fixed';
+      g.motor ??= g.propeller ? propellerMotor(fixed) : { torque: 1, noLoadRpm: 60, mass: 0.5, mounted: fixed };
+      g.locked = false;
+      delete g.motor.lever;
+      g.motor.pid = { kp: 0, ki: 0, kd: 0, offset: 0, sensor: null, color: nextLeverColor(design) };
+      sfx('pid');
+      selection = { kind: 'pid', id: g.id };
+      designChanged();
+      startSensorPick(g.id);
       break;
     }
     case 'lockGear': {
@@ -1587,7 +1674,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1628,6 +1715,7 @@ window.addEventListener('keydown', (e) => {
       renderInspector();
     } else flash('The ground needs at least two waypoints.');
   } else if (k === 'escape') {
+    if (pidPick) cancelSensorPick();
     drawing = null;
     constrain = null;
     groundSel = null;
@@ -1649,6 +1737,7 @@ const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools but
 toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool as Tool)));
 
 function setTool(t: Tool) {
+  if (pidPick) cancelSensorPick();
   constrain = null;
   groundSel = null;
   if (t !== 'select') multi = null;
@@ -1831,6 +1920,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
   motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
+  pid: 'Click a motor (or a gear, which gets a motor) to put a PID controller on it, in place of a lever. Then click what it should measure (a joint, bar, rack, gear, wheel or propeller) and pick the quantity. Click the motor again to remove it.',
   propeller: 'Click the centre, then the edge of a blade: the blades turn out of the page about an axis square to that line, and push along it (the arrow). In empty space it is a free body; start on a joint to mount it there. Give it a motor (O) to spin it.',
   lever: 'Click a motor (or a gear, which gets a motor) to give it a control lever; its control appears at the bottom right. Drag the control up or down to set the torque, even while it runs. Click the motor again to remove the lever.',
   angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
@@ -1850,12 +1940,204 @@ function refreshControls() {
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
     : tool === 'angle' && angleFirst !== null
       ? `Now click the bar whose angle to bar ${linkLabel(angleFirst)} should stay fixed (or bar ${linkLabel(angleFirst)} again to cancel).`
-      : constrain
+      : pidPick
+        ? `Now click what the PID controller on motor M${gearLabel(pidPick.gear)} should measure: a joint, bar, rack, gear, wheel or propeller (Esc to leave it without a sensor).`
+        : constrain
         ? constrainHint()
         : tool === 'join' && joinFirst
         ? `Now click the body to join to ${bodyName(design, joinFirst)} (or ${bodyName(design, joinFirst)} again to cancel).`
         : hints[tool];
   renderInspector();
+}
+
+// ---- PID controllers: sensors and the controller's inspector ---------------------------
+const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/** A PID controller waiting for the body its sensor goes on. */
+let pidPick: { gear: number } | null = null;
+const sensorMenu = document.createElement('div');
+sensorMenu.id = 'sensor-menu';
+sensorMenu.className = 'panel';
+sensorMenu.hidden = true;
+document.body.append(sensorMenu);
+
+function startSensorPick(gear: number) {
+  pidPick = { gear };
+  sensorMenu.hidden = true;
+  refreshControls();
+}
+
+function cancelSensorPick() {
+  pidPick = null;
+  sensorMenu.hidden = true;
+  refreshControls();
+}
+
+/** A quantity's value in the drawing (display units): where things were drawn, at rest. */
+function drawnValue(body: DSensor['body'], q: Quantity): number {
+  if (q === 'vx' || q === 'vy' || q === 'omega' || q === 'spin') return 0;
+  const P = (id: number) => design.points.find((p) => p.id === id);
+  if (body.kind === 'point') {
+    const p = P(body.id);
+    return p ? (q === 'x' ? p.x : p.y) : 0;
+  }
+  if (body.kind === 'link') {
+    const l = design.links.find((x) => x.id === body.id);
+    const [a, b] = l ? [P(l.a), P(l.b)] : [undefined, undefined];
+    if (!a || !b) return 0;
+    if (q === 'angle') return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+    return q === 'x' ? (a.x + b.x) / 2 : (a.y + b.y) / 2;
+  }
+  const g = design.gears.find((x) => x.id === body.id);
+  const c = g && P(g.center);
+  if (!g || !c) return 0;
+  if (q === 'angle') return g.propeller ? (g.propeller.angle * 180) / Math.PI : 0;
+  return q === 'x' ? c.x : c.y;
+}
+
+/** The PID controller picking a sensor: the body under w, then a menu of what it can measure there. */
+function pickSensorAt(w: Vec, sp: Vec) {
+  if (!pidPick) return;
+  const pt = pointAt(w);
+  const l = pt === null ? linkAt(w) : null;
+  const g = pt === null && !l ? (propellerAt(w) ?? gearAt(w)) : null;
+  const body: DSensor['body'] | null = pt !== null ? { kind: 'point', id: pt } : l ? { kind: 'link', id: l.id } : g ? { kind: 'gear', id: g.id } : null;
+  if (!body) {
+    flash('Click a joint, bar, rack, gear, wheel or propeller for the sensor (Esc to leave it without one).');
+    return;
+  }
+  const what = body.kind === 'point' ? `joint ${pointLabel(body.id)}` : bodyName(design, body as DBodyRef);
+  const gear = pidPick.gear;
+  sensorMenu.innerHTML = `<div class="sm-title">Measure on ${esc(what)}:</div>${measurable(design, body)
+    .map((q) => `<button data-q="${q}">${esc(quantityName(q, body, design))}<span>${q === 'angle' || q === 'x' || q === 'y' ? fmtQ(drawnValue(body, q), q) : QUANTITY_UNIT[q]}</span></button>`)
+    .join('')}<button class="sm-cancel">Cancel</button>`;
+  sensorMenu.hidden = false;
+  // beside the click, kept on screen
+  const r = sensorMenu.getBoundingClientRect();
+  sensorMenu.style.left = `${Math.min(sp[0] + 12, window.innerWidth - r.width - 8)}px`;
+  sensorMenu.style.top = `${Math.min(sp[1] + 12, window.innerHeight - r.height - 8)}px`;
+  sensorMenu.querySelectorAll<HTMLButtonElement>('[data-q]').forEach((b) => b.addEventListener('click', () => setSensor(gear, body, b.dataset.q as Quantity)));
+  sensorMenu.querySelector('.sm-cancel')!.addEventListener('click', () => (sensorMenu.hidden = true)); // pick another body, or Esc
+}
+
+/**
+ * Put the sensor on: the controller's target starts at the quantity's value as drawn (so it
+ * holds the machine where it is), with gains suited to the quantity and the motor's torque.
+ */
+function setSensor(gear: number, body: DSensor['body'], q: Quantity) {
+  const g = design.gears.find((x) => x.id === gear);
+  const pc = g?.motor?.pid;
+  cancelSensorPick();
+  if (!g || !pc) return;
+  pushUndo();
+  const fresh = !pc.sensor || pc.sensor.quantity !== q;
+  pc.sensor = { body: { ...body }, quantity: q };
+  if (fresh) {
+    pc.offset = +drawnValue(body, q).toFixed(4);
+    Object.assign(pc, defaultGains(q, g.motor!.torque));
+    if (pc.lever) pc.lever.scale = LEVER_TARGET_SCALE[q];
+  }
+  sfx('sensor');
+  selection = { kind: 'pid', id: gear };
+  setTool('select');
+  designChanged();
+}
+
+/** The PID controllers, as the simulator takes them. */
+function controllerSpecs(): ControllerSpec[] {
+  return design.gears.flatMap((g): ControllerSpec[] => {
+    const pc = g.motor?.pid;
+    if (!pc?.sensor) return [];
+    const { body, quantity } = pc.sensor;
+    let sensor: ControllerSpec['sensor'];
+    if (body.kind === 'point') sensor = { quantity, point: body.id };
+    else if (body.kind === 'link') {
+      const l = design.links.find((x) => x.id === body.id);
+      if (!l) return [];
+      sensor = { quantity, a: l.a, b: l.b };
+    } else {
+      const sg = design.gears.find((x) => x.id === body.id);
+      if (!sg) return [];
+      sensor = { quantity, gear: sg.id, center: sg.center, angle0: sg.propeller?.angle ?? 0 };
+    }
+    return [{ motor: g.id, sensor, kp: pc.kp, ki: pc.ki, kd: pc.kd, max: Math.abs(g.motor!.torque), target: pidTarget(pc) }];
+  });
+}
+
+/** The controller's live line in the inspector: what it measures, aims at and puts out. */
+function pidLiveText(g: DGear): string {
+  const pc = g.motor!.pid!;
+  const q = pc.sensor?.quantity;
+  if (!pc.sensor) return 'no sensor yet';
+  const c = sim?.controllers.find((x) => x.motor === g.id);
+  if (!c) return `${fmtQ(drawnValue(pc.sensor.body, pc.sensor.quantity), q)} as drawn; target ${fmtQ(pidTarget(pc), q)}`;
+  if (c.sign === 0) return 'its motor cannot move this quantity';
+  return `${fmtQ(c.y, q)} → ${fmtQ(c.target, q)} (error ${fmtQ(c.e, q)}); torque ${c.u.toFixed(3)} N·m${Math.abs(c.u) >= Math.abs(c.max) - 1e-9 ? ' (at its limit)' : ''}`;
+}
+
+/** The inspector for a PID controller: its sensor, target, gains and limit, and what it is doing. */
+function inspectorPid(g: DGear, pc: DPid, disabled: string) {
+  const lab = gearLabel(g.id);
+  const q = pc.sensor?.quantity;
+  const unit = QUANTITY_UNIT[q ?? 'angle'];
+  const num = (id: string, label: string, value: number, title: string, dis = '') =>
+    `<label class="field" title="${title}"><span>${label}</span><input id="${id}" type="number" step="any" value="${+value.toPrecision(5)}" ${dis}></label>`;
+  inspectorEl.innerHTML = `
+    <h4><span style="color:${pc.color}">●</span> PID controller <span class="muted">(motor M${lab} on ${gearName(design, g.id)})</span></h4>
+    <div class="field"><span>Sensor</span><span>${
+      pc.sensor ? `${esc(quantityName(pc.sensor.quantity, pc.sensor.body, design))} of ${pc.sensor.body.kind === 'point' ? `joint ${pointLabel(pc.sensor.body.id)}` : esc(bodyName(design, pc.sensor.body as DBodyRef))}` : '<span class="muted">none</span>'
+    } <button id="i-psensor" ${disabled}>${pc.sensor ? 'Change…' : 'Choose…'}</button></span></div>
+    ${num('i-poff', `Target offset (${unit})`, pc.offset, 'The target with the lever centred, or without a lever')}
+    ${
+      pc.lever
+        ? `<div class="field"><span>Target lever</span><span><button id="i-golever" style="color:${pc.lever.color}">lever L${lab}</button> ±${pc.lever.scale} ${unit}</span></div>`
+        : `<div class="field"><span></span><span><button id="i-paddlever" ${disabled}>Add a lever for the target</button></span></div>`
+    }
+    ${num('i-kp', `K<sub>p</sub> (N·m per ${unit})`, pc.kp, 'Proportional gain')}
+    ${num('i-ki', `K<sub>i</sub> (N·m per ${unit}·s)`, pc.ki, 'Integral gain: removes the steady error a constant load leaves')}
+    ${num('i-kd', `K<sub>d</sub> (N·m·s per ${unit})`, pc.kd, 'Derivative gain: damps, acting on the rate of the measurement')}
+    ${num('i-pmax', 'Max torque (N·m)', Math.abs(g.motor!.torque), "The motor's torque limit; the output stays within ±this")}
+    <label class="field">Colour<input id="i-pcolor" type="color" value="${pc.color}"></label>
+    <div class="field"><span>Now</span><span id="i-plive">${pidLiveText(g)}</span></div>
+    <div class="field"><span></span><span><button id="i-premove" ${disabled}>Remove controller</button></span></div>
+    <p class="muted">Torque u = s (K<sub>p</sub> e + K<sub>i</sub> ∫e dt − K<sub>d</sub> dy/dt), e = target − y, kept within ±max torque; the integral pauses while the output is at its limit, and the derivative acts on the measurement, so moving the target gives no kick. s = ±1 is the way the motor moves the quantity, found when it starts. Gains, target and limit can be changed while it runs.</p>`;
+  const bindNum = (sel: string, apply: (v: number) => void, live?: () => void) =>
+    inspectorEl.querySelector<HTMLInputElement>(sel)!.addEventListener('change', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (!Number.isFinite(v)) return;
+      pushUndo();
+      apply(v);
+      designChanged({ keepInspector: true });
+      live?.();
+      renderLevers();
+    });
+  const tune = () => sim?.tuneController(g.id, { kp: pc.kp, ki: pc.ki, kd: pc.kd, target: pidTarget(pc) });
+  bindNum('#i-poff', (v) => (pc.offset = v), tune);
+  bindNum('#i-kp', (v) => (pc.kp = v), tune);
+  bindNum('#i-ki', (v) => (pc.ki = v), tune);
+  bindNum('#i-kd', (v) => (pc.kd = v), tune);
+  bindNum(
+    '#i-pmax',
+    (v) => (g.motor!.torque = Math.max(1e-3, Math.abs(v))),
+    () => sim && rebuildSim(), // b = max / Ω changes as well
+  );
+  inspectorEl.querySelector<HTMLInputElement>('#i-pcolor')!.addEventListener('input', (e) => {
+    pc.color = (e.target as HTMLInputElement).value;
+    inspectorEl.querySelector<HTMLElement>('h4 span')!.style.color = pc.color;
+    saveSoon();
+  });
+  inspectorEl.querySelector('#i-psensor')!.addEventListener('click', () => startSensorPick(g.id));
+  inspectorEl.querySelector('#i-golever')?.addEventListener('click', () => {
+    selection = { kind: 'lever', id: g.id };
+    renderInspector();
+  });
+  inspectorEl.querySelector('#i-paddlever')?.addEventListener('click', () => {
+    pushUndo();
+    pc.lever = { color: nextLeverColor(design), scale: LEVER_TARGET_SCALE[q ?? 'angle'], position: 0 };
+    sfx('lever');
+    designChanged();
+  });
+  inspectorEl.querySelector('#i-premove')!.addEventListener('click', () => deleteSelection({ kind: 'pid', id: g.id }));
 }
 
 // ---- inspector ------------------------------------------------------------------
@@ -1867,15 +2149,28 @@ const leverScroll = $<HTMLDivElement>('#levers .lever-scroll');
 let leverDrag: { id: number; pointer: number } | null = null;
 let saveTimer = 0;
 
-const leverGears = () => design.gears.filter((g) => g.motor?.lever && design.points.some((p) => p.id === g.center)).sort((a, b) => a.id - b.id);
+const leverGears = () => design.gears.filter((g) => leverOf(g.motor) && design.points.some((p) => p.id === g.center)).sort((a, b) => a.id - b.id);
+/** What a lever is giving now: its motor's torque, or its PID controller's target. */
 const leverTorqueText = (g: DGear) => {
+  const pc = g.motor!.pid;
+  if (pc?.lever) return `→ ${fmtQ(pidTarget(pc), pc.sensor?.quantity)}`;
   const t = motorTorque(g.motor!);
   return `${t > 0 ? '+' : ''}${t.toFixed(2)} N·m`;
 };
 const leverSettingText = (g: DGear) => {
-  const p = Math.round(g.motor!.lever!.position * 100);
-  return `${p > 0 ? '+' : ''}${p}% of ${g.motor!.lever!.scale} N·m = ${leverTorqueText(g)}`;
+  const { lever, owner } = leverOf(g.motor)!;
+  const p = Math.round(lever.position * 100);
+  if (owner === 'motor') return `${p > 0 ? '+' : ''}${p}% of ${lever.scale} N·m = ${leverTorqueText(g)}`;
+  const pc = g.motor!.pid!;
+  const q = pc.sensor?.quantity;
+  return `offset ${fmtQ(pc.offset, q)} ${p >= 0 ? '+' : '−'} ${Math.abs(p)}% of ${lever.scale} ${QUANTITY_UNIT[q ?? 'angle']}: target ${fmtQ(pidTarget(pc), q)}`;
 };
+/** A quantity's value with its unit. */
+function fmtQ(v: number, q: Quantity | undefined): string {
+  const unit = QUANTITY_UNIT[q ?? 'angle'];
+  const digits = unit === 'm' || unit === 'm/s' ? 3 : unit === 'rpm' ? 0 : 1;
+  return `${v.toFixed(digits)}${unit === '°' ? '°' : ` ${unit}`}`;
+}
 
 /** Save the design shortly, once a stream of changes (a lever being dragged) pauses. */
 function saveSoon() {
@@ -1890,17 +2185,21 @@ function saveSoon() {
  */
 function setLeverPosition(g: DGear, p: number) {
   const m = g.motor;
-  if (!m?.lever) return;
-  const before = Math.round(m.lever.position * 20);
-  m.lever.position = Math.abs(p) < 0.04 ? 0 : Math.max(-1, Math.min(1, +p.toFixed(3)));
-  if (Math.round(m.lever.position * 20) !== before) sfx('tick'); // a ratchet click every 5 %
-  const tau = motorTorque(m);
-  sim?.setMotorTorque(g.id, tau);
-  const prm = derivation?.params.find((x) => x.sym === `tau${g.id}`);
-  if (prm) prm.value = tau;
+  const lv = leverOf(m);
+  if (!m || !lv) return;
+  const before = Math.round(lv.lever.position * 20);
+  lv.lever.position = Math.abs(p) < 0.04 ? 0 : Math.max(-1, Math.min(1, +p.toFixed(3)));
+  if (Math.round(lv.lever.position * 20) !== before) sfx('tick'); // a ratchet click every 5 %
+  if (lv.owner === 'pid') sim?.tuneController(g.id, { target: pidTarget(m.pid!) }); // a new target for the controller
+  else {
+    const tau = motorTorque(m);
+    sim?.setMotorTorque(g.id, tau);
+    const prm = derivation?.params.find((x) => x.sym === `tau${g.id}`);
+    if (prm) prm.value = tau;
+  }
   const card = leverScroll.querySelector<HTMLElement>(`[data-lever="${g.id}"]`);
   if (card) {
-    card.style.setProperty('--p', String(m.lever.position));
+    card.style.setProperty('--p', String(lv.lever.position));
     card.querySelector('.lever-value')!.textContent = leverTorqueText(g);
   }
   const shown = inspectorEl.querySelector('#i-lpos');
@@ -1928,11 +2227,12 @@ function renderLevers() {
   leverDock.hidden = !gs.length;
   leverScroll.innerHTML = gs
     .map((g) => {
-      const lv = g.motor!.lever!;
+      const { lever: lv, owner } = leverOf(g.motor)!;
       const lab = gearLabel(g.id);
+      const unit = owner === 'pid' ? QUANTITY_UNIT[g.motor!.pid!.sensor?.quantity ?? 'angle'] : 'N·m';
       return `<div class="lever" data-lever="${g.id}" style="--c:${lv.color};--p:${lv.position}">
-        <button class="lever-name" title="Lever L${lab} on motor M${lab}: click for its settings">L${lab}</button>
-        <div class="lever-track" title="Drag up for forward (anticlockwise), down for reverse; double-click to centre. Full throw: ±${lv.scale} N·m">
+        <button class="lever-name" title="Lever L${lab} on ${owner === 'pid' ? 'the PID controller of motor' : 'motor'} M${lab}: click for its settings">L${lab}${owner === 'pid' ? '<small> PID</small>' : ''}</button>
+        <div class="lever-track" title="${owner === 'pid' ? `Drag to set the controller's target: ±${lv.scale} ${unit} about its offset; double-click to centre` : `Drag up for forward (anticlockwise), down for reverse; double-click to centre. Full throw: ±${lv.scale} N·m`}">
           <div class="lever-zero"></div><div class="lever-handle"></div>
         </div>
         <div class="lever-value">${leverTorqueText(g)}</div>
@@ -2032,7 +2332,9 @@ function inspectorPropeller(g: DGear, disabled: string) {
     ${
       m
         ? `${
-            m.lever
+            m.pid
+              ? `<div class="field"><span>Torque</span><span>set by its <button id="i-gopid" style="color:${m.pid.color}">PID controller</button></span></div><label class="field">Max torque (N·m)<input id="i-torque" type="number" step="0.1" value="${Math.abs(m.torque)}"></label>`
+              : m.lever
               ? `<div class="field"><span>Torque</span><span>set by <button id="i-golever" style="color:${m.lever.color}">lever L${lab}</button>: ${motorTorque(m).toFixed(2)} N·m</span></div>`
               : `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${m.torque}"></label>`
           }
@@ -2101,6 +2403,10 @@ function inspectorPropeller(g: DGear, disabled: string) {
     selection = { kind: 'lever', id: g.id };
     renderInspector();
   });
+  inspectorEl.querySelector('#i-gopid')?.addEventListener('click', () => {
+    selection = { kind: 'pid', id: g.id };
+    renderInspector();
+  });
 }
 
 /** A propeller's spin rate φ̇ now (rad/s), or null if it cannot spin. */
@@ -2113,6 +2419,21 @@ function simSpinRate(id: number): number | null {
 function inspectorLever(g: DGear, lever: NonNullable<NonNullable<DGear['motor']>['lever']>, disabled: string) {
   const lab = gearLabel(g.id);
   const m = g.motor!;
+  if (m.pid?.lever === lever) {
+    // a lever setting a PID controller's target
+    const q = m.pid.sensor?.quantity ?? 'angle';
+    inspectorEl.innerHTML = `
+    <h4><span style="color:${lever.color}">●</span> Lever L${lab} <span class="muted">(target of the PID controller on motor M${lab})</span></h4>
+    <label class="field">Colour<input id="i-lcolor" type="color" value="${lever.color}"></label>
+    <label class="field"><span>Scale (${QUANTITY_UNIT[q]})</span><input id="i-lscale" type="number" min="0" step="any" value="${lever.scale}" title="How far full throw moves the target from its offset"></label>
+    <div class="field"><span>Setting</span><span id="i-lpos">${leverSettingText(g)}</span></div>
+    <div class="field"><span></span><span><button id="i-lzero">Centre it</button> <button id="i-gopid">Controller…</button> <button id="i-lremove" ${disabled}>Remove lever</button></span></div>
+    <p class="muted">Drag its control at the bottom right to move the controller's target: the offset (set on the controller) plus the lever's position × scale. It works while it runs.</p>`;
+    inspectorEl.querySelector('#i-gopid')!.addEventListener('click', () => {
+      selection = { kind: 'pid', id: g.id };
+      renderInspector();
+    });
+  } else
   inspectorEl.innerHTML = `
     <h4><span style="color:${lever.color}">●</span> Lever L${lab} <span class="muted">(motor M${lab} on ${gearName(design, g.id)})</span></h4>
     <label class="field">Colour<input id="i-lcolor" type="color" value="${lever.color}"></label>
@@ -2136,8 +2457,10 @@ function inspectorLever(g: DGear, lever: NonNullable<NonNullable<DGear['motor']>
     pushUndo();
     lever.scale = v;
     designChanged({ keepInspector: true });
-    if (sim) rebuildSim(); // b = scale / Ω changes as well
+    if (m.pid?.lever === lever) sim?.tuneController(g.id, { target: pidTarget(m.pid) });
+    else if (sim) rebuildSim(); // b = scale / Ω changes as well
     inspectorEl.querySelector('#i-lpos')!.textContent = leverSettingText(g);
+    renderLevers();
   });
   inspectorEl.querySelector('#i-lzero')!.addEventListener('click', () => {
     if (!sim) pushUndo();
@@ -2151,9 +2474,17 @@ function renderInspector() {
   renderLevers();
   if (selection?.kind === 'lever') {
     const g = design.gears.find((x) => x.id === selection!.id);
-    const lever = g?.motor?.lever;
+    const lever = leverOf(g?.motor)?.lever;
     if (g && lever) {
       inspectorLever(g, lever, disabled);
+      return;
+    }
+    selection = null;
+  }
+  if (selection?.kind === 'pid') {
+    const g = design.gears.find((x) => x.id === selection!.id);
+    if (g?.motor?.pid) {
+      inspectorPid(g, g.motor.pid, disabled);
       return;
     }
     selection = null;
@@ -2420,7 +2751,9 @@ function renderInspector() {
         ${
           g.motor
             ? `${
-                g.motor.lever
+                g.motor.pid
+                  ? `<div class="field"><span>Torque</span><span>set by its <button id="i-gopid" style="color:${g.motor.pid.color}">PID controller</button></span></div><label class="field">Max torque (N·m)<input id="i-torque" type="number" step="0.1" value="${Math.abs(g.motor.torque)}"></label>`
+                  : g.motor.lever
                   ? `<div class="field"><span>Torque</span><span>set by <button id="i-golever" style="color:${g.motor.lever.color}">lever L${gearLabel(g.id)}</button>: ${motorTorque(g.motor).toFixed(2)} N·m</span></div>`
                   : `<label class="field">Torque (N·m)<input id="i-torque" type="number" step="0.1" value="${g.motor.torque}"></label>`
               }
@@ -2496,6 +2829,10 @@ function renderInspector() {
       if (g.motor) bindJoinControls({ kind: 'motor', id: g.id }, 'm');
       inspectorEl.querySelector('#i-golever')?.addEventListener('click', () => {
         selection = { kind: 'lever', id: g.id };
+        renderInspector();
+      });
+      inspectorEl.querySelector('#i-gopid')?.addEventListener('click', () => {
+        selection = { kind: 'pid', id: g.id };
         renderInspector();
       });
       inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unmesh]').forEach((b) =>
@@ -2652,6 +2989,11 @@ function frame(now: number) {
     if (settings.follow) followMechanism();
   }
   sound.update(sim && running ? machineState(sim) : null);
+  if (selection?.kind === 'pid' && sim) {
+    const live = inspectorEl.querySelector('#i-plive');
+    const g = design.gears.find((x) => x.id === selection!.id);
+    if (live && g?.motor?.pid) live.textContent = pidLiveText(g);
+  }
 
   let grabScene = null;
   grabPull = [0, 0];

@@ -33,6 +33,8 @@ export type Cue =
   | 'motorOn'
   | 'motorOff'
   | 'lever'
+  | 'pid'
+  | 'sensor'
   | 'tick'
   | 'lock'
   | 'unlock'
@@ -286,6 +288,15 @@ export class SoundEngine {
       case 'lever':
         for (let k = 0; k < 3; k++) this.burst(t + k * 0.04, 0.012, 0.14, 'highpass', 3200);
         this.tone(t + 0.12, 660, 0.08, 0.08, 'triangle');
+        break;
+      case 'pid': // a controller booting: digital beeps
+        this.tone(t, 880, 0.05, 0.08, 'square');
+        this.tone(t + 0.07, 1320, 0.05, 0.07, 'square');
+        this.tone(t + 0.14, 1760, 0.08, 0.06, 'square');
+        break;
+      case 'sensor': // a sensor coming on: a bright blip
+        this.tone(t, 1500, 0.08, 0.1, 'sine', 2600);
+        this.tone(t + 0.09, 2600, 0.12, 0.06);
         break;
       case 'tick':
         this.burst(t, 0.008, 0.09, 'highpass', 3500);

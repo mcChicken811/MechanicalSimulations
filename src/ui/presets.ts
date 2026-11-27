@@ -612,6 +612,29 @@ export function twinRotor(): Design {
   };
 }
 
+/**
+ * A robot-arm joint: a motor on a fixed axle turns a two-part arm (joined to its gear), and a PID
+ * controller measuring the upper arm's angle holds it at the target its lever sets, against
+ * gravity and the swinging forearm.
+ */
+export function pidArm(): Design {
+  return {
+    points: [pt(0, 0, 0, 'fixed'), pt(1, 0.8, 0), pt(2, 1.4, 0, 'free', 0.3)],
+    links: barsM([[0, 1, 0.6], [1, 2, 0.2]]), // upper arm, and a forearm hanging free at the elbow with a load
+    springs: [],
+    gears: [{ ...gear(0, 0, 0.12, 0.3), motor: { torque: 8, noLoadRpm: 60, mass: 0.5, mounted: true, pid: { kp: 0.4, ki: 0.3, kd: 0.06, offset: 0, sensor: { body: { kind: 'link', id: 0 }, quantity: 'angle' }, color: '#7b5ce0', lever: { color: '#e04f5f', scale: 90, position: 0.5 } } } }],
+    meshes: [], rackMeshes: [],
+    joins: [{ id: 0, a: { kind: 'gear', id: 0 }, b: { kind: 'link', id: 0 } }],
+  };
+}
+
+/** The motor car with cruise control: a PID controller on its motor holds the chassis's speed over the hills. */
+export function cruiseCar(): Design {
+  const d = motorCar();
+  d.gears[0].motor = { torque: 3, noLoadRpm: 150, mass: 0.3, mounted: false, pid: { kp: 3, ki: 6, kd: 0, offset: 0, sensor: { body: { kind: 'link', id: 0 }, quantity: 'vx' }, color: '#2f9e8f', lever: { color: '#f2a93b', scale: 1.5, position: 0.6 } } };
+  return d;
+}
+
 /** A rigid square frame (braced by a diagonal) dropped corner-first onto the floor. */
 function tumblingBox(): Design {
   const s = 0.4;
@@ -1014,6 +1037,8 @@ export const presets: Preset[] = [
   },
   { name: 'Motor car on wheels over hills', group: 'Basics', build: () => motorCar(), follow: true },
   { name: 'Twin-rotor drone with a lever per motor', group: 'Basics', build: () => twinRotor(), follow: true },
+  { name: 'Robot-arm joint held by a PID controller', group: 'Basics', build: () => pidArm() },
+  { name: 'Motor car with cruise control (PID on its speed)', group: 'Basics', build: () => cruiseCar(), follow: true },
   {
     name: 'Pendulum on a vertical rail',
     group: 'Basics',

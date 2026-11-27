@@ -11,6 +11,18 @@ const dof = (d: Design) => {
 };
 
 describe('copy and paste', () => {
+  it("a pasted PID controller measures the pasted copy, or loses its sensor if that was left behind", () => {
+    const d = build('Robot-arm joint');
+    const pasted = pasteParts(d, extractParts(d, allParts(d)), 3, 0);
+    const copy = d.gears.find((g) => pasted.gears.has(g.id))!;
+    const sensor = copy.motor!.pid!.sensor!;
+    expect(pasted.links.has(sensor.body.id)).toBe(true);
+    expect(copy.motor!.pid!.color).not.toBe(d.gears[0].motor!.pid!.color);
+    // the gear and motor alone: the arm it measured stays behind
+    const alone = pasteParts(d, extractParts(d, { ...emptyParts(), gears: new Set([0]) }), 0, 3);
+    expect(d.gears.find((g) => alone.gears.has(g.id))!.motor!.pid!.sensor).toBeNull();
+  });
+
   it('a pasted slider keeps its end stops', () => {
     const d: Design = { points: [{ id: 0, x: 0, y: 0, kind: 'free', mass: 1, slide: { on: null, angle: 90, range: { min: -0.1, max: 0.2, restitution: 0.3 } } }], links: [], springs: [], gears: [], meshes: [], rackMeshes: [] };
     pasteParts(d, extractParts(d, allParts(d)), 1, 0);

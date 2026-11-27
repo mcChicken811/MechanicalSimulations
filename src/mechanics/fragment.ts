@@ -72,7 +72,15 @@ export function extractParts(d: Design, chosen: PartSet): Design {
       }),
     links: d.links.filter((l) => s.links.has(l.id)).map((l) => ({ ...l })),
     springs: d.springs.filter((sp) => s.springs.has(sp.id)).map((sp) => ({ ...sp })),
-    gears: d.gears.filter((g) => s.gears.has(g.id)).map(cloneGear),
+    gears: d.gears
+      .filter((g) => s.gears.has(g.id))
+      .map((g) => {
+        const c = cloneGear(g);
+        // a PID controller's sensor on a part left behind goes too
+        const sn = c.motor?.pid?.sensor;
+        if (sn && !(sn.body.kind === 'point' ? s.points.has(sn.body.id) : sn.body.kind === 'link' ? s.links.has(sn.body.id) : s.gears.has(sn.body.id))) c.motor!.pid!.sensor = null;
+        return c;
+      }),
     meshes: d.meshes.filter((m) => s.gears.has(m.a) && s.gears.has(m.b)).map((m) => ({ ...m })),
     rackMeshes: d.rackMeshes.filter((m) => s.gears.has(m.gear) && s.links.has(m.rack)).map((m) => ({ ...m })),
     angles: (d.angles ?? []).filter((a) => s.links.has(a.a) && s.links.has(a.b)).map((a) => ({ ...a })),
@@ -119,6 +127,17 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   for (const g of f.gears) {
     const c = { ...cloneGear(g), id: G.get(g.id)!, center: P.get(g.center)! };
     if (c.motor?.lever) c.motor.lever.color = nextLeverColor(d); // its own colour, to tell the controls apart
+    const pc = c.motor?.pid;
+    if (pc) {
+      pc.color = nextLeverColor(d);
+      if (pc.lever) pc.lever.color = nextLeverColor({ ...d, gears: [...d.gears, c] });
+      if (pc.sensor) {
+        const { kind, id } = pc.sensor.body;
+        const to = (kind === 'point' ? P : kind === 'link' ? L : G).get(id);
+        if (to === undefined) pc.sensor = null;
+        else pc.sensor.body.id = to; // measures the pasted copy
+      }
+    }
     d.gears.push(c);
   }
   for (const m of f.meshes) d.meshes.push({ id: M.get(m.id)!, a: G.get(m.a)!, b: G.get(m.b)! });

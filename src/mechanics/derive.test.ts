@@ -1432,6 +1432,69 @@ describe('propellers', () => {
   }, 20000);
 });
 
+describe('PID controllers', () => {
+  // an arm on a motor-driven gear, the gear joined to the arm
+  const arm = (mounted = true): Design => ({
+    points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }, { id: 1, x: 1, y: 0, kind: 'free', mass: 0 }],
+    links: [{ id: 0, a: 0, b: 1, mass: 0.5 }], springs: [], meshes: [], rackMeshes: [],
+    gears: [{ id: 0, center: 0, radius: 0.1, teeth: 10, mass: 0.2, locked: false, motor: { torque: 4, noLoadRpm: 0, mounted, pid: { kp: 0.2, ki: 0.1, kd: 0.02, offset: 45, sensor: { body: { kind: 'link', id: 0 }, quantity: 'angle' }, color: '#e04f5f' } } }],
+    joins: [{ id: 0, a: { kind: 'gear', id: 0 }, b: { kind: 'link', id: 0 } }],
+  });
+  const armController = (target: number, max = 4) => ({ motor: 0, sensor: { quantity: 'angle' as const, a: 0, b: 1 }, kp: 0.2, ki: 0.1, kd: 0.02, max, target });
+
+  it('holds an arm at its target angle against gravity, the integral taking up the load', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(arm(), { gravity: G })));
+    s.setControllers([armController(45)]);
+    expect(s.controllers[0].sign).toBe(1); // a positive torque raises the arm's angle
+    for (let i = 0; i < 10000; i++) expect(s.step(1e-3)).toBe(true);
+    const c = s.controllers[0];
+    expect(c.y).toBeCloseTo(45, 1);
+    // holding it level-ish takes m g (L/2) cos 45° (+ the gear's share): the integral supplies it
+    expect(c.u).toBeCloseTo(0.5 * G * 0.5 * Math.cos(Math.PI / 4), 2);
+  }, 20000);
+
+  it('follows a new target set while it runs, without a derivative kick', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(arm(), { gravity: G })));
+    s.setControllers([armController(0)]);
+    for (let i = 0; i < 5000; i++) s.step(1e-3);
+    s.tuneController(0, { target: -30 });
+    s.step(1e-3);
+    expect(Math.abs(s.controllers[0].u)).toBeLessThanOrEqual(4);
+    for (let i = 0; i < 8000; i++) s.step(1e-3);
+    expect(s.controllers[0].y).toBeCloseTo(-30, 1);
+  }, 20000);
+
+  it('saturates at the motor torque, and the integral does not wind up', () => {
+    const s = new Simulator(new NumericSystem(deriveEquations(arm(), { gravity: G })));
+    s.setControllers([armController(45, 0.5)]); // too weak to lift the arm to 45°
+    for (let i = 0; i < 4000; i++) s.step(1e-3);
+    expect(s.controllers[0].u).toBeCloseTo(0.5, 6);
+    expect(s.controllers[0].integral).toBeLessThan(0.5);
+  }, 20000);
+
+  it('finds the sign when a positive torque lowers the quantity', () => {
+    // measure the arm tip's height with the arm pointing left: a positive (anticlockwise) torque lowers it
+    const d = arm();
+    d.points[1].x = -1;
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.setControllers([{ motor: 0, sensor: { quantity: 'y', point: 1 }, kp: 20, ki: 10, kd: 2, max: 4, target: 0.3 }]);
+    expect(s.controllers[0].sign).toBe(-1);
+    for (let i = 0; i < 10000; i++) s.step(1e-3);
+    expect(s.jointPosition(1)![1]).toBeCloseTo(0.3, 2);
+  }, 20000);
+
+  it('controls a propeller\'s spin rate in rpm', () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }], links: [], springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 0, radius: 0.15, teeth: 2, mass: 0.05, locked: false, propeller: { angle: 0, blades: 2 }, motor: { torque: 0.3, noLoadRpm: 8000, mass: 0.05, mounted: true } }],
+    };
+    const s = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    s.setControllers([{ motor: 0, sensor: { quantity: 'spin', gear: 0 }, kp: 0.0006, ki: 0.0015, kd: 0, max: 0.3, target: 3000 }]);
+    for (let i = 0; i < 8000; i++) expect(s.step(1e-3)).toBe(true);
+    expect((s.qd[0] * 60) / (2 * Math.PI)).toBeCloseTo(3000, -1);
+  }, 20000);
+});
+
 describe('motor levers', () => {
   const levered = (lever: { scale: number; position: number }, noLoadRpm: number): Design => ({
     points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }],

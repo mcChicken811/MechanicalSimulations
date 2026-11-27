@@ -1,4 +1,4 @@
-import { gearLabel, GEAR_MODULE, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, sharedJoint, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import { gearLabel, GEAR_MODULE, leverOf, type DPid, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, sharedJoint, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
 import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
 
@@ -13,7 +13,7 @@ export type Vec = [number, number];
 export const toScreen = (v: View, [x, y]: Vec): Vec => [v.ox + x * v.scale, v.oy - y * v.scale];
 export const toWorld = (v: View, [sx, sy]: Vec): Vec => [(sx - v.ox) / v.scale, (v.oy - sy) / v.scale];
 
-export type Selection = { kind: 'point'; id: number } | { kind: 'link'; id: number } | { kind: 'spring'; id: number } | { kind: 'gear'; id: number } | { kind: 'lever'; id: number }; // a lever's id is its motor's gear
+export type Selection = { kind: 'point'; id: number } | { kind: 'link'; id: number } | { kind: 'spring'; id: number } | { kind: 'gear'; id: number } | { kind: 'lever'; id: number } | { kind: 'pid'; id: number }; // a lever's and a PID controller's id is its motor's gear
 
 export interface Scene {
   design: Design;
@@ -52,7 +52,7 @@ export interface Scene {
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
 }
 
-const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears' } as const;
+const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears', pid: 'gears' } as const;
 /** Whether a part is the selection or one of the parts chosen together. */
 function isSelected(s: Scene, kind: Selection['kind'], id: number): boolean {
   return (s.selection?.kind === kind && s.selection.id === id) || !!s.multi?.[partsKey[kind]].has(id);
@@ -179,6 +179,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.trail) drawTrail(ctx, v, s.trail);
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
+  for (const g of s.design.gears) if (g.motor?.pid?.sensor) drawSensor(ctx, v, s, g); // on top: its light shows
   if (s.grab) drawGrab(ctx, v, s.grab);
   if (s.railPreview) drawRailPreview(ctx, w, h, v, s.railPreview);
   if (s.box) drawBox(ctx, v, s.box);
@@ -802,7 +803,8 @@ function drawHousing(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design
   ctx.textBaseline = 'middle';
   ctx.fillText('M', r * 2.15, 0.5); // out beyond the gear's rim
   ctx.restore();
-  if (g.motor?.lever) drawLever(ctx, v, s, g);
+  if (g.motor?.pid) drawPid(ctx, v, s, g);
+  if (leverOf(g.motor)) drawLever(ctx, v, s, g);
   if (g.motor?.mounted !== false && !joined) {
     // mounted on the ground: a short hatched base under the far end
     const end = toScreen(v, [s.pos(g.center)[0] + 2 * motorHousingRadius(g), s.pos(g.center)[1] - motorHousingRadius(g)]);
@@ -821,6 +823,15 @@ function drawHousing(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design
  * (forward leans away from the axle), and turns with the housing.
  */
 export function leverGeometry(v: View, centre: Vec, turn: number, g: Design['gears'][number]): { base: Vec; knob: Vec; radius: number } {
+  if (g.motor?.pid?.lever) {
+    // on the PID controller's outer side, sticking out sideways and leaning up for a higher target
+    const P = pidGeometry(v, centre, turn, g);
+    const t = g.motor.pid.lever.position * 0.6;
+    const local: [Vec, Vec] = [[P.side * P.w * 0.5, 0], [P.side * (P.w * 0.5 + 20 * Math.cos(t)), -20 * Math.sin(t)]];
+    const [cs, sn] = [Math.cos(P.rot), Math.sin(P.rot)];
+    const [base, knob] = local.map(([x, y]): Vec => [P.c[0] + x * cs - y * sn, P.c[1] + x * sn + y * cs]);
+    return { base, knob, radius: 6 };
+  }
   if (g.propeller) {
     // on the side of the propeller's motor, leaning towards the blades for forward
     const th = g.propeller.angle + turn;
@@ -843,9 +854,131 @@ export function leverGeometry(v: View, centre: Vec, turn: number, g: Design['gea
   return { base, knob, radius: Math.min(Math.max(r * 0.28, 6), 14) };
 }
 
+/**
+ * Where a motor's PID controller is drawn (screen): a small box under the far end of a gear's
+ * motor housing (beside a propeller's motor), its centre, size, turn (screen radians) and the
+ * side its lever sticks out of.
+ */
+export function pidGeometry(v: View, centre: Vec, turn: number, g: Design['gears'][number]): { c: Vec; w: number; h: number; rot: number; side: 1 | -1 } {
+  const [w, h] = [30, 15];
+  if (g.propeller) {
+    const th = g.propeller.angle + turn;
+    const [e, n] = [[Math.cos(th), Math.sin(th)], [-Math.sin(th), Math.cos(th)]];
+    const R = g.radius;
+    const at = toScreen(v, [centre[0] - 0.13 * R * e[0] - 0.32 * R * n[0], centre[1] - 0.13 * R * e[1] - 0.32 * R * n[1]]);
+    const [ex, ey] = [e[0], -e[1]]; // e on screen
+    return { c: [at[0] - (w / 2 + 3) * ex, at[1] - (w / 2 + 3) * ey], w, h, rot: Math.atan2(ey, ex), side: -1 };
+  }
+  const c = toScreen(v, centre);
+  const r = Math.max(motorHousingRadius(g) * v.scale, 9);
+  const [x, y] = [r * 2.15, r * 0.9 + h / 2 + 3];
+  const [cs, sn] = [Math.cos(-turn), Math.sin(-turn)];
+  return { c: [c[0] + x * cs - y * sn, c[1] + x * sn + y * cs], w, h, rot: -turn, side: 1 };
+}
+
+/** The motor's turn the PID box and its lever ride on: the housing's, or a propeller's hub. */
+const motorTurn = (s: Scene, g: Design['gears'][number]) => (g.propeller ? s.gearAngle(g.id) : (s.motorAngle?.(g.id) ?? 0));
+
+/** A PID controller: a dark box with its name and a light in its colour. */
+function drawPid(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number]) {
+  const pid = g.motor!.pid!;
+  const P = pidGeometry(v, s.pos(g.center), motorTurn(s, g), g);
+  const selected = isSelected(s, 'pid', g.id);
+  const hovered = s.hover?.kind === 'pid' && s.hover.id === g.id;
+  ctx.save();
+  ctx.translate(P.c[0], P.c[1]);
+  ctx.rotate(P.rot);
+  if (selected || hovered) {
+    ctx.fillStyle = C.accent;
+    ctx.globalAlpha = selected ? 0.4 : 0.25;
+    ctx.beginPath();
+    ctx.roundRect(-P.w / 2 - 5, -P.h / 2 - 5, P.w + 10, P.h + 10, 7);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = '#26282d';
+  ctx.strokeStyle = pid.color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-P.w / 2, -P.h / 2, P.w, P.h, 4);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = '700 8.5px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('PID', 3, 0.5);
+  ctx.fillStyle = pid.sensor ? pid.color : '#777';
+  ctx.beginPath();
+  ctx.arc(-P.w / 2 + 5, 0, 2.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Where a sensor sits (world): on its joint, at its bar's middle, or at its gear's centre. */
+function sensorAt(s: Scene, sensor: NonNullable<DPid['sensor']>): Vec | null {
+  const { kind, id } = sensor.body;
+  const has = (pid: number) => s.design.points.some((p) => p.id === pid);
+  if (kind === 'point') return has(id) ? s.pos(id) : null;
+  if (kind === 'link') {
+    const l = s.design.links.find((x) => x.id === id);
+    if (!l || !has(l.a) || !has(l.b)) return null;
+    const [a, b] = [s.pos(l.a), s.pos(l.b)];
+    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  }
+  const g = s.design.gears.find((x) => x.id === id);
+  return g && has(g.center) ? s.pos(g.center) : null;
+}
+
+const QUANTITY_MARK: Record<string, string> = { x: 'x', y: 'y', angle: 'θ', vx: 'ẋ', vy: 'ẏ', omega: 'θ̇', spin: 'rpm' };
+
+/** A sensor: a little box with a flashing light in its controller's colour, wired to the controller. */
+function drawSensor(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number]) {
+  const pid = g.motor!.pid!;
+  const at = sensorAt(s, pid.sensor!);
+  if (!at) return;
+  const sc = toScreen(v, at);
+  const p: Vec = [sc[0] + 11, sc[1] - 11]; // beside the joint or centre, not on it
+  const P = pidGeometry(v, s.pos(g.center), motorTurn(s, g), g);
+  ctx.save();
+  ctx.strokeStyle = pid.color;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([4, 4]);
+  line(ctx, p, P.c);
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#26282d';
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(p[0] - 7, p[1] - 7, 14, 14, 3);
+  ctx.fill();
+  ctx.stroke();
+  // the light flashes twice a second
+  const on = (performance.now() / 1000) % 0.5 < 0.18;
+  ctx.fillStyle = pid.color;
+  ctx.globalAlpha = on ? 1 : 0.3;
+  if (on) {
+    ctx.shadowColor = pid.color;
+    ctx.shadowBlur = 10;
+  }
+  ctx.beginPath();
+  ctx.arc(p[0], p[1], 3.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.font = 'italic 600 11px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = pid.color;
+  ctx.fillText(QUANTITY_MARK[pid.sensor!.quantity], p[0] + 10, p[1]);
+  ctx.restore();
+}
+
 function drawLever(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Design['gears'][number]) {
-  const lever = g.motor!.lever!;
-  const { base, knob, radius } = leverGeometry(v, s.pos(g.center), g.propeller ? s.gearAngle(g.id) : (s.motorAngle?.(g.id) ?? 0), g);
+  const lever = leverOf(g.motor)!.lever;
+  const { base, knob, radius } = leverGeometry(v, s.pos(g.center), motorTurn(s, g), g);
   const selected = isSelected(s, 'lever', g.id);
   const hovered = s.hover?.kind === 'lever' && s.hover.id === g.id;
   ctx.save();
@@ -1036,7 +1169,8 @@ function drawPropeller(ctx: CanvasRenderingContext2D, v: View, s: Scene, g: Desi
     ctx.fillText(`P${gearLabel(g.id)}`, lp[0] + 8, lp[1] + 10);
   }
   ctx.restore();
-  if (g.motor?.lever) drawLever(ctx, v, s, g);
+  if (g.motor?.pid) drawPid(ctx, v, s, g);
+  if (leverOf(g.motor)) drawLever(ctx, v, s, g);
   if (g.locked) drawPadlock(ctx, [sc[0] - 16, sc[1] - 16]);
 }
 

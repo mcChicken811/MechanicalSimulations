@@ -1,6 +1,7 @@
 import { compile, type CompiledFn } from '../cas/codegen';
 import type { Poly } from '../cas/poly';
 import type { Derivation } from './derive';
+import { QUANTITY_IS_RATE, QUANTITY_SCALE, type Quantity } from './model';
 import { solveInPlace } from './linalg';
 
 /** The symbolic derivation compiled to fast numeric functions. */
@@ -351,6 +352,46 @@ interface ContactState {
   fresh: boolean;
 }
 
+/**
+ * Where a PID controller's sensor reads, resolved to the simulator's terms: a joint (`point`), a
+ * bar's two end joints (`a`, `b`: its centre and angle), or a gear (`gear` with its `center`
+ * joint; `angle0` added to its turn, and `spin` for a propeller's blades).
+ */
+export interface SensorSpec {
+  quantity: Quantity;
+  point?: number;
+  a?: number;
+  b?: number;
+  gear?: number;
+  center?: number;
+  angle0?: number;
+}
+
+/** A PID controller for the simulator: its motor (gear id), sensor, gains, torque limit and target (display units). */
+export interface ControllerSpec {
+  motor: number;
+  sensor: SensorSpec;
+  kp: number;
+  ki: number;
+  kd: number;
+  max: number;
+  target: number;
+}
+
+/** A running controller: its spec and what it is doing now. */
+export interface Controller extends ControllerSpec {
+  integral: number;
+  /** +1 if a positive torque raises the measurement, −1 if it lowers it, 0 if the motor cannot move it. */
+  sign: number;
+  /** Measurement, error and output (N·m) at the last step. */
+  y: number;
+  e: number;
+  u: number;
+  prevY: number | null;
+  dFilt: number;
+  lastAngle: number | null;
+}
+
 /** Something that happened in a step, for sound: a landing on the ground or a slider hitting a stop, with its speed and the effective mass it stopped. */
 export interface SimEvent {
   kind: 'impact' | 'stop';
@@ -402,6 +443,8 @@ export class Simulator {
   dissipated = 0;
   /** Ground contact, or null for none. */
   ground: GroundSettings | null = null;
+  /** PID controllers driving motors, run once a step (see setControllers). */
+  controllers: Controller[] = [];
   /** Impacts since the UI last emptied this (at most 64 kept), for sound. */
   readonly events: SimEvent[] = [];
   /**
@@ -1266,6 +1309,7 @@ export class Simulator {
    * eight for very dead impacts (ζ > 1), whose strong damping needs it for the energy budget.
    */
   step(h: number): boolean {
+    if (this.controllers.length) this.runControllers(h);
     const ground = !!this.ground && this.nearGround(h);
     const stops = this.updateStops(h);
     if (ground || stops) {
@@ -1275,6 +1319,147 @@ export class Simulator {
       return true;
     }
     return this.rkStep(h);
+  }
+
+  /**
+   * Set the PID controllers. Each one finds which way its motor moves its quantity here and
+   * now (s = sign of rowᵀ A g, A the constrained inverse inertia, row = ∂y/∂q and g = ∂ρ/∂q the
+   * motor's generalized-force direction); `carry` keeps the integral of controllers that were
+   * running already (a parameter changed mid-run).
+   */
+  setControllers(specs: ControllerSpec[], carry: Controller[] = []) {
+    this.controllers = specs.map((sp) => {
+      const old = carry.find((c) => c.motor === sp.motor && c.sensor.quantity === sp.sensor.quantity);
+      const c: Controller = { ...sp, integral: old?.integral ?? 0, sign: 0, y: 0, e: 0, u: 0, prevY: null, dFilt: 0, lastAngle: old?.lastAngle ?? null };
+      const k = this.sys.derivation.motors.findIndex((m) => m.id === sp.motor);
+      const row = this.measure(c, this.q, this.qd).row;
+      if (k >= 0 && row) {
+        const g = new Float64Array(this.n);
+        for (const t of this.motorParams[k].terms) g[t.coord] += t.k;
+        const r = this.response(this.q, g, row);
+        c.sign = Math.abs(r) > 1e-9 ? Math.sign(r) : 0;
+      }
+      return c;
+    });
+    this.runControllers(0);
+  }
+
+  /** Change a controller's target or gains while it runs (keeping its integral). */
+  tuneController(motor: number, change: Partial<Pick<ControllerSpec, 'kp' | 'ki' | 'kd' | 'max' | 'target'>>) {
+    const c = this.controllers.find((x) => x.motor === motor);
+    if (c) Object.assign(c, change);
+  }
+
+  /** rowᵀ A g: how the quantity with gradient `row` accelerates under the generalized force g. */
+  private response(q: Float64Array, g: Float64Array, row: Float64Array): number {
+    const { n, nc, sys, M, K2: K, r2: r, PhiQ } = this;
+    const N = n + nc;
+    sys.mass(q, M);
+    K.fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) K[i * N + j] = M[i * n + j];
+      r[i] = g[i];
+    }
+    if (nc > 0) {
+      sys.phiQ(q, PhiQ);
+      for (let k = 0; k < nc; k++) {
+        for (let j = 0; j < n; j++) K[(n + k) * N + j] = K[j * N + n + k] = PhiQ[k * n + j];
+        K[(n + k) * N + n + k] = -1e-10;
+        r[n + k] = 0;
+      }
+    }
+    if (!solveInPlace(K, r, N)) return 0;
+    let w = 0;
+    for (let i = 0; i < n; i++) w += row[i] * r[i];
+    return w;
+  }
+
+  /**
+   * A sensor reading (SI units): the value, its rate where that is known exactly (positions and
+   * angles), and ∂(the underlying position or angle)/∂q.
+   */
+  private measure(c: Controller, q: Float64Array, qd: Float64Array): { value: number; rate: number | null; row: Float64Array | null } {
+    const { n, sys, pos, jac } = this;
+    const s = c.sensor;
+    sys.positions(q, pos);
+    sys.jacobians(q, jac);
+    const row = new Float64Array(n);
+    const dot = (r: Float64Array) => r.reduce((acc, v, m) => acc + v * qd[m], 0);
+    const pointRow = (pid: number | undefined, axis: 0 | 1, w = 1) => {
+      const i = pid === undefined ? undefined : sys.pointIndex.get(pid);
+      if (i === undefined) return 0;
+      for (let m = 0; m < n; m++) row[m] += w * jac[i * 2 * n + axis * n + m];
+      return w * pos[2 * i + axis];
+    };
+    const qn = s.quantity;
+    const axis: 0 | 1 = qn === 'x' || qn === 'vx' ? 0 : 1;
+    let value: number;
+    if (qn === 'spin') {
+      const pr = sys.derivation.propellers.find((x) => x.id === s.gear);
+      if (!pr || pr.spin < 0) return { value: 0, rate: null, row: null };
+      row[pr.spin] = 1;
+      return { value: qd[pr.spin], rate: null, row };
+    }
+    if (qn === 'angle' || qn === 'omega') {
+      if (s.a !== undefined && s.b !== undefined) {
+        // a bar's direction θ = atan2(dy, dx), unwrapped: ∂θ = (dx ∂dy − dy ∂dx) / L²
+        const [ia, ib] = [sys.pointIndex.get(s.a), sys.pointIndex.get(s.b)];
+        if (ia === undefined || ib === undefined) return { value: 0, rate: null, row: null };
+        const [dx, dy] = [pos[2 * ib] - pos[2 * ia], pos[2 * ib + 1] - pos[2 * ia + 1]];
+        const L2 = dx * dx + dy * dy || 1e-12;
+        for (let m = 0; m < n; m++) {
+          const ddx = jac[ib * 2 * n + m] - jac[ia * 2 * n + m];
+          const ddy = jac[ib * 2 * n + n + m] - jac[ia * 2 * n + n + m];
+          row[m] = (dx * ddy - dy * ddx) / L2;
+        }
+        const raw = Math.atan2(dy, dx);
+        const prev = c.lastAngle;
+        value = prev === null ? raw : prev + Math.atan2(Math.sin(raw - prev), Math.cos(raw - prev));
+        c.lastAngle = value;
+      } else {
+        // a gear's turn (a propeller's hub yaw), from its coordinate
+        const gi = sys.gearIds.indexOf(s.gear ?? -1);
+        const buf = new Float64Array(sys.gearIds.length);
+        sys.gearAngles(q, buf);
+        const k = sys.gearCoord.get(s.gear ?? -1) ?? -1;
+        if (k >= 0) row[k] = 1;
+        value = (s.angle0 ?? 0) + (gi >= 0 ? buf[gi] : 0);
+      }
+    } else if (s.a !== undefined && s.b !== undefined) value = pointRow(s.a, axis, 0.5) + pointRow(s.b, axis, 0.5); // a bar's centre
+    else value = pointRow(s.point ?? s.center, axis);
+    const rate = dot(row);
+    return QUANTITY_IS_RATE[qn] ? { value: rate, rate: null, row } : { value, rate, row };
+  }
+
+  /**
+   * One control step (h = 0 only measures): e = target − y, u = s (K_p e + K_i ∫e − K_d ẏ),
+   * clamped to ±max, the integral held while the output is saturated the way the error pushes.
+   * ẏ is exact for positions and angles; for rates it is the measurement's change, smoothed
+   * over 20 ms.
+   */
+  private runControllers(h: number) {
+    for (const c of this.controllers) {
+      const { value, rate } = this.measure(c, this.q, this.qd);
+      const k = QUANTITY_SCALE[c.sensor.quantity];
+      const y = value * k;
+      let dy: number;
+      if (rate !== null) dy = rate * k;
+      else {
+        const raw = c.prevY === null || h <= 0 ? 0 : (y - c.prevY) / h;
+        c.dFilt += h > 0 ? (raw - c.dFilt) * (h / (0.02 + h)) : 0;
+        dy = c.dFilt;
+      }
+      c.prevY = y;
+      const e = c.target - y;
+      const max = Math.abs(c.max);
+      const raw = (u: number) => c.sign * (c.kp * e + c.ki * u - c.kd * dy);
+      const free = raw(c.integral + e * h);
+      // integrate unless that would push a saturated output further
+      if (h > 0 && !(Math.abs(free) > max && Math.sign(free) === Math.sign(c.sign * e))) c.integral += e * h;
+      const u = Math.max(-max, Math.min(max, raw(c.integral)));
+      [c.y, c.e, c.u] = [y, e, c.sign === 0 ? 0 : u];
+      this.setMotorTorque(c.motor, c.u);
+    }
   }
 
   /** Whether any point touches the ground or could reach it within the next step. */

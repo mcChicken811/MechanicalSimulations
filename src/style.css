@@ -569,3 +569,57 @@ table.params td {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* ---- the sensor menu: what a PID controller's sensor can measure on the clicked body ---- */
+#sensor-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 190px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#sensor-menu[hidden] {
+  display: none;
+}
+
+#sensor-menu .sm-title {
+  padding: 4px 8px 6px;
+  font-weight: 600;
+}
+
+#sensor-menu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font: inherit;
+  text-align: left;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+#sensor-menu button span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#sensor-menu button:hover {
+  background: var(--accent-soft);
+}
+
+#sensor-menu .sm-cancel {
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 6px 6px;
+  margin-top: 2px;
+}
+
+#levers .lever-name small {
+  font-size: 9px;
+  opacity: 0.8;
+}

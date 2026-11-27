@@ -212,6 +212,86 @@ export interface DMotor {
    * τ = position × scale (see motorTorque), and the speed falloff is b = scale / Ω.
    */
   lever?: DLever;
+  /**
+   * A PID controller driving the motor from a sensor (instead of a lever: a motor has one or
+   * the other). Its output is the motor's torque, within ±|torque|.
+   */
+  pid?: DPid;
+}
+
+/** What a sensor can measure: position, angle, their rates, and a propeller's spin rate. */
+export type Quantity = 'x' | 'y' | 'angle' | 'vx' | 'vy' | 'omega' | 'spin';
+
+/** A sensor on a body: a joint, or a bar, rack, gear, wheel or propeller (`link` / `gear`). */
+export interface DSensor {
+  body: { kind: 'point' | 'link' | 'gear'; id: number };
+  quantity: Quantity;
+}
+
+/**
+ * A PID controller on a motor. It measures a quantity with its sensor and sets the motor's
+ * torque to bring it to the target, offset + (its lever's position × scale, with a lever):
+ *   u = s (K_p e + K_i ∫e dt − K_d dy/dt),   e = target − y,   |u| ≤ |motor torque|
+ * with the derivative taken on the measurement (moving the target gives no kick), the integral
+ * held while the output is saturated (anti-windup), and s = ±1 the way the motor moves the
+ * quantity, found when the simulation starts. Quantities are in display units (m, m/s, °, °/s,
+ * rpm), and so are the gains (N·m per unit).
+ */
+export interface DPid {
+  kp: number;
+  ki: number;
+  kd: number;
+  /** The target with the lever centred (or without a lever). */
+  offset: number;
+  sensor: DSensor | null;
+  /** A lever setting the target: position × scale, in the quantity's units, is added to the offset. */
+  lever?: DLever;
+  /** Colour of the controller, its sensor and the wire between them. */
+  color: string;
+}
+
+/** Display unit of a quantity. */
+export const QUANTITY_UNIT: Record<Quantity, string> = { x: 'm', y: 'm', angle: '°', vx: 'm/s', vy: 'm/s', omega: '°/s', spin: 'rpm' };
+/** Factor from SI (m, rad, rad/s) to the display unit. */
+export const QUANTITY_SCALE: Record<Quantity, number> = { x: 1, y: 1, angle: 180 / Math.PI, vx: 1, vy: 1, omega: 180 / Math.PI, spin: 60 / (2 * Math.PI) };
+/** Whether a quantity is a rate (its own derivative is not measured directly). */
+export const QUANTITY_IS_RATE: Record<Quantity, boolean> = { x: false, y: false, angle: false, vx: true, vy: true, omega: true, spin: true };
+
+/** Starting gains for a quantity, per N·m of the motor's torque. */
+export function defaultGains(q: Quantity, maxTorque: number): { kp: number; ki: number; kd: number } {
+  const base = { x: [5, 1, 1], y: [5, 1, 1], angle: [0.05, 0.02, 0.004], vx: [1, 2, 0], vy: [1, 2, 0], omega: [0.004, 0.01, 0], spin: [0.002, 0.005, 0] }[q];
+  const k = Math.max(Math.abs(maxTorque), 1e-3);
+  return { kp: +(base[0] * k).toPrecision(3), ki: +(base[1] * k).toPrecision(3), kd: +(base[2] * k).toPrecision(3) };
+}
+
+/** A sensible full throw for a lever setting a target of this quantity. */
+export const LEVER_TARGET_SCALE: Record<Quantity, number> = { x: 0.5, y: 0.5, angle: 90, vx: 1, vy: 1, omega: 180, spin: 3000 };
+
+/** The quantities a sensor can measure on a body. */
+export function measurable(d: Design, body: DSensor['body']): Quantity[] {
+  if (body.kind === 'point') return ['x', 'y', 'vx', 'vy'];
+  const g = body.kind === 'gear' ? d.gears.find((x) => x.id === body.id) : undefined;
+  return g?.propeller ? ['x', 'y', 'angle', 'vx', 'vy', 'omega', 'spin'] : ['x', 'y', 'angle', 'vx', 'vy', 'omega'];
+}
+
+/** A quantity's name on a body, for menus and labels. */
+export function quantityName(q: Quantity, body: DSensor['body'], d: Design): string {
+  const g = body.kind === 'gear' ? d.gears.find((x) => x.id === body.id) : undefined;
+  const turn = body.kind === 'link' ? 'angle θ' : g?.propeller ? 'yaw θ' : 'turn φ';
+  const names: Record<Quantity, string> = { x: 'x position', y: 'y position', angle: turn, vx: 'x velocity ẋ', vy: 'y velocity ẏ', omega: `${turn.split(' ')[0]} rate ${turn.split(' ')[1]}̇`, spin: 'spin rate (rpm)' };
+  return names[q];
+}
+
+/** The lever on a motor: its own, or its PID controller's (which sets the target). */
+export function leverOf(m: DMotor | undefined): { lever: DLever; owner: 'motor' | 'pid' } | null {
+  if (m?.lever) return { lever: m.lever, owner: 'motor' };
+  if (m?.pid?.lever) return { lever: m.pid.lever, owner: 'pid' };
+  return null;
+}
+
+/** A PID controller's target now. */
+export function pidTarget(pid: DPid): number {
+  return pid.offset + (pid.lever ? pid.lever.position * pid.lever.scale : 0);
 }
 
 /**
@@ -235,18 +315,25 @@ export const LEVER_COLORS = ['#e04f5f', '#2f9e8f', '#f2a93b', '#7b5ce0', '#3a8fd
 
 /** A colour for a new lever: the first not used by another lever. */
 export function nextLeverColor(d: Design): string {
-  const used = new Set(d.gears.flatMap((g) => (g.motor?.lever ? [g.motor.lever.color] : [])));
+  const used = new Set(d.gears.flatMap((g) => [g.motor?.lever?.color, g.motor?.pid?.color, g.motor?.pid?.lever?.color].filter((c): c is string => !!c)));
   return LEVER_COLORS.find((c) => !used.has(c)) ?? LEVER_COLORS[used.size % LEVER_COLORS.length];
 }
 
 /** The torque a motor applies at rest: its lever's setting if it has one. */
 export function motorTorque(m: DMotor): number {
+  if (m.pid) return 0; // set by the controller as it runs
   return m.lever ? m.lever.position * m.lever.scale : m.torque;
 }
 
 /** A deep copy of a gear, its motor and lever included. */
 export function cloneGear(g: DGear): DGear {
-  return { ...g, ...(g.motor ? { motor: { ...g.motor, ...(g.motor.lever ? { lever: { ...g.motor.lever } } : {}) } } : {}), ...(g.propeller ? { propeller: { ...g.propeller } } : {}) };
+  const pid = g.motor?.pid;
+  const motor = g.motor && {
+    ...g.motor,
+    ...(g.motor.lever ? { lever: { ...g.motor.lever } } : {}),
+    ...(pid ? { pid: { ...pid, sensor: pid.sensor ? { ...pid.sensor, body: { ...pid.sensor.body } } : null, ...(pid.lever ? { lever: { ...pid.lever } } : {}) } } : {}),
+  };
+  return { ...g, ...(motor ? { motor } : {}), ...(g.propeller ? { propeller: { ...g.propeller } } : {}) };
 }
 
 /** Radius of a motor's housing, as a disk for its inertia (m). */

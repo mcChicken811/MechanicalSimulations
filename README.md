@@ -98,6 +98,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
 | Lock gear | L | Click a gear or wheel to stop it turning (a braked wheel). Click again to unlock it. |
 | Lever | E | Click a motor to give it a control lever, worked from the dock at the bottom right. On a gear without a motor, a motor is added too. Click the motor again to remove the lever. |
+| PID controller | C | Click a motor to put a PID controller on it, in place of its lever. Then click what it should measure and pick the quantity from the menu. Click the motor again to remove it. |
 | Motor | O | Click a gear or wheel to put a motor on it. Click again to remove it. Set its torque and no-load speed in the gear's inspector. |
 | Fix angle | A | Click one bar, then another, to hold the angle between them at its drawn value. Click the same pair again to free it. |
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body. Click the same pair again to separate them. |
@@ -176,6 +177,26 @@ The equations panel shows the torque. To drive a bar, such as a crank, join a ge
 - **Speed:** with a no-load speed Ω, the falloff stays b = scale/Ω as the lever moves, as in a DC motor whose voltage the lever sets. So the lever sets the top speed too, position × Ω, and in the middle the motor brakes against being turned.
 - **Many levers:** their controls line up side by side. When there are more than fit, the dock scrolls sideways (with a trackpad, the scroll bar, or the mouse wheel), and the edges with controls scrolled out of view fade out.
 - **Under the hood:** moving a lever while the simulation runs only changes the torque parameter, so nothing is derived again and the motion carries on smoothly.
+
+**PID controllers.** The PID tool (C) puts a controller on a motor, drawn as a small box marked PID on the motor. A motor has either a lever or a PID controller: adding one replaces the other.
+- **The sensor:** after placing the controller, click what it should measure: a joint, bar, rack, gear, wheel or propeller. A menu then lists what can be measured there:
+  - joints: x, y, ẋ, ẏ;
+  - bars and racks: the centre's x and y, the angle θ, and their rates;
+  - gears and wheels: the centre's x and y, the turn φ, and their rates;
+  - propellers: the same, plus the spin rate in rpm.
+
+  The sensor is drawn on that part with a flashing light in the controller's colour, wired to the controller. **Choose…** or **Change…** in the controller's inspector picks again.
+- **The target:** it starts at the quantity's value as drawn, so the controller first holds things where they are. Set the **target offset** in the controller's inspector. To move the target by hand, give the controller a lever: click its PID box with the Lever tool, or press **Add a lever for the target**. Its control then joins the dock, labelled "PID", and moves the target by its position × scale (in the quantity's units) about the offset. A lever clicked on the motor itself replaces the controller instead.
+- **The control law:** u = s (K_p e + K_i ∫e dt − K_d dy/dt), with e = target − y.
+  - The output u is the motor's torque, kept within ±the motor's **max torque**.
+  - The derivative acts on the measurement (exactly, from the jacobians, for positions and angles; smoothed for rates), so moving the target gives no kick.
+  - The integral pauses while the output is at its limit, so it doesn't wind up.
+- **Sign:** s = ±1 is the way the motor actually moves the quantity. It is found when the simulation starts from rowᵀ A g, with A the constrained inverse inertia, row = ∂y/∂q and g the motor's generalized-force direction. So the controller can't push the wrong way. If the motor can't move the quantity at all, it says so and does nothing.
+- **Units:** quantities are in m, m/s, °, °/s and rpm, and the gains are in N·m per unit. The starting gains suit the quantity and scale with the motor's torque. Gains, target and limit can all be changed while it runs; the inspector shows the measurement, target, error and torque live. The controller runs every 1 ms step.
+
+Examples:
+- **Robot-arm joint held by a PID controller:** holds its upper arm at the target set by its lever, against gravity and a swinging forearm.
+- **Motor car with cruise control:** holds the chassis's speed over the hills; its motor is found to drive with a negative torque.
 
 Example: **Strandbeest leg driven by a crank motor**. Select the foot, joint G, before pressing Play to draw its walking path.
 
