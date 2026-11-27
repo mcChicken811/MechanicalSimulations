@@ -16,6 +16,19 @@ export type PointKind = 'free' | 'fixed' | 'lockX' | 'lockY';
 export interface DSlide {
   on: DBodyRef | null;
   angle: number;
+  /**
+   * How far the joint may travel along the rail, from where it was drawn, in metres along
+   * the rail's direction (min ≤ 0 ≤ max). Past an end it hits a stop, as it would the ground.
+   */
+  range?: DRange;
+}
+
+/** End stops on a rail: null means no stop on that side. */
+export interface DRange {
+  min: number | null;
+  max: number | null;
+  /** Coefficient of restitution of the stops. */
+  restitution: number;
 }
 
 export interface DPoint {

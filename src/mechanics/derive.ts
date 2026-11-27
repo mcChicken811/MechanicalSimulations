@@ -137,6 +137,11 @@ export interface Derivation {
   params: Parameter[];
   /** Rotation angle φ of every gear (zero for a locked gear), for drawing. */
   gearAngles: { id: number; angle: Poly }[];
+  /**
+   * End stops of sliders with a range: the joint's travel s(q) along its rail from where it was
+   * drawn (relative to the body the rail is on), its gradient, and the limits.
+   */
+  sliderStops: { joint: number; s: Poly; grad: Poly[]; min: number | null; max: number | null; restitution: number }[];
   /** Motors: the index of the driven gear's φ in q, and the parameter indices of τ and b. */
   motors: { id: number; coord: number; tau: string; b: string | null }[];
   /** Centre joint and pitch radius of every gear in the mechanism, for ground contact. */
@@ -640,6 +645,38 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   }
 
   const qs = coords.map((c) => c.sym);
+
+  // ---- slider end stops --------------------------------------------------------------
+  // s = (r_P − r_A) · t(θ) − s₀: travel along the rail, t its direction turning with the body
+  // (fixed for a ground rail, r_A then being the drawn position), zero where it was drawn.
+  const sliderStops: Derivation['sliderStops'] = [];
+  for (const p of active) {
+    const rail = railOf(p);
+    const range = p.slide?.range;
+    if (!rail || !range || (range.min === null && range.max === null) || !positions.has(p.id)) continue;
+    const a = (rail.angle * Math.PI) / 180;
+    const [px, py] = positions.get(p.id)!;
+    let s: Poly;
+    if (!rail.on) s = px.sub(anchorX(p)).scale(Math.cos(a)).add(py.sub(anchorY(p)).scale(Math.sin(a)));
+    else {
+      const B = bodyFrame(rail.on);
+      if (!B) continue;
+      const env0 = initialEnv();
+      const cos = B.sym ? Poly.cos([[B.sym, 1]]) : Poly.const(1);
+      const sin = B.sym ? Poly.sin([[B.sym, 1]]) : Poly.zero;
+      const th0 = B.angle.evaluate(env0);
+      // t(θ) = Rot(θ − θ₀)(cos a, sin a) = Rot(θ) m, m = Rot(−θ₀)(cos a, sin a)
+      const [mx, my] = [Math.cos(th0) * Math.cos(a) + Math.sin(th0) * Math.sin(a), -Math.sin(th0) * Math.cos(a) + Math.cos(th0) * Math.sin(a)];
+      const tx = cos.scale(mx).sub(sin.scale(my));
+      const ty = sin.scale(mx).add(cos.scale(my));
+      s = px.sub(B.at[0]).mul(tx).add(py.sub(B.at[1]).mul(ty));
+      s = s.sub(Poly.const(s.evaluate(env0)));
+    }
+    if (!qs.some((q) => s.dependsOn(q))) continue;
+    s = trigSimplify(s);
+    sliderStops.push({ joint: p.id, s, grad: qs.map((q) => trigSimplify(s.diff(q))), min: range.min, max: range.max, restitution: range.restitution });
+  }
+
   const qsDepend = (e: Poly) => qs.some((q) => e.dependsOn(q));
   const qds = coords.map((c) => c.vel);
   const velocity = ([x, y]: [Poly, Poly]): [Poly, Poly] => [timeDerivative(x, qs, qds), timeDerivative(y, qs, qds)];
@@ -814,6 +851,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     springs: springTerms,
     gearAngles: [...gearAngle].map(([id, angle]) => ({ id, angle })),
     motors,
+    sliderStops,
     gearDisks: gears.filter((gr) => gearAngle.has(gr.id)).map((gr) => ({ id: gr.id, center: gr.center, radius: gr.radius })),
     phiQ,
     gamma,

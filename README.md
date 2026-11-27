@@ -91,7 +91,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector, and tick **Tension only** for a cable, ligament or tendon that goes slack when short. |
 | Gears | G | Click a centre, then drag out the radius. If the gear touches another gear or a rack, it snaps into mesh with it. |
 | Pin | F | Click a joint, then click a bar, rack or gear to pin the joint onto it, or empty space to pin it to the ground. |
-| Slider | X | Click a joint, then the body its rail is on (or empty space for a ground rail), then move the mouse to set the rail's direction and click. |
+| Slider | X | Click a joint, then the body its rail is on (or empty space for a ground rail), then click to set the rail's direction. Then click where the rail ends on one side and on the other, or press Enter for no ends. |
 | Free joint | N | Removes a joint's constraint: a pin, a rail, or a pin on a body. |
 | Mass | M | Click a joint to hang a 1 kg mass on it. Click on a gear to pin a weight to it, or in empty space for a free mass. |
 | Lock gear | L | Click a gear to stop it turning. Click again to unlock it. |
@@ -108,6 +108,8 @@ Bars and springs that start or end on a gear are pinned to the gear and turn wit
 - **Ground rails** stay put and can be at any angle. A rail at 0° or 90° behaves as the old lock y / lock x.
 - **Rails on a body** turn and move with that body. That's how a crank pin slides along a slotted lever, as in the **Quick-return mechanism** example.
 - **In the equations:** a pin on a bar adds two equations, and a rail adds one. If the mechanism already holds the joint that way, the extra equations are dropped with a warning.
+- **Range:** after the direction, click where the rail ends on one side, then on the other. The ends snap to 5 cm when snap is on. Press Enter after one click for a stop on one side only, or straight away for a rail without ends. If both clicks fall on one side of the joint, the nearer end is set at the joint, so the joint always starts inside its range. You can also type the range and the stops' restitution in the joint's inspector.
+- **End stops:** past an end, the joint hits a stop, with the same contact model as the ground. The stop is a spring-damper scaled by the effective mass along the rail, applied as a generalized force along ∂s/∂q, where s is the joint's travel along the rail. On a body's rail, the stop pushes the body back as well. The equations panel lists each slider's stops. The **Bead on a swinging rod, with end stops** example shows them working.
 
 A rack is a rigid body like a bar, with the same mass and inertia, and bars attach to its two end joints. A gear meshing with it rolls along its pitch line without slipping, which turns rotation into sliding: the gear centre's position ξ along the rack and its rotation φ satisfy ξ + R(φ − θ_rack) = const. Its centre also stays a distance R from the rack. You can tick **Toothed** in a bar's inspector to turn it into a rack, or untick it to turn a rack back into a bar.
 

@@ -130,6 +130,19 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
     parts.push('</section>');
   }
 
+  if (d.sliderStops.length) {
+    const m = (v: number | null) => (v === null ? 'no stop' : `${v.toFixed(2)}\u00a0m`);
+    parts.push('<section><h3>Slider stops</h3>');
+    parts.push(tex('Q = \\pm F\\,\\frac{\\partial s}{\\partial q},\\qquad F = \\max\\left(0,\\ m\\omega^2\\delta + 2\\zeta\\, m\\omega\\,\\dot\\delta\\right)'));
+    parts.push(
+      `<p class="note">${tex('s', false)} is a slider joint's travel along its rail from where it was drawn (on a body's rail, relative to the body). ` +
+        `Past an end by ${tex('\\delta', false)} it is pushed back, with the same contact model as the ground: ${tex('m', false)} is the effective mass along ${tex('\\partial s/\\partial q', false)}, ` +
+        `and ${tex('\\zeta', false)} gives the stop's restitution. Evaluated numerically every step.</p>`,
+    );
+    parts.push(`<ul class="note">${d.sliderStops.map((st) => `<li>joint ${pointLabel(st.joint)}: from ${m(st.min)} to ${m(st.max)}, restitution ${st.restitution.toFixed(2)}</li>`).join('')}</ul>`);
+    parts.push('</section>');
+  }
+
   if (d.springs.length) {
     parts.push('<section><h3>Springs</h3>');
     parts.push(

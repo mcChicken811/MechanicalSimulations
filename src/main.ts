@@ -98,6 +98,7 @@ function undo() {
   design = undoStack.pop()!;
   selection = null;
   multi = null;
+  constrain = null;
   syncGroundUI();
   designChanged();
 }
@@ -253,6 +254,7 @@ function startSim() {
   if (selection?.kind !== 'spring' && selection?.kind !== 'point' && selection?.kind !== 'gear') selection = null;
   multi = null;
   boxSel = null;
+  constrain = null;
   resetTrail();
   renderInspector();
   refreshControls();
@@ -599,7 +601,10 @@ function constrainHint(): string {
     return c.tool === 'pin'
       ? `Now click the bar, rack or gear to pin joint ${j} on, or empty space to pin it to the ground (joint ${j} again frees it).`
       : `Now click the body joint ${j} slides on, or empty space for a ground rail (joint ${j} again frees it).`;
-  return `Move the mouse to set the direction of the rail ${c.body ? `on ${bodyName(design, c.body)}` : 'on the ground'} (snaps to 15° and to the bar), then click. Esc cancels.`;
+  if (!c.ends) return `Move the mouse to set the direction of the rail ${c.body ? `on ${bodyName(design, c.body)}` : 'on the ground'} (snaps to 15° and to the bar), then click. Esc cancels.`;
+  return c.ends.length === 0
+    ? `Click where the rail ends on one side, then on the other. Enter for a rail without ends.`
+    : `Click where the rail ends on the other side. Enter for a stop on one side only.`;
 }
 
 function removeOrphans() {
@@ -880,7 +885,38 @@ function toggleMass(w: Vec) {
  * The Pin and Slider tools work in steps: the joint, then the body (or the ground), then for a
  * rail its direction.
  */
-let constrain: { tool: 'pin' | 'slider'; joint: number; body?: DBodyRef | null; angle: number } | null = null;
+let constrain: { tool: 'pin' | 'slider'; joint: number; body?: DBodyRef | null; angle: number; ends?: number[] } | null = null;
+
+/** Distance (m) along the rail being placed from its joint to the mouse, snapped like the grid. */
+function railTravel(w: Vec): number {
+  const c = constrain!;
+  const p = design.points.find((pt) => pt.id === c.joint)!;
+  const a = (c.angle * Math.PI) / 180;
+  const t = (w[0] - p.x) * Math.cos(a) + (w[1] - p.y) * Math.sin(a);
+  return +(settings.snap ? Math.round(t / 0.05) * 0.05 : t).toFixed(3);
+}
+
+/** Put the joint on the rail being placed, with stops at the ends chosen (none, one or two). */
+function finishSlider() {
+  const c = constrain!;
+  const p = design.points.find((pt) => pt.id === c.joint);
+  constrain = null;
+  if (!p) return;
+  pushUndo();
+  clearConstraint(p);
+  p.slide = { on: c.body ?? null, angle: c.angle };
+  const ends = c.ends ?? [];
+  if (ends.length) {
+    let [lo, hi] = ends.length === 2 ? [Math.min(...ends), Math.max(...ends)] : ends[0] < 0 ? [ends[0], null] : [null, ends[0]];
+    // the joint must start inside its range: an end on the far side moves to the joint
+    if (lo !== null && lo > 0) [lo, hi] = [0, hi];
+    if (hi !== null && hi < 0) [lo, hi] = [lo, 0];
+    if (ends.length === 2 && (Math.min(...ends) > 0 || Math.max(...ends) < 0)) flash(`Both ends were on one side of joint ${pointLabel(p.id)}, so the nearer end is at the joint.`);
+    p.slide.range = { min: lo, max: hi, restitution: 0.2 };
+  }
+  designChanged();
+  refreshControls();
+}
 
 /** Remove a joint's constraint (the Free joint tool). */
 function freeJoint(id: number) {
@@ -964,13 +1000,17 @@ function constrainClick(w: Vec) {
     refreshControls();
     return;
   }
-  // step 3 (slider): the direction
-  pushUndo();
-  clearConstraint(p);
-  p.slide = { on: constrain.body, angle: railAngle(p.id, w, constrain.body) };
-  constrain = null;
-  designChanged();
-  refreshControls();
+  if (!constrain.ends) {
+    // step 3 (slider): the direction; then the two ends of its range
+    constrain.angle = railAngle(p.id, w, constrain.body);
+    constrain.ends = [];
+    refreshControls();
+    return;
+  }
+  // steps 4 and 5: where the rail ends on one side, then the other
+  constrain.ends.push(railTravel(w));
+  if (constrain.ends.length === 2) finishSlider();
+  else refreshControls();
 }
 
 // ---- pointer input ---------------------------------------------------------------
@@ -1154,7 +1194,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   if (boxSel) boxSel.to = w;
-  if (constrain && constrain.body !== undefined) constrain.angle = railAngle(constrain.joint, w, constrain.body);
+  if (constrain && constrain.body !== undefined && !constrain.ends) constrain.angle = railAngle(constrain.joint, w, constrain.body);
   if (dragging?.group && multi) {
     const g = dragging.group;
     let off: Vec = [w[0] - g.start[0], w[1] - g.start[1]];
@@ -1258,6 +1298,8 @@ window.addEventListener('keydown', (e) => {
     selection = null;
     multi = allParts(design);
     renderInspector();
+  } else if (k === 'enter' && constrain?.ends) {
+    finishSlider(); // the ends chosen so far; none makes an unlimited rail
   } else if (k === 'escape') {
     drawing = null;
     constrain = null;
@@ -1310,10 +1352,11 @@ clearBtn.addEventListener('click', () => {
   design = emptyDesign();
   selection = null;
   multi = null;
+  constrain = null;
   syncGroundUI();
   designChanged();
 });
-$<HTMLButtonElement>('#fit').addEventListener('click', fitView);
+$<HTMLButtonElement>('#fit').addEventListener('click', () => fitView());
 
 const presetSel = $<HTMLSelectElement>('#preset');
 for (const group of [...new Set(presets.map((p) => p.group))]) {
@@ -1331,6 +1374,7 @@ presetSel.addEventListener('change', () => {
   design = p.build();
   selection = null;
   multi = null;
+  constrain = null;
   syncGroundUI();
   settings.gravity = !p.topView; // a top view lies in the horizontal plane
   $<HTMLInputElement>('#gravity').checked = settings.gravity;
@@ -1339,7 +1383,7 @@ presetSel.addEventListener('change', () => {
   drag.value = String(p.drag ?? 0); // tissue damping for the presets that ask for it
   drag.dispatchEvent(new Event('input'));
   designChanged();
-  fitView();
+  fitView(p.view);
 });
 
 function bindSlider(id: 'damping' | 'stiffness' | 'speed', fmt: (v: number) => string) {
@@ -1502,17 +1546,40 @@ function renderInspector() {
         <h4>Joint ${pointLabel(p.id)}</h4>
         <div class="field"><span>Constraint</span><span>${what}${what !== 'free' ? ` <button id="i-free" ${disabled}>Free</button>` : ''}</span></div>
         ${rail ? `<label class="field">Rail angle (°)<input id="i-rail" type="number" step="5" value="${fold(rail.angle)}" ${disabled}></label>` : ''}
+        ${
+          rail
+            ? `<label class="field">Range from (m)<input id="i-rmin" type="number" step="0.05" max="0" placeholder="no stop" value="${p.slide?.range?.min ?? ''}" ${disabled}></label>
+        <label class="field">Range to (m)<input id="i-rmax" type="number" step="0.05" min="0" placeholder="no stop" value="${p.slide?.range?.max ?? ''}" ${disabled}></label>
+        ${p.slide?.range ? `<label class="field">Stop restitution<input id="i-rest-stop" type="number" min="0" max="1" step="0.05" value="${p.slide.range.restitution}" ${disabled}></label>` : ''}
+        <p class="muted">Travel along the rail from where the joint was drawn; past an end it hits a stop, as it would the ground. Leave blank for no stop.</p>`
+            : ''
+        }
         ${what === 'free' ? '<p class="muted">Use <b>Pin</b> (F) to pin it to the ground or onto a body, or <b>Slider</b> (X) to put it on a rail.</p>' : ''}
         <label class="field">Point mass (kg)<input id="i-mass" type="number" min="0" step="0.1" value="${p.mass}" ${disabled}></label>
         <label class="field">x (m)<input id="i-x" type="number" step="0.1" value="${+p.x.toFixed(4)}" ${disabled}></label>
         <label class="field">y (m)<input id="i-y" type="number" step="0.1" value="${+p.y.toFixed(4)}" ${disabled}></label>
         `;
       inspectorEl.querySelector('#i-free')?.addEventListener('click', () => freeJoint(p.id));
+      const setRange = (key: 'min' | 'max' | 'restitution', raw: string) => {
+        const r = railOf(p);
+        if (!r) return;
+        p.kind = 'free';
+        p.slide = { ...r };
+        const range = p.slide.range ?? { min: null, max: null, restitution: 0.2 };
+        const v = raw.trim() === '' ? null : Number(raw);
+        if (key === 'restitution') range.restitution = Math.min(1, Math.max(0, v ?? 0.2));
+        else if (v === null || Number.isFinite(v)) range[key] = v === null ? null : key === 'min' ? Math.min(0, v) : Math.max(0, v);
+        if (range.min === null && range.max === null) delete p.slide.range;
+        else p.slide.range = range;
+      };
+      bindField('#i-rmin', (v) => setRange('min', v));
+      bindField('#i-rmax', (v) => setRange('max', v));
+      bindField('#i-rest-stop', (v) => setRange('restitution', v));
       bindField('#i-rail', (v) => {
         const r = railOf(p);
         if (!r || !Number.isFinite(Number(v))) return;
         p.kind = 'free'; // a lockX / lockY rail becomes an ordinary ground rail at the new angle
-        p.slide = { on: r.on, angle: Number(v) };
+        p.slide = { ...r, angle: Number(v) };
       });
       bindField('#i-mass', (v) => (p.mass = Math.max(0, Number(v) || 0)));
       bindField('#i-x', (v) => (p.x = Number(v) || 0));
@@ -1803,12 +1870,13 @@ function resize() {
 }
 
 /** Fit the mechanism into the area between the toolbar and the equations panel. */
-function fitView() {
+/** Fit the mechanism in view, or the given box (an example's preferred view). */
+function fitView(box?: { x: [number, number]; y: [number, number] }) {
   const left = 240;
   const right = W > 900 ? W - 530 : W - 20;
   const top = 50;
   const bottom = H - 70;
-  const pts = design.points.map((p) => [p.x, p.y] as Vec);
+  const pts = box ? ([[box.x[0], box.y[0]], [box.x[1], box.y[1]]] as Vec[]) : design.points.map((p) => [p.x, p.y] as Vec);
   const empty = !pts.length;
   if (empty) pts.push([0, 0]);
   const xs = pts.map((p) => p[0]);
@@ -1863,10 +1931,12 @@ function frame(now: number) {
     multi: sim ? null : liveMulti(),
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
     railPreview:
-      constrain && constrain.body !== undefined
+      !sim && constrain && constrain.body !== undefined
         ? (() => {
             const p = design.points.find((pt) => pt.id === constrain!.joint);
-            return p ? { at: [p.x, p.y] as Vec, angle: constrain!.angle } : null;
+            if (!p) return null;
+            const ends = constrain!.ends ? [...constrain!.ends, railTravel(mouseWorld)] : undefined;
+            return { at: [p.x, p.y] as Vec, angle: constrain!.angle, ends };
           })()
         : null,
     trail: trail.n > 1 ? trail : null,

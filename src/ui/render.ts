@@ -34,8 +34,8 @@ export interface Scene {
   multi?: PartSet | null;
   /** The selection box being dragged, in world coordinates. */
   box?: { from: Vec; to: Vec } | null;
-  /** A rail being placed with the Slider tool: through `at`, at `angle` degrees. */
-  railPreview?: { at: Vec; angle: number } | null;
+  /** A rail being placed with the Slider tool: through `at`, at `angle` degrees, with the ends chosen so far (m along it). */
+  railPreview?: { at: Vec; angle: number; ends?: number[] } | null;
   /** The ground line, if there is one (slope in degrees). */
   ground?: { y: number; slope: number } | null;
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
@@ -371,7 +371,19 @@ function drawRail(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, 
   ctx.save();
   ctx.lineWidth = 2;
   ctx.setLineDash([10, 6]);
-  if (!r.on) {
+  const range = p.slide?.range;
+  if (!r.on && range) {
+    // a ground rail with stops: the track between them, and a stop bar at each end
+    const far = (w + h) / v.scale;
+    const [lo, hi] = [range.min ?? -far, range.max ?? far];
+    const at = (t: number): Vec => toScreen(v, [p.x + Math.cos(a) * t, p.y + Math.sin(a) * t]);
+    ctx.strokeStyle = C.ground;
+    ctx.globalAlpha = 0.55;
+    line(ctx, at(lo), at(hi));
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    for (const t of [range.min, range.max]) if (t !== null) drawStop(ctx, at(t), a, C.ground);
+  } else if (!r.on) {
     // through the drawn position, long enough to cross the view
     const [sx, sy] = toScreen(v, [p.x, p.y]);
     const L = w + h;
@@ -383,18 +395,32 @@ function drawRail(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, 
     const m = bodyMotion(s, r.on);
     if (m) {
       const half = r.on.kind === 'gear' ? (s.design.gears.find((g) => g.id === r.on!.id)?.radius ?? 0.1) * 1.4 : 0.25;
-      const [ux, uy] = [Math.cos(a) * half, Math.sin(a) * half];
-      const [p0, p1] = [m.map([p.x - ux, p.y - uy]), m.map([p.x + ux, p.y + uy])];
-      ctx.strokeStyle = r.on.kind === 'link' ? linkColor(r.on.id) : gearColor(r.on.id);
+      const [lo, hi] = [range?.min ?? -half, range?.max ?? half];
+      const along = (t: number) => toScreen(v, m.map([p.x + Math.cos(a) * t, p.y + Math.sin(a) * t]));
+      const color = r.on.kind === 'link' ? linkColor(r.on.id) : gearColor(r.on.id);
+      ctx.strokeStyle = color;
       ctx.lineCap = 'round';
-      line(ctx, toScreen(v, p0), toScreen(v, p1));
+      line(ctx, along(lo), along(hi));
+      ctx.setLineDash([]);
+      for (const t of [range?.min ?? null, range?.max ?? null]) if (t !== null) drawStop(ctx, along(t), a + m.turn, color);
     }
   }
   ctx.restore();
 }
 
-/** The rail being placed: a dashed accent line through the joint, with its angle. */
-function drawRailPreview(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, r: { at: Vec; angle: number }) {
+/** An end stop on a rail at angle `a` (world radians): a short thick bar across the rail. */
+function drawStop(ctx: CanvasRenderingContext2D, [x, y]: Vec, a: number, color: string) {
+  const [nx, ny] = [Math.sin(a) * 9, Math.cos(a) * 9]; // across the rail, in screen space (y down)
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  line(ctx, [x - nx, y - ny], [x + nx, y + ny]);
+  ctx.restore();
+}
+
+/** The rail being placed: a dashed accent line through the joint, with its angle and any ends chosen. */
+function drawRailPreview(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, r: { at: Vec; angle: number; ends?: number[] }) {
   const [sx, sy] = toScreen(v, r.at);
   const a = (r.angle * Math.PI) / 180;
   const L = w + h;
@@ -407,6 +433,11 @@ function drawRailPreview(ctx: CanvasRenderingContext2D, w: number, h: number, v:
   ctx.fillStyle = C.accent;
   ctx.font = '600 12px system-ui, sans-serif';
   ctx.fillText(`${(((r.angle % 180) + 180) % 180).toFixed(0)}°`, sx + 14, sy - 14);
+  for (const t of r.ends ?? []) {
+    const p = toScreen(v, [r.at[0] + Math.cos(a) * t, r.at[1] + Math.sin(a) * t]);
+    drawStop(ctx, p, a, C.accent);
+    ctx.fillText(`${t >= 0 ? '+' : ''}${t.toFixed(2)} m`, p[0] + 10, p[1] + 16);
+  }
   ctx.restore();
 }
 

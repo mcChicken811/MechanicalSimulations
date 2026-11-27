@@ -1030,3 +1030,51 @@ describe('pins and rails on bodies', () => {
     expect(der.warnings.some((w) => w.includes('already moves'))).toBe(true);
   });
 });
+
+describe('slider ranges', () => {
+  it('a slider bounces off its end stop to e² of the drop along the rail', () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'free', mass: 1, slide: { on: null, angle: 30, range: { min: -0.3, max: 0.5, restitution: 0.5 } } }],
+      links: [], springs: [], gears: [], meshes: [], rackMeshes: [],
+    };
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.sliderStops).toHaveLength(1);
+    const s = new Simulator(new NumericSystem(der));
+    const E0 = s.energy().T + s.energy().V;
+    let [bounced, peak, prev, worst] = [false, NaN, 0, 0];
+    for (let i = 0; i < 2000; i++) {
+      s.step(1e-3);
+      const v = s.qd[0];
+      if (!bounced && prev < 0 && v > 0) bounced = true;
+      if (bounced && prev > 0 && v <= 0 && Number.isNaN(peak)) peak = s.q[0];
+      prev = v;
+      const e = s.energy();
+      worst = Math.max(worst, Math.abs(e.T + e.V + s.dissipated - E0));
+    }
+    expect(peak + 0.3).toBeGreaterThan(0.068); // e² · 0.3 = 0.075, a little less for gravity during contact
+    expect(peak + 0.3).toBeLessThan(0.076);
+    expect(s.q[0] + 0.3).toBeCloseTo(-(G * 0.5) / 250 ** 2, 5); // resting g sin 30° / ω² into the stop
+    expect(worst).toBeLessThan(1e-3);
+  });
+
+  it('stops a bead at the end of a rail on a swinging rod', async () => {
+    const { presets } = await import('../ui/presets');
+    const design = presets.find((p) => p.name.startsWith('Bead on a swinging rod'))!.build();
+    const der = deriveEquations(design, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(2);
+    const s = new Simulator(new NumericSystem(der));
+    const E0 = s.energy().T + s.energy().V;
+    let furthest = 0;
+    for (let i = 0; i < 4000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const p = s.jointPositions();
+      const [o, a, b] = [p.get(0)!, p.get(1)!, p.get(2)!];
+      furthest = Math.max(furthest, ((b[0] - o[0]) * (a[0] - o[0]) + (b[1] - o[1]) * (a[1] - o[1])) / Math.hypot(a[0] - o[0], a[1] - o[1]));
+    }
+    const stop = Math.hypot(design.points[2].x - design.points[0].x, design.points[2].y - design.points[0].y) + design.points[2].slide!.range!.max!;
+    expect(furthest).toBeGreaterThan(stop - 0.01); // it reached the end stop
+    expect(furthest).toBeLessThan(stop + 0.03); // and did not go far past it
+    const e = s.energy();
+    expect(Math.abs(e.T + e.V + s.dissipated - E0)).toBeLessThan(5e-3);
+  }, 20000);
+});

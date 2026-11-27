@@ -646,6 +646,8 @@ export interface Preset {
   drag?: number;
   /** Turn on "Follow the mechanism" when loading it, for things that travel (others turn it off). */
   follow?: boolean;
+  /** The area to fit in view when loading it (world metres), when its motion reaches beyond its drawing. */
+  view?: { x: [number, number]; y: [number, number] };
 }
 
 export const presets: Preset[] = [
@@ -787,6 +789,25 @@ export const presets: Preset[] = [
   },
   { name: 'Box dropped onto the floor', group: 'Basics', build: () => tumblingBox() },
   { name: 'Chain dropped onto the floor', group: 'Basics', build: () => droppedChain() },
+  {
+    // A rod pivoted at one end, swinging, with a bead free to slide along it between two end
+    // stops: the bead is flung out to the far stop and knocks against it as the rod swings.
+    name: 'Bead on a swinging rod, with end stops',
+    group: 'Basics',
+    view: { x: [-1.1, 1.1], y: [-0.5, 1.2] },
+    build: () => ({
+      points: [
+        pt(0, 0, 0.6, 'fixed'),
+        pt(1, 0.9, 0.6),
+        { ...pt(2, 0.4, 0.6, 'free', 0.3), slide: { on: { kind: 'link', id: 0 }, angle: 0, range: { min: -0.25, max: 0.4, restitution: 0.3 } } },
+      ],
+      links: bars([[0, 1]], 1),
+      springs: [],
+      gears: [],
+      meshes: [],
+      rackMeshes: [],
+    }),
+  },
   {
     name: 'Hanging chain (closed loop)',
     group: 'Basics',

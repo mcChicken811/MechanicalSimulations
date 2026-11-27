@@ -25,6 +25,8 @@ export class NumericSystem {
   private readonly springParams: { k: number; rest: number; tensionOnly: boolean }[];
   private readonly springBuf: Float64Array;
   private readonly gearAngleFn: CompiledFn;
+  /** Per slider stop: [s, ∂s/∂q_0, …, ∂s/∂q_{n−1}]. */
+  private readonly stopFn: CompiledFn;
   private readonly meshGradFn: CompiledFn;
   /** Gear ids in gearAngles order, and the index of each gear's φ in q (−1 when locked). */
   readonly gearIds: number[];
@@ -65,6 +67,11 @@ export class NumericSystem {
     this.gearAngleFn = compile(d.gearAngles.map((ga) => ga.angle), inputs);
     this.gearCoord = new Map(this.gearIds.map((id) => [id, d.coords.findIndex((c) => c.sym === `ph${id}`)]));
     this.meshGradFn = compile(d.meshes.flatMap((m) => m.pitchGrad), inputs);
+    this.stopFn = compile(d.sliderStops.flatMap((st) => [st.s, ...st.grad]), inputs);
+  }
+  /** Per slider stop: its travel s and ∂s/∂q (n + 1 entries each, concatenated). */
+  stops(q: ArrayLike<number>, out: Float64Array) {
+    this.stopFn(q, EMPTY, this.params, out);
   }
   /** Per mesh, ∂v_pitch/∂q̇ (n entries each, concatenated). */
   meshGrads(q: ArrayLike<number>, out: Float64Array) {
@@ -316,6 +323,10 @@ export class Simulator {
   /** Motor power delivered at each RK4 stage (W). */
   private readonly stageMotorPower = new Float64Array(4);
   private readonly motorParams: { coord: number; tau: number; b: number }[];
+  /** Slider end stops: travel and gradient per stop, and the effective mass when touching (per end). */
+  private readonly stopBuf: Float64Array;
+  private readonly stopMass: (number | null)[];
+  private readonly stopGrad: Float64Array;
 
   constructor(readonly sys: NumericSystem) {
     const { n, nc } = sys;
@@ -350,6 +361,9 @@ export class Simulator {
       ...d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, gear: { phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius } })),
     ];
     this.contacts = this.candidates.map(() => null);
+    this.stopBuf = new Float64Array(d.sliderStops.length * (n + 1));
+    this.stopMass = d.sliderStops.flatMap(() => [null, null]);
+    this.stopGrad = new Float64Array(n);
     this.Jn = new Float64Array(n);
     this.Jt = new Float64Array(n);
     this.K2 = new Float64Array((n + nc) * (n + nc));
@@ -370,6 +384,7 @@ export class Simulator {
     }
     this.applyGrab(q, qd, f);
     this.applyContacts(q, qd, f, stage);
+    this.applyStops(q, qd, f, stage);
     if (stage >= 0) {
       // the motors' torque is in f already (symbolically); here only its power τ(φ̇) φ̇
       let P = 0;
@@ -632,12 +647,21 @@ export class Simulator {
     });
   }
 
-  /** Stored energy of the ground contacts, ½ k δ² each. */
+  /** Stored energy of the ground contacts and slider stops, ½ k δ² each. */
   private contactEnergy(): number {
-    const g = this.ground;
-    if (!g) return 0;
-    const { sys, q, pos, jac, candidates, contacts } = this;
     let V = 0;
+    if (this.sys.derivation.sliderStops.length) {
+      this.sys.stops(this.q, this.stopBuf);
+      this.sys.derivation.sliderStops.forEach((_, k) =>
+        this.stopDepths(k).forEach(([delta], end) => {
+          const m = this.stopMass[2 * k + end];
+          if (delta > 0 && m !== null) V += 0.5 * m * CONTACT_OMEGA * CONTACT_OMEGA * delta * delta;
+        }),
+      );
+    }
+    const g = this.ground;
+    if (!g) return V;
+    const { sys, q, pos, jac, candidates, contacts } = this;
     sys.positions(q, pos);
     sys.jacobians(q, jac);
     candidates.forEach((c, ci) => {
@@ -647,6 +671,75 @@ export class Simulator {
       if (gap < 0) V += 0.5 * st.mn * CONTACT_OMEGA * CONTACT_OMEGA * gap * gap;
     });
     return V;
+  }
+
+  /**
+   * How far each slider joint is past its stops: for stop k, end 0 (min) and end 1 (max), the
+   * depth δ ≥ 0 and the sign of the push along ∂s/∂q (+1 pushes s up, off the min stop).
+   */
+  private stopDepths(k: number): [number, number][] {
+    const st = this.sys.derivation.sliderStops[k];
+    const s = this.stopBuf[k * (this.n + 1)];
+    return [
+      [st.min !== null ? st.min - s : -Infinity, 1],
+      [st.max !== null ? s - st.max : -Infinity, -1],
+    ];
+  }
+
+  /**
+   * Slider end stops, treated like the ground: past an end by δ, the joint is pushed back along
+   * its rail by F = max(0, k δ + c δ̇), k = m ω², c = 2ζmω, m the effective mass along ∂s/∂q, as
+   * the generalized force Q = ±F ∂s/∂q (on a body's rail this pushes the body back as well).
+   */
+  private applyStops(q: Float64Array, qd: Float64Array, f: Float64Array, stage: number) {
+    const stops = this.sys.derivation.sliderStops;
+    if (!stops.length) return;
+    const { n, sys, stopBuf, stopMass, stopGrad: g } = this;
+    sys.stops(q, stopBuf);
+    let power = 0;
+    stops.forEach((st, k) => {
+      const o = k * (n + 1);
+      for (let m = 0; m < n; m++) g[m] = stopBuf[o + 1 + m];
+      let sd = 0;
+      for (let m = 0; m < n; m++) sd += g[m] * qd[m];
+      this.stopDepths(k).forEach(([delta, push], end) => {
+        if (delta <= 0) return;
+        const key = 2 * k + end;
+        let mass = stopMass[key];
+        if (mass === null) {
+          const w = this.mobility(q, g);
+          if (w < 1e-12) return;
+          mass = stopMass[key] = 1 / w;
+        }
+        const w0 = CONTACT_OMEGA;
+        const kk = mass * w0 * w0;
+        const ddelta = -push * sd; // δ̇
+        let F = kk * delta + 2 * dampingRatio(st.restitution) * mass * w0 * ddelta;
+        if (F < 0) F = 0;
+        for (let m = 0; m < n; m++) f[m] += push * F * g[m];
+        power += ddelta * (F - kk * delta); // what the damper takes
+      });
+    });
+    if (stage >= 0) this.stageContactPower[stage] += power;
+  }
+
+  /** Forget stops the joints have left; true if any joint is at, or within reach of, a stop. */
+  private updateStops(h: number): boolean {
+    const stops = this.sys.derivation.sliderStops;
+    if (!stops.length) return false;
+    const { n, sys, q, qd, stopBuf, stopMass } = this;
+    sys.stops(q, stopBuf);
+    let near = false;
+    stops.forEach((_, k) => {
+      const o = k * (n + 1);
+      let sd = 0;
+      for (let m = 0; m < n; m++) sd += stopBuf[o + 1 + m] * qd[m];
+      this.stopDepths(k).forEach(([delta], end) => {
+        if (delta <= 0) stopMass[2 * k + end] = null;
+        if (delta > -(2 * h * Math.abs(sd) + 1e-4)) near = true;
+      });
+    });
+    return near;
   }
 
   /** Number of points touching the ground now. */
@@ -706,8 +799,11 @@ export class Simulator {
    * eight for very dead impacts (ζ > 1), whose strong damping needs it for the energy budget.
    */
   step(h: number): boolean {
-    if (this.ground && this.nearGround(h)) {
-      const parts = dampingRatio(this.ground.restitution) > 1 ? 8 : 4;
+    const ground = !!this.ground && this.nearGround(h);
+    const stops = this.updateStops(h);
+    if (ground || stops) {
+      const dead = (ground && dampingRatio(this.ground!.restitution) > 1) || (stops && this.sys.derivation.sliderStops.some((st) => dampingRatio(st.restitution) > 1));
+      const parts = dead ? 8 : 4;
       for (let k = 0; k < parts; k++) if (!this.rkStep(h / parts)) return false;
       return true;
     }
@@ -761,6 +857,7 @@ export class Simulator {
     this.updateHeat(h);
     this.project();
     this.updateContacts(h);
+    this.updateStops(h);
     for (let i = 0; i < n; i++) if (!Number.isFinite(this.q[i]) || !Number.isFinite(this.qd[i])) return false;
     return true;
   }
