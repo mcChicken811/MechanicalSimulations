@@ -1,14 +1,14 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, cloneDesign, drawnAngle, emptyDesign, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, clearConstraint, cloneDesign, drawnAngle, emptyDesign, railOf, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { drawScene, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'motor' | 'angle' | 'join' | PointKind | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'mass' | 'lockGear' | 'motor' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -76,6 +76,10 @@ function loadDesign(): Design | null {
     d.angles = d.angles.filter((a) => a.a !== a.b && d.links.some((l) => l.id === a.a) && d.links.some((l) => l.id === a.b));
     if (!Array.isArray(d.joins)) d.joins = []; // saved before joins existed
     d.joins = d.joins.filter((j) => bodyExists(d, j.a) && bodyExists(d, j.b));
+    for (const p of d.points) {
+      if (p.pin && !bodyExists(d, p.pin)) delete p.pin;
+      if (p.slide && (typeof p.slide.angle !== 'number' || (p.slide.on && !bodyExists(d, p.slide.on)))) delete p.slide;
+    }
     if (!Array.isArray(d.rackMeshes)) d.rackMeshes = [];
     d.rackMeshes = d.rackMeshes.filter((m) => d.gears.some((g) => g.id === m.gear) && d.links.some((l) => l.id === m.rack && l.rack));
     return d;
@@ -587,7 +591,23 @@ function sideOfRack(rack: DLink, g: DGear): 1 | -1 {
   return (c[1] - f.a[1]) * f.e[0] - (c[0] - f.a[0]) * f.e[1] >= 0 ? 1 : -1;
 }
 
+/** The hint bar while placing a pin or a rail. */
+function constrainHint(): string {
+  const c = constrain!;
+  const j = pointLabel(c.joint);
+  if (c.body === undefined)
+    return c.tool === 'pin'
+      ? `Now click the bar, rack or gear to pin joint ${j} on, or empty space to pin it to the ground (joint ${j} again frees it).`
+      : `Now click the body joint ${j} slides on, or empty space for a ground rail (joint ${j} again frees it).`;
+  return `Move the mouse to set the direction of the rail ${c.body ? `on ${bodyName(design, c.body)}` : 'on the ground'} (snaps to 15° and to the bar), then click. Esc cancels.`;
+}
+
 function removeOrphans() {
+  // pins and rails on bodies that are gone
+  for (const p of design.points) {
+    if (p.pin && !bodyExists(design, p.pin)) delete p.pin;
+    if (p.slide?.on && !bodyExists(design, p.slide.on)) delete p.slide;
+  }
   design.joins = joinsOf(design).filter((j) => bodyExists(design, j.a) && bodyExists(design, j.b));
   design.angles = anglesOf(design).filter((a) => design.links.some((l) => l.id === a.a) && design.links.some((l) => l.id === a.b));
   design.rackMeshes = design.rackMeshes.filter((m) => design.gears.some((g) => g.id === m.gear) && design.links.some((l) => l.id === m.rack && l.rack));
@@ -855,13 +875,102 @@ function toggleMass(w: Vec) {
   designChanged();
 }
 
-function setPointKind(id: number, kind: PointKind) {
+// ---- pins and rails ------------------------------------------------------------------
+/**
+ * The Pin and Slider tools work in steps: the joint, then the body (or the ground), then for a
+ * rail its direction.
+ */
+let constrain: { tool: 'pin' | 'slider'; joint: number; body?: DBodyRef | null; angle: number } | null = null;
+
+/** Remove a joint's constraint (the Free joint tool). */
+function freeJoint(id: number) {
   const p = design.points.find((pt) => pt.id === id);
   if (!p) return;
   pushUndo();
-  p.kind = p.kind === kind && kind !== 'free' ? 'free' : kind;
+  clearConstraint(p);
   selection = { kind: 'point', id };
   designChanged();
+}
+
+/** Whether a body already carries the joint (a bar ending at it, the gear it sits on). */
+function carries(ref: DBodyRef, pid: number): boolean {
+  const p = design.points.find((pt) => pt.id === pid);
+  if (ref.kind === 'link') return design.links.some((l) => l.id === ref.id && (l.a === pid || l.b === pid));
+  return design.gears.some((g) => g.id === ref.id && g.center === pid) || p?.gear === ref.id;
+}
+
+/** The rail direction (degrees) towards the mouse, snapped to 15° steps or to the body's own bar. */
+function railAngle(joint: number, w: Vec, body: DBodyRef | null | undefined): number {
+  const p = design.points.find((pt) => pt.id === joint)!;
+  const raw = (Math.atan2(w[1] - p.y, w[0] - p.x) * 180) / Math.PI;
+  const fold = (a: number) => ((a % 180) + 180) % 180;
+  const diff = (a: number, b: number) => Math.min(Math.abs(fold(a) - fold(b)), 180 - Math.abs(fold(a) - fold(b)));
+  if (body?.kind === 'link') {
+    const l = design.links.find((x) => x.id === body.id);
+    const [a, b] = l ? [design.points.find((q) => q.id === l.a), design.points.find((q) => q.id === l.b)] : [undefined, undefined];
+    if (a && b) {
+      const along = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+      for (const c of [along, along + 90]) if (diff(raw, c) < 6) return +fold(c).toFixed(2);
+    }
+  }
+  return fold(Math.round(raw / 15) * 15);
+}
+
+/** One click of the Pin or Slider tool. */
+function constrainClick(w: Vec) {
+  const t = tool as 'pin' | 'slider';
+  if (!constrain) {
+    const pid = pointAt(w);
+    if (pid === null) return;
+    constrain = { tool: t, joint: pid, angle: 0 };
+    selection = { kind: 'point', id: pid };
+    refreshControls();
+    return;
+  }
+  const p = design.points.find((pt) => pt.id === constrain!.joint);
+  if (!p) {
+    constrain = null;
+    return;
+  }
+  const label = pointLabel(p.id);
+  if (constrain.body === undefined) {
+    // step 2: the body, or the ground
+    if (pointAt(w) === p.id) {
+      // the joint again: free it (or just cancel)
+      const constrained = p.kind !== 'free' || p.gear !== undefined || p.pin || p.slide;
+      constrain = null;
+      if (constrained) freeJoint(p.id);
+      else refreshControls();
+      return;
+    }
+    const body = bodyAt(w);
+    if (body && carries(body, p.id)) {
+      flash(`Joint ${label} already moves with ${bodyName(design, body)}. Pick another body, or empty space for the ground.`);
+      return;
+    }
+    if (t === 'pin') {
+      pushUndo();
+      clearConstraint(p);
+      if (!body) p.kind = 'fixed';
+      else if (body.kind === 'gear') p.gear = body.id;
+      else p.pin = { ...body };
+      constrain = null;
+      designChanged();
+      refreshControls();
+      return;
+    }
+    constrain.body = body ? { ...body } : null;
+    constrain.angle = railAngle(p.id, w, constrain.body);
+    refreshControls();
+    return;
+  }
+  // step 3 (slider): the direction
+  pushUndo();
+  clearConstraint(p);
+  p.slide = { on: constrain.body, angle: railAngle(p.id, w, constrain.body) };
+  constrain = null;
+  designChanged();
+  refreshControls();
 }
 
 // ---- pointer input ---------------------------------------------------------------
@@ -1004,10 +1113,17 @@ canvas.addEventListener('pointerdown', (e) => {
       designChanged();
       break;
     }
-    default: {
+    case 'pin':
+    case 'slider':
+      constrainClick(w);
+      break;
+    case 'free': {
       const pid = pointAt(w);
-      if (pid !== null) setPointKind(pid, tool);
+      if (pid !== null) freeJoint(pid);
+      break;
     }
+    default:
+      break;
   }
 });
 
@@ -1038,6 +1154,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   if (boxSel) boxSel.to = w;
+  if (constrain && constrain.body !== undefined) constrain.angle = railAngle(constrain.joint, w, constrain.body);
   if (dragging?.group && multi) {
     const g = dragging.group;
     let off: Vec = [w[0] - g.start[0], w[1] - g.start[1]];
@@ -1113,7 +1230,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', o: 'motor', a: 'angle', j: 'join', f: 'fixed', x: 'lockX', y: 'lockY', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', m: 'mass', l: 'lockGear', o: 'motor', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1143,6 +1260,7 @@ window.addEventListener('keydown', (e) => {
     renderInspector();
   } else if (k === 'escape') {
     drawing = null;
+    constrain = null;
     selection = null;
     multi = null;
     boxSel = null;
@@ -1161,6 +1279,7 @@ const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools but
 toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool as Tool)));
 
 function setTool(t: Tool) {
+  constrain = null;
   if (t !== 'select') multi = null;
   tool = t;
   angleFirst = null;
@@ -1303,10 +1422,10 @@ const hints: Record<Tool, string> = {
   rack: 'Drag to draw a rack (a toothed bar). Pass along a gear and it snaps tangent and meshes. Lock its joints on rails to make it slide.',
   spring: 'Drag, or click twice, to draw a spring between joints. An end in empty space is anchored to the ground.',
   gear: 'Click a centre and drag out the radius. Touch another gear or a rack to mesh with it. Bars drawn on a gear are pinned to it.',
-  fixed: 'Click a joint to pin it to the ground. Click again to free it.',
-  lockX: 'Click a joint to lock its x position. It then slides on a vertical rail.',
-  lockY: 'Click a joint to lock its y position. It then slides on a horizontal rail.',
-  free: 'Click a joint to remove its constraint.',
+  pin: 'Click a joint, then the bar, rack or gear to pin it on (it moves with that body), or empty space to pin it to the ground.',
+  slider: 'Click a joint, then the body its rail is on (or empty space for a ground rail), then set the rail\'s direction.',
+
+  free: 'Click a joint to remove its constraint: a pin, a rail, or a pin on a body.',
   delete: 'Click a joint, bar, rack, spring or gear to delete it.',
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear to lock it so it cannot turn. Click again to unlock it.',
@@ -1328,7 +1447,9 @@ function refreshControls() {
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
     : tool === 'angle' && angleFirst !== null
       ? `Now click the bar whose angle to bar ${linkLabel(angleFirst)} should stay fixed (or bar ${linkLabel(angleFirst)} again to cancel).`
-      : tool === 'join' && joinFirst
+      : constrain
+        ? constrainHint()
+        : tool === 'join' && joinFirst
         ? `Now click the body to join to ${bodyName(design, joinFirst)} (or ${bodyName(design, joinFirst)} again to cancel).`
         : hints[tool];
   renderInspector();
@@ -1365,27 +1486,34 @@ function renderInspector() {
   if (sel?.kind === 'point') {
     const p = design.points.find((pt) => pt.id === sel.id);
     if (p) {
-      const kinds: [PointKind, string][] = [
-        ['free', 'Free'],
-        ['fixed', 'Pinned to ground'],
-        ['lockX', 'x locked (vertical rail)'],
-        ['lockY', 'y locked (horizontal rail)'],
-      ];
+      const rail = railOf(p);
+      const fold = (a: number) => +((((a % 180) + 180) % 180).toFixed(2));
+      const what =
+        p.kind === 'fixed'
+          ? 'pinned to the ground'
+          : p.gear !== undefined
+            ? `pinned on gear g${gearLabel(p.gear)}`
+            : p.pin
+              ? `pinned on ${bodyName(design, p.pin)}`
+              : rail
+                ? `slides on a rail on ${rail.on ? bodyName(design, rail.on) : 'the ground'}`
+                : 'free';
       inspectorEl.innerHTML = `
         <h4>Joint ${pointLabel(p.id)}</h4>
-        <label class="field">Constraint<select id="i-kind" ${disabled}>${kinds
-          .map(([k, label]) => `<option value="${k}" ${p.kind === k ? 'selected' : ''}>${label}</option>`)
-          .join('')}</select></label>
+        <div class="field"><span>Constraint</span><span>${what}${what !== 'free' ? ` <button id="i-free" ${disabled}>Free</button>` : ''}</span></div>
+        ${rail ? `<label class="field">Rail angle (°)<input id="i-rail" type="number" step="5" value="${fold(rail.angle)}" ${disabled}></label>` : ''}
+        ${what === 'free' ? '<p class="muted">Use <b>Pin</b> (F) to pin it to the ground or onto a body, or <b>Slider</b> (X) to put it on a rail.</p>' : ''}
         <label class="field">Point mass (kg)<input id="i-mass" type="number" min="0" step="0.1" value="${p.mass}" ${disabled}></label>
         <label class="field">x (m)<input id="i-x" type="number" step="0.1" value="${+p.x.toFixed(4)}" ${disabled}></label>
         <label class="field">y (m)<input id="i-y" type="number" step="0.1" value="${+p.y.toFixed(4)}" ${disabled}></label>
-        ${p.gear !== undefined ? `<div class="field"><span>Pinned on</span><span>gear g${gearLabel(p.gear)} <button id="i-detach" ${disabled}>Detach</button></span></div>` : ''}`;
-      inspectorEl.querySelector('#i-detach')?.addEventListener('click', () => {
-        pushUndo();
-        delete p.gear;
-        designChanged();
+        `;
+      inspectorEl.querySelector('#i-free')?.addEventListener('click', () => freeJoint(p.id));
+      bindField('#i-rail', (v) => {
+        const r = railOf(p);
+        if (!r || !Number.isFinite(Number(v))) return;
+        p.kind = 'free'; // a lockX / lockY rail becomes an ordinary ground rail at the new angle
+        p.slide = { on: r.on, angle: Number(v) };
       });
-      bindField('#i-kind', (v) => (p.kind = v as PointKind));
       bindField('#i-mass', (v) => (p.mass = Math.max(0, Number(v) || 0)));
       bindField('#i-x', (v) => (p.x = Number(v) || 0));
       bindField('#i-y', (v) => (p.y = Number(v) || 0));
@@ -1734,6 +1862,13 @@ function frame(now: number) {
     ground: design.ground ? { y: design.ground.y, slope: design.ground.slope } : null,
     multi: sim ? null : liveMulti(),
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
+    railPreview:
+      constrain && constrain.body !== undefined
+        ? (() => {
+            const p = design.points.find((pt) => pt.id === constrain!.joint);
+            return p ? { at: [p.x, p.y] as Vec, angle: constrain!.angle } : null;
+          })()
+        : null,
     trail: trail.n > 1 ? trail : null,
   });
   renderStatus();

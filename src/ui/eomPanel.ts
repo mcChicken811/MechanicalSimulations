@@ -90,10 +90,10 @@ export function* eomPanelSteps(d: Derivation | null, error: string | null, frict
     const bodies = (j: Derivation['joints'][number]) => [
       ...j.bars.map((b) => `${racks.has(b.link) ? 'rack' : 'bar'} ${linkLabel(b.link)}`),
       ...j.gears.map((g) => `g${gearLabel(g)}`),
-      ...(j.ground ? [j.rail ? 'slider' : 'ground'] : []),
+      ...(j.ground ? [j.rail !== null ? 'slider' : 'ground'] : []),
     ];
     const pinJoints = d.joints.filter((j) => bodies(j).length >= 2);
-    const rails = d.joints.filter((j) => j.rail);
+    const rails = d.joints.filter((j) => j.rail !== null);
     parts.push('<section><h3>Friction</h3>');
     parts.push(
       tex(

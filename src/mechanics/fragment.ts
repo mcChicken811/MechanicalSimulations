@@ -64,8 +64,10 @@ export function extractParts(d: Design, chosen: PartSet): Design {
     points: d.points
       .filter((p) => s.points.has(p.id))
       .map((p) => {
-        const q = { ...p };
+        const q = { ...p, ...(p.slide ? { slide: { ...p.slide, on: p.slide.on ? { ...p.slide.on } : null } } : {}), ...(p.pin ? { pin: { ...p.pin } } : {}) };
         if (q.gear !== undefined && !s.gears.has(q.gear)) delete q.gear; // its gear stays behind
+        if (q.pin && !hasBody(s, q.pin)) delete q.pin; // so does the bar it was pinned on
+        if (q.slide?.on && !hasBody(s, q.slide.on)) delete q.slide; // and a rail on a body left behind
         return q;
       }),
     links: d.links.filter((l) => s.links.has(l.id)).map((l) => ({ ...l })),
@@ -108,6 +110,8 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   for (const p of f.points) {
     const q = { ...p, id: P.get(p.id)!, x: p.x + dx, y: p.y + dy };
     if (p.gear !== undefined) q.gear = G.get(p.gear)!;
+    if (p.pin) q.pin = body(p.pin);
+    if (p.slide) q.slide = { angle: p.slide.angle, on: p.slide.on ? body(p.slide.on) : null };
     d.points.push(q);
   }
   for (const l of f.links) d.links.push({ ...l, id: L.get(l.id)!, a: P.get(l.a)!, b: P.get(l.b)! });

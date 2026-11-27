@@ -1,4 +1,4 @@
-import { gearLabel, GEAR_MODULE, linkLabel, pointLabel, rackPitch, sharedJoint, springLabel, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import { gearLabel, GEAR_MODULE, linkLabel, pointLabel, rackPitch, railOf, sharedJoint, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
 import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
 
@@ -34,6 +34,8 @@ export interface Scene {
   multi?: PartSet | null;
   /** The selection box being dragged, in world coordinates. */
   box?: { from: Vec; to: Vec } | null;
+  /** A rail being placed with the Slider tool: through `at`, at `angle` degrees. */
+  railPreview?: { at: Vec; angle: number } | null;
   /** The ground line, if there is one (slope in degrees). */
   ground?: { y: number; slope: number } | null;
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
@@ -113,7 +115,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   drawGrid(ctx, w, h, v);
   if (s.ground) drawGroundLine(ctx, w, h, v, s.ground);
 
-  for (const p of s.design.points) if (p.kind === 'lockX' || p.kind === 'lockY') drawRail(ctx, w, h, v, p);
+  for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
 
   const phases = toothPhases(s.design);
   drawGears(ctx, v, s, phases.gears);
@@ -157,6 +159,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
   if (s.grab) drawGrab(ctx, v, s.grab);
+  if (s.railPreview) drawRailPreview(ctx, w, h, v, s.railPreview);
   if (s.box) drawBox(ctx, v, s.box);
 }
 
@@ -334,15 +337,76 @@ function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number, v: View) 
   ctx.fillText(bar >= 0.1 ? `${bar} m` : `${Math.round(bar * 1000)} mm`, w - 30 - len / 2, h - 30);
 }
 
-function drawRail(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, p: DPoint) {
-  const [sx, sy] = toScreen(v, [p.x, p.y]);
+/**
+ * How a body has moved since it was drawn: its rotation and the map from drawn positions to
+ * where they are now (a bar by its two ends, a gear by its centre and turn).
+ */
+function bodyMotion(s: Scene, ref: DBodyRef): { turn: number; map: (p: Vec) => Vec } | null {
+  const at = (id: number) => s.design.points.find((q) => q.id === id);
+  let o0: Vec;
+  let o1: Vec;
+  let turn: number;
+  if (ref.kind === 'link') {
+    const l = s.design.links.find((x) => x.id === ref.id);
+    const [a, b] = l ? [at(l.a), at(l.b)] : [undefined, undefined];
+    if (!l || !a || !b) return null;
+    [o0, o1] = [[a.x, a.y], s.pos(l.a)];
+    const [pa, pb] = [s.pos(l.a), s.pos(l.b)];
+    turn = Math.atan2(pb[1] - pa[1], pb[0] - pa[0]) - Math.atan2(b.y - a.y, b.x - a.x);
+  } else {
+    const g = s.design.gears.find((x) => x.id === ref.id);
+    const c = g && at(g.center);
+    if (!g || !c) return null;
+    [o0, o1] = [[c.x, c.y], s.pos(g.center)];
+    turn = s.gearAngle(g.id);
+  }
+  const [cs, sn] = [Math.cos(turn), Math.sin(turn)];
+  return { turn, map: ([x, y]) => [o1[0] + (x - o0[0]) * cs - (y - o0[1]) * sn, o1[1] + (x - o0[0]) * sn + (y - o0[1]) * cs] };
+}
+
+/** A joint's rail: across the view for a ground rail, a dashed track on the body otherwise. */
+function drawRail(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, s: Scene, p: DPoint) {
+  const r = railOf(p)!;
+  const a = (r.angle * Math.PI) / 180;
   ctx.save();
-  ctx.strokeStyle = C.ground;
-  ctx.globalAlpha = 0.55;
   ctx.lineWidth = 2;
   ctx.setLineDash([10, 6]);
-  if (p.kind === 'lockY') line(ctx, [0, sy], [w, sy]);
-  else line(ctx, [sx, 0], [sx, h]);
+  if (!r.on) {
+    // through the drawn position, long enough to cross the view
+    const [sx, sy] = toScreen(v, [p.x, p.y]);
+    const L = w + h;
+    const [dx, dy] = [Math.cos(a) * L, -Math.sin(a) * L];
+    ctx.strokeStyle = C.ground;
+    ctx.globalAlpha = 0.55;
+    line(ctx, [sx - dx, sy - dy], [sx + dx, sy + dy]);
+  } else {
+    const m = bodyMotion(s, r.on);
+    if (m) {
+      const half = r.on.kind === 'gear' ? (s.design.gears.find((g) => g.id === r.on!.id)?.radius ?? 0.1) * 1.4 : 0.25;
+      const [ux, uy] = [Math.cos(a) * half, Math.sin(a) * half];
+      const [p0, p1] = [m.map([p.x - ux, p.y - uy]), m.map([p.x + ux, p.y + uy])];
+      ctx.strokeStyle = r.on.kind === 'link' ? linkColor(r.on.id) : gearColor(r.on.id);
+      ctx.lineCap = 'round';
+      line(ctx, toScreen(v, p0), toScreen(v, p1));
+    }
+  }
+  ctx.restore();
+}
+
+/** The rail being placed: a dashed accent line through the joint, with its angle. */
+function drawRailPreview(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, r: { at: Vec; angle: number }) {
+  const [sx, sy] = toScreen(v, r.at);
+  const a = (r.angle * Math.PI) / 180;
+  const L = w + h;
+  ctx.save();
+  ctx.strokeStyle = C.accent;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 6]);
+  line(ctx, [sx - Math.cos(a) * L, sy + Math.sin(a) * L], [sx + Math.cos(a) * L, sy - Math.sin(a) * L]);
+  ctx.setLineDash([]);
+  ctx.fillStyle = C.accent;
+  ctx.font = '600 12px system-ui, sans-serif';
+  ctx.fillText(`${(((r.angle % 180) + 180) % 180).toFixed(0)}°`, sx + 14, sy - 14);
   ctx.restore();
 }
 
@@ -800,7 +864,28 @@ function drawJoint(ctx: CanvasRenderingContext2D, v: View, s: Scene, p: DPoint) 
   const hovered = s.hover?.kind === 'point' && s.hover.id === p.id;
 
   if (p.kind === 'fixed') drawGround(ctx, c);
-  if (p.kind === 'lockX' || p.kind === 'lockY') drawSlider(ctx, c, p.kind);
+  const rail = railOf(p);
+  if (rail) {
+    // the slider block lies along the rail, turned with the body the rail is on
+    const turn = rail.on ? (bodyMotion(s, rail.on)?.turn ?? 0) : 0;
+    drawSlider(ctx, c, (rail.angle * Math.PI) / 180 + turn);
+  }
+  if (p.pin) {
+    // a short spoke from the joint to the bar it is pinned on, in the bar's colour
+    const l = s.design.links.find((x) => x.id === p.pin!.id);
+    if (l) {
+      const [a, b] = [toScreen(v, s.pos(l.a)), toScreen(v, s.pos(l.b))];
+      const { s: t } = segmentDistance(c, a, b);
+      const foot: Vec = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      ctx.save();
+      ctx.strokeStyle = linkColor(l.id);
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      line(ctx, c, foot);
+      ctx.restore();
+      dot(ctx, c, 8, linkColor(l.id), C.ink, 2);
+    }
+  }
 
   if (selected || hovered) {
     ctx.save();
@@ -845,14 +930,17 @@ function drawGround(ctx: CanvasRenderingContext2D, [x, y]: Vec) {
   ctx.restore();
 }
 
-function drawSlider(ctx: CanvasRenderingContext2D, [x, y]: Vec, kind: 'lockX' | 'lockY') {
+/** A slider block along a rail at `angle` (world radians). */
+function drawSlider(ctx: CanvasRenderingContext2D, [x, y]: Vec, angle: number) {
   ctx.save();
   ctx.fillStyle = '#e4e4dd';
   ctx.strokeStyle = C.ground;
   ctx.lineWidth = 2;
-  const [w, h] = kind === 'lockY' ? [34, 18] : [18, 34];
+  ctx.translate(x, y);
+  ctx.rotate(-angle); // the screen's y points down
+  const [w, h] = [34, 18];
   ctx.beginPath();
-  ctx.roundRect(x - w / 2, y - h / 2, w, h, 4);
+  ctx.roundRect(-w / 2, -h / 2, w, h, 4);
   ctx.fill();
   ctx.stroke();
   ctx.restore();

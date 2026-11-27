@@ -434,16 +434,17 @@ export class Simulator {
       const ij = sys.pointIndex.get(jt.id)!;
       // angular-velocity gradients ∂ω/∂q̇ of the bodies meeting here
       let nb = 0;
-      for (const { other } of jt.bars) {
-        const io = sys.pointIndex.get(other)!;
-        const dx = pos[2 * io] - pos[2 * ij];
-        const dy = pos[2 * io + 1] - pos[2 * ij + 1];
+      for (const bar of jt.bars) {
+        const ia = sys.pointIndex.get(bar.a)!;
+        const ib = sys.pointIndex.get(bar.b)!;
+        const dx = pos[2 * ib] - pos[2 * ia];
+        const dy = pos[2 * ib + 1] - pos[2 * ia + 1];
         const L2 = dx * dx + dy * dy || 1e-12;
         const g = bodyGrad[nb++];
         for (let m = 0; m < n; m++) {
-          const ddx = jac[io * 2 * n + m] - jac[ij * 2 * n + m];
-          const ddy = jac[io * 2 * n + n + m] - jac[ij * 2 * n + n + m];
-          g[m] = (dx * ddy - dy * ddx) / L2; // θ = atan2(Δy, Δx)
+          const ddx = jac[ib * 2 * n + m] - jac[ia * 2 * n + m];
+          const ddy = jac[ib * 2 * n + n + m] - jac[ia * 2 * n + n + m];
+          g[m] = (dx * ddy - dy * ddx) / L2; // the bar's angle θ = atan2(Δy, Δx)
         }
       }
       for (const gid of jt.gears) {
@@ -463,10 +464,11 @@ export class Simulator {
             P += friction.pin * w * w;
             for (let m = 0; m < n; m++) f[m] -= friction.pin * w * (ga[m] - gb[m]);
           }
-      if (jt.rail && friction.rail > 0) {
+      if (jt.rail !== null && friction.rail > 0) {
+        // speed along the ground rail: v = (cos a, sin a) · ṙ
         const g = bodyGrad[0];
-        const row = jt.rail === 'x' ? 0 : 1;
-        for (let m = 0; m < n; m++) g[m] = jac[ij * 2 * n + row * n + m];
+        const [c, sn] = [Math.cos(jt.rail), Math.sin(jt.rail)];
+        for (let m = 0; m < n; m++) g[m] = c * jac[ij * 2 * n + m] + sn * jac[ij * 2 * n + n + m];
         const v = dotQd(g);
         P += friction.rail * v * v;
         for (let m = 0; m < n; m++) f[m] -= friction.rail * v * g[m];

@@ -37,11 +37,16 @@
  *    centre), θ_b − θ_a = α and r_b − r_a = Rot(θ_a)(u, v), the constants taken from the
  *    drawing. Equations the mechanism already enforces (bodies sharing a joint need only
  *    the first) are dropped by the same independence test.
+ * 13. A joint pinned onto a bar keeps its drawn place in the bar's frame, r_P − r_A = Rot(θ)(u, v)
+ *    (two constraints); a joint on a rail fixed to a body stays on that line as the body moves,
+ *    (r_P − r_A) · n(θ) = d with n the rail's normal turning with the body (one constraint). A
+ *    ground rail at any angle gives n · (r_P − r_0) = 0, or, for a joint that seeds a floating
+ *    part, a single coordinate s along the rail.
  * 12. A motor on a gear adds the generalized force Q_φ = τ − b φ̇ to the gear's equation:
  *    a constant torque τ, less b = τ/Ω as the gear nears the motor's no-load speed Ω.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
-import { bodyName, drawnAngle, gearLabel, linkLabel, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
+import { bodyName, drawnAngle, gearLabel, linkLabel, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
 
 export interface Coordinate {
   sym: string;
@@ -50,8 +55,8 @@ export interface Coordinate {
   /** LaTeX base symbol and subscript, e.g. '\\theta' and '1'. */
   base: string;
   sub: string;
-  /** What the coordinate measures. */
-  kind: 'angle' | 'x' | 'y';
+  /** What the coordinate measures ('s': distance along a ground rail). */
+  kind: 'angle' | 'x' | 'y' | 's';
   initial: number;
 }
 
@@ -78,6 +83,8 @@ export interface Constraint {
   fixedAngle?: { a: number; b: number };
   /** One of the (up to three) equations of a join, by join id; dropped when already enforced. */
   joined?: number;
+  /** An equation of a joint pinned to, or sliding on, a body, by joint id; dropped when already enforced. */
+  attached?: number;
 }
 
 /** A spring's contribution V = ½ k (ℓ − ℓ₀)², ℓ = √D. */
@@ -103,14 +110,14 @@ export interface SpringTerm {
 /** The bodies that meet at a joint, for joint friction. */
 export interface JointBodies {
   id: number;
-  /** Bars ending here, each with the joint at its other end (its angle is measured towards it). */
-  bars: { link: number; other: number }[];
+  /** Bars meeting here (ending here, or with the joint pinned on them), by their two ends. */
+  bars: { link: number; a: number; b: number }[];
   /** Gears this joint belongs to (as centre or pin) that can turn. */
   gears: number[];
   /** The ground or a slider block: a body that does not rotate. */
   ground: boolean;
-  /** For a joint sliding on a rail, the free direction. */
-  rail: 'x' | 'y' | null;
+  /** For a joint sliding on a ground rail, the rail's direction (rad); null otherwise. */
+  rail: number | null;
 }
 
 /**
@@ -266,11 +273,30 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     }
   }
 
+  /** A ground rail's direction in radians, folded to [0, π), or null if the joint has none. */
+  const groundRail = (p: DPoint): number | null => {
+    const r = railOf(p);
+    if (!r || r.on) return null;
+    const a = (((r.angle % 180) + 180) % 180) * (Math.PI / 180);
+    return a;
+  };
+  const isAxis = (a: number, target: number) => Math.abs(a - target) < 1e-9;
   const lockConstraints = (p: DPoint, [x, y]: [Poly, Poly], via: string) => {
-    if (p.kind === 'fixed' || p.kind === 'lockX')
-      constraints.push({ phi: x.sub(anchorX(p)), reason: `joint ${pointLabel(p.id)}: x locked (${via})` });
-    if (p.kind === 'fixed' || p.kind === 'lockY')
-      constraints.push({ phi: y.sub(anchorY(p)), reason: `joint ${pointLabel(p.id)}: y locked (${via})` });
+    const lab = pointLabel(p.id);
+    if (p.kind === 'fixed') {
+      constraints.push({ phi: x.sub(anchorX(p)), reason: `joint ${lab}: x locked (${via})` });
+      constraints.push({ phi: y.sub(anchorY(p)), reason: `joint ${lab}: y locked (${via})` });
+      return;
+    }
+    const a = groundRail(p);
+    if (a === null) return;
+    if (isAxis(a, Math.PI / 2)) constraints.push({ phi: x.sub(anchorX(p)), reason: `joint ${lab}: x locked, on a vertical rail (${via})` });
+    else if (isAxis(a, 0)) constraints.push({ phi: y.sub(anchorY(p)), reason: `joint ${lab}: y locked, on a horizontal rail (${via})` });
+    else {
+      // stays on the line through its drawn place: n · (r − r₀) = 0, n = (−sin a, cos a)
+      const phi = x.sub(anchorX(p)).scale(-Math.sin(a)).add(y.sub(anchorY(p)).scale(Math.cos(a)));
+      constraints.push({ phi, reason: `joint ${lab}: slides on a ground rail at ${((a * 180) / Math.PI).toFixed(1)}° (${via})` });
+    }
   };
 
   /** Place a whole gear from one of its joints that is already placed. */
@@ -299,7 +325,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
       const p = pointById.get(pid)!;
       if (!positions.has(pid)) {
         positions.set(pid, pos);
-        if (p.kind !== 'free') lockConstraints(p, pos, `on gear ${lab}`);
+        lockConstraints(p, pos, `on gear ${lab}`);
         queue.push(pid);
       } else {
         // Reached a second way: the gear closes a loop, so the two positions must agree.
@@ -334,7 +360,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
             py.add(L.mul(Poly.sin([[th, 1]])).scale(s)),
           ];
           positions.set(otherId, pos);
-          if (other.kind !== 'free') lockConstraints(other, pos, `reached through bar ${linkLabel(l.id)}`);
+          lockConstraints(other, pos, `reached through bar ${linkLabel(l.id)}`);
           queue.push(otherId);
         } else {
           // Both ends already placed: the bar closes a loop, so its length is a constraint.
@@ -356,11 +382,20 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
   for (;;) {
     const unplaced = active.filter((p) => !positions.has(p.id));
     if (unplaced.length === 0) break;
-    // Seed a floating component, preferring a joint with a locked axis (fewer coordinates).
-    const seed = unplaced.find((p) => p.kind === 'lockX' || p.kind === 'lockY') ?? unplaced[0];
+    // Seed a floating component, preferring a joint on a ground rail (one coordinate, not two).
+    const seed = unplaced.find((p) => groundRail(p) !== null) ?? unplaced[0];
     const lab = pointLabel(seed.id);
-    const x = seed.kind === 'lockX' ? anchorX(seed) : coord(`x${seed.id}`, 'x', lab, 'x', seed.x);
-    const y = seed.kind === 'lockY' ? anchorY(seed) : coord(`y${seed.id}`, 'y', lab, 'y', seed.y);
+    const a = groundRail(seed);
+    let x: Poly;
+    let y: Poly;
+    if (a === null) [x, y] = [coord(`x${seed.id}`, 'x', lab, 'x', seed.x), coord(`y${seed.id}`, 'y', lab, 'y', seed.y)];
+    else if (isAxis(a, Math.PI / 2)) [x, y] = [anchorX(seed), coord(`y${seed.id}`, 'y', lab, 'y', seed.y)];
+    else if (isAxis(a, 0)) [x, y] = [coord(`x${seed.id}`, 'x', lab, 'x', seed.x), anchorY(seed)];
+    else {
+      // r = r₀ + s (cos a, sin a): s is the distance along the rail from where it was drawn
+      const s = coord(`s${seed.id}`, 's', lab, 's', 0);
+      [x, y] = [anchorX(seed).add(s.scale(Math.cos(a))), anchorY(seed).add(s.scale(Math.sin(a)))];
+    }
     positions.set(seed.id, [x, y]);
     queue.push(seed.id);
     propagate();
@@ -556,6 +591,54 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     for (const [phi, what] of moving) constraints.push({ phi, reason: `${lab} are one body (${what})`, joined: j.id });
   }
 
+  // ---- joints pinned to, or sliding on, a body ------------------------------------
+  const attachNames = new Map<number, string>();
+  for (const p of active) {
+    const rail = railOf(p);
+    const ref = p.pin ?? (rail?.on ? rail.on : null);
+    if (!ref || !positions.has(p.id)) continue;
+    const B = bodyFrame(ref);
+    if (!B) continue;
+    const lab = `joint ${pointLabel(p.id)}`;
+    const body = bodyName(design, ref);
+    const env = initialEnv();
+    const cos = B.sym ? Poly.cos([[B.sym, 1]]) : Poly.const(1);
+    const sin = B.sym ? Poly.sin([[B.sym, 1]]) : Poly.zero;
+    const [px, py] = positions.get(p.id)!;
+    const dx = px.sub(B.at[0]);
+    const dy = py.sub(B.at[1]);
+    const constant = (sym: string, latex: string, value: number, unit: string) => (Math.abs(value) < 1e-12 ? Poly.zero : param(sym, latex, value, unit));
+    const parts: [Poly, string][] = [];
+    if (p.pin) {
+      attachNames.set(p.id, `${lab} is pinned to ${body}`);
+      const [c0, s0, dx0, dy0] = [cos, sin, dx, dy].map((e) => e.evaluate(env));
+      const u = constant(`pu${p.id}`, `u_{${pointLabel(p.id)}}`, c0 * dx0 + s0 * dy0, 'm');
+      const v = constant(`pv${p.id}`, `v_{${pointLabel(p.id)}}`, -s0 * dx0 + c0 * dy0, 'm');
+      parts.push([dx.sub(u.mul(cos)).add(v.mul(sin)), `${lab} is pinned to ${body} (x)`]);
+      parts.push([dy.sub(u.mul(sin)).sub(v.mul(cos)), `${lab} is pinned to ${body} (y)`]);
+    } else if (rail) {
+      attachNames.set(p.id, `${lab} slides on ${body}`);
+      // the rail's normal, drawn at angle a when the body was at θ₀, turns with the body:
+      // n(θ) = Rot(θ − θ₀)(−sin a, cos a)
+      const a = (rail.angle * Math.PI) / 180;
+      const th0 = B.angle.evaluate(env);
+      const [n0x, n0y] = [-Math.sin(a), Math.cos(a)];
+      // Rot(θ − θ₀) = cos θ Rot(−θ₀) + sin θ Rot(π/2 − θ₀): expand with numeric θ₀
+      const [rc, rs] = [Math.cos(th0), Math.sin(th0)];
+      const nx = cos.scale(rc * n0x + rs * n0y).sub(sin.scale(-rs * n0x + rc * n0y));
+      const ny = sin.scale(rc * n0x + rs * n0y).add(cos.scale(-rs * n0x + rc * n0y));
+      const along = dx.mul(nx).add(dy.mul(ny));
+      const d = constant(`pd${p.id}`, `d_{${pointLabel(p.id)}}`, along.evaluate(env), 'm');
+      parts.push([along.sub(d), `${lab} slides on a rail on ${body}`]);
+    }
+    const moving = parts.filter(([phi]) => movable(phi));
+    if (!moving.length) {
+      warnings.push(`${lab[0].toUpperCase()}${lab.slice(1)} and ${body} cannot move, so the constraint has no effect.`);
+      continue;
+    }
+    for (const [phi, reason] of moving) constraints.push({ phi, reason, attached: p.id });
+  }
+
   const qs = coords.map((c) => c.sym);
   const qsDepend = (e: Poly) => qs.some((q) => e.dependsOn(q));
   const qds = coords.map((c) => c.vel);
@@ -691,7 +774,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     return true;
   };
   // Fixed angles get the same test: welding two sides of a rigid triangle adds nothing.
-  const optional = (c: Constraint) => c.rackDistance || c.fixedAngle || c.joined !== undefined;
+  const optional = (c: Constraint) => c.rackDistance || c.fixedAngle || c.joined !== undefined || c.attached !== undefined;
   for (const c of movableKept) if (!optional(c)) independent(c.phi);
   const kept = movableKept.filter((c) => {
     if (!optional(c)) return true;
@@ -699,6 +782,9 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     if (c.fixedAngle) warnings.push(`${c.reason[0].toUpperCase()}${c.reason.slice(1)}, but the mechanism already holds that angle, so the constraint was dropped.`);
     return false;
   });
+  for (const [id, lab] of attachNames)
+    if (movableKept.some((c) => c.attached === id) && !kept.some((c) => c.attached === id))
+      warnings.push(`${lab[0].toUpperCase()}${lab.slice(1)}, but it already moves that way, so the constraint was dropped.`);
   for (const [id, lab] of joinNames)
     if (movableKept.some((c) => c.joined === id) && !kept.some((c) => c.joined === id))
       warnings.push(`${lab[0].toUpperCase()}${lab.slice(1)} already move as one body, so joining them adds nothing.`);
@@ -734,10 +820,10 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     activePoints: active.map((pt) => pt.id),
     joints: active.map((p) => ({
       id: p.id,
-      bars: links.filter((l) => l.a === p.id || l.b === p.id).map((l) => ({ link: l.id, other: l.a === p.id ? l.b : l.a })),
+      bars: links.filter((l) => l.a === p.id || l.b === p.id || (p.pin?.kind === 'link' && p.pin.id === l.id)).map((l) => ({ link: l.id, a: l.a, b: l.b })),
       gears: (gearsAt.get(p.id) ?? []).filter((gid) => gearAngle.has(gid) && !gearById.get(gid)!.locked),
-      ground: p.kind !== 'free' || (gearsAt.get(p.id) ?? []).some((gid) => gearById.get(gid)!.locked),
-      rail: p.kind === 'lockX' ? 'y' : p.kind === 'lockY' ? 'x' : null,
+      ground: p.kind === 'fixed' || groundRail(p) !== null || (gearsAt.get(p.id) ?? []).some((gid) => gearById.get(gid)!.locked),
+      rail: groundRail(p),
     })),
     meshes: meshParts.map(({ id, kind, a, b, v }) => ({ id, kind, a, b, pitchGrad: qs.map((q) => v.diff(q)) })),
     activeLinks: links.map((l) => l.id),

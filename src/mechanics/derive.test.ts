@@ -929,3 +929,104 @@ describe('motors', () => {
     expect(Math.abs(e.T + e.V + s.dissipated - s.motorWork - E0)).toBeLessThan(1e-6);
   }, 20000);
 });
+
+describe('pins and rails on bodies', () => {
+  const mk = (points: Design['points'], links: Design['links'], extra: Partial<Design> = {}): Design => ({ points, links, springs: [], gears: [], meshes: [], rackMeshes: [], ...extra });
+
+  it('slides a free mass down a 30° ground rail at g sin 30°', () => {
+    const d = mk([{ id: 0, x: 0, y: 0, kind: 'free', mass: 1, slide: { on: null, angle: 30 } }], []);
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.map((c) => c.kind)).toEqual(['s']); // one coordinate along the rail
+    const s = new Simulator(new NumericSystem(der));
+    for (let i = 0; i < 1000; i++) s.step(1e-3);
+    const p = s.jointPosition(0)!;
+    const along = p[0] * Math.cos(Math.PI / 6) + p[1] * Math.sin(Math.PI / 6);
+    expect(along).toBeCloseTo(-0.5 * G * 0.5 * 1, 6); // ½ g sin30° t²
+    expect(Math.abs(-p[0] * Math.sin(Math.PI / 6) + p[1] * Math.cos(Math.PI / 6))).toBeLessThan(1e-9); // on the rail
+  });
+
+  it('keeps a joint reached through a bar on an angled ground rail', () => {
+    // a pendulum whose bob rides a 45° ground rail
+    const d = mk(
+      [
+        { id: 0, x: 0, y: 1, kind: 'fixed', mass: 0 },
+        { id: 1, x: 0.6, y: 0.4, kind: 'free', mass: 1, slide: { on: null, angle: 45 } },
+      ],
+      [{ id: 0, a: 0, b: 1, mass: 0.5 }],
+    );
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(0); // locked: one bar, one rail, pinned top
+    expect(der.warnings.some((w) => w.includes('locked'))).toBe(true);
+  });
+
+  it('pins a joint onto the middle of a bar, where it then pivots', () => {
+    // bar 0 hangs from O; bar 1 hangs from a pin P halfway along bar 0
+    const d = mk(
+      [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+        { id: 2, x: 0.5, y: 0, kind: 'free', mass: 0, pin: { kind: 'link', id: 0 } },
+        { id: 3, x: 0.5, y: -0.6, kind: 'free', mass: 0.5 },
+      ],
+      [
+        { id: 0, a: 0, b: 1, mass: 1 },
+        { id: 1, a: 2, b: 3, mass: 0.3 },
+      ],
+    );
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(2);
+    expect(der.warnings).toEqual([]);
+    const s = new Simulator(new NumericSystem(der));
+    const E0 = s.energy().T + s.energy().V;
+    for (let i = 0; i < 2000; i++) s.step(1e-3);
+    const p = s.jointPositions();
+    const [o, a, pin] = [p.get(0)!, p.get(1)!, p.get(2)!];
+    expect(Math.hypot(pin[0] - (o[0] + a[0]) / 2, pin[1] - (o[1] + a[1]) / 2)).toBeLessThan(1e-9); // still halfway
+    expect(Math.abs(s.energy().T + s.energy().V - E0)).toBeLessThan(1e-6);
+  });
+
+  it('slides a crank pin along a slotted lever that turns with it', () => {
+    // crank O–P driven round by gravity on its mass; P slides on lever Q–R pivoted at Q
+    const d = mk(
+      [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 0.2, y: 0.1, kind: 'free', mass: 1, slide: { on: { kind: 'link', id: 1 }, angle: (Math.atan2(0.1 + 0.4, 0.2) * 180) / Math.PI } },
+        { id: 2, x: 0, y: -0.4, kind: 'fixed', mass: 0 },
+        { id: 3, x: 0.4, y: 0.6, kind: 'free', mass: 0 },
+      ],
+      [
+        { id: 0, a: 0, b: 1, mass: 0.2 },
+        { id: 1, a: 2, b: 3, mass: 0.5 },
+      ],
+    );
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(1);
+    const s = new Simulator(new NumericSystem(der));
+    const E0 = s.energy().T + s.energy().V;
+    let moved = 0;
+    for (let i = 0; i < 2000; i++) {
+      expect(s.step(1e-3)).toBe(true);
+      const p = s.jointPositions();
+      const [pin, q, r] = [p.get(1)!, p.get(2)!, p.get(3)!];
+      // the pin stays on the lever's line
+      const cross = ((r[0] - q[0]) * (pin[1] - q[1]) - (r[1] - q[1]) * (pin[0] - q[0])) / Math.hypot(r[0] - q[0], r[1] - q[1]);
+      expect(Math.abs(cross)).toBeLessThan(1e-8);
+      moved = Math.max(moved, Math.hypot(pin[0] - 0.2, pin[1] - 0.1));
+    }
+    expect(moved).toBeGreaterThan(0.05);
+    expect(Math.abs(s.energy().T + s.energy().V - E0)).toBeLessThan(1e-6);
+  });
+
+  it('drops a pin the mechanism already holds, with a warning', () => {
+    const d = mk(
+      [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0, pin: { kind: 'link', id: 0 } }, // its own bar's end
+      ],
+      [{ id: 0, a: 0, b: 1, mass: 1 }],
+    );
+    const der = deriveEquations(d, { gravity: G });
+    expect(der.coords.length - der.constraints.length).toBe(1);
+    expect(der.warnings.some((w) => w.includes('already moves'))).toBe(true);
+  });
+});

@@ -1,12 +1,22 @@
 /** The editable description of a planar linkage (world units: metres, kilograms; y points up). */
 
 /**
- * free  – the joint moves in both x and y
+ * free  – the joint moves in both x and y (unless `pin` or `slide` says otherwise)
  * fixed – pinned to the ground (both x and y locked)
- * lockX – x is locked: the joint slides along a vertical rail
- * lockY – y is locked: the joint slides along a horizontal rail
+ * lockX – x is locked: the joint slides along a vertical ground rail (same as a slide at 90°)
+ * lockY – y is locked: the joint slides along a horizontal ground rail (same as a slide at 0°)
  */
 export type PointKind = 'free' | 'fixed' | 'lockX' | 'lockY';
+
+/**
+ * A rail the joint slides along, fixed to a body (a bar, rack or gear) or to the ground
+ * (`on` null). It passes through the joint as drawn, at `angle` degrees in the drawing; on a
+ * body it then turns and moves with that body.
+ */
+export interface DSlide {
+  on: DBodyRef | null;
+  angle: number;
+}
 
 export interface DPoint {
   id: number;
@@ -20,6 +30,26 @@ export interface DPoint {
    * at the offset from the gear centre it had in the design.
    */
   gear?: number;
+  /** If set, the joint is pinned onto this bar or rack, moving rigidly with it where drawn. */
+  pin?: DBodyRef;
+  /** If set, the joint slides on a rail (on a body or on the ground). */
+  slide?: DSlide;
+}
+
+/** The rail a joint slides on, if any: its own slide, or a lockX / lockY ground rail. */
+export function railOf(p: DPoint): DSlide | null {
+  if (p.slide) return p.slide;
+  if (p.kind === 'lockX') return { on: null, angle: 90 };
+  if (p.kind === 'lockY') return { on: null, angle: 0 };
+  return null;
+}
+
+/** Remove every constraint from a joint: ground pin, rail, or pin on a body. */
+export function clearConstraint(p: DPoint) {
+  p.kind = 'free';
+  delete p.gear;
+  delete p.pin;
+  delete p.slide;
 }
 
 /** A uniform rigid bar between two joints. Bars sharing a joint are pinned together. */

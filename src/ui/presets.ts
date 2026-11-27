@@ -84,6 +84,41 @@ function drivenJansenLeg(): Design {
 }
 
 /**
+ * The crank-and-slotted-lever quick-return mechanism, as in a shaping machine. A motor turns
+ * the crank; its pin slides in the slot of a lever pivoted below (a rail fixed to the lever,
+ * turning with it), and the lever's top drives the ram along its guide (a ground rail). The
+ * crank pin spends longer on the far side of its circle, so the ram's cutting stroke is slower
+ * than its return.
+ */
+function quickReturn(): Design {
+  const crank = 0.12;
+  const O: P = [0, 0];
+  const Q: P = [0, -0.35];
+  const a0 = (30 * Math.PI) / 180;
+  const Pp: P = [O[0] + crank * Math.cos(a0), O[1] + crank * Math.sin(a0)];
+  const lever = Math.atan2(Pp[1] - Q[1], Pp[0] - Q[0]);
+  const R: P = [Q[0] + 0.7 * Math.cos(lever), Q[1] + 0.7 * Math.sin(lever)];
+  const ramY = 0.4;
+  const S: P = [R[0] + Math.sqrt(0.3 ** 2 - (ramY - R[1]) ** 2), ramY];
+  return {
+    points: [
+      pt(0, ...O, 'fixed'), // crank axle
+      { ...pt(1, ...Pp), slide: { on: { kind: 'link', id: 1 }, angle: (lever * 180) / Math.PI } }, // crank pin, in the lever's slot
+      pt(2, ...Q, 'fixed'), // lever pivot
+      pt(3, ...R), // lever top
+      { ...pt(4, ...S, 'free', 1), slide: { on: null, angle: 0 } }, // ram, on its guide
+    ],
+    //              crank          lever          link to the ram
+    links: barsM([[0, 1, 0.2], [2, 3, 0.6], [3, 4, 0.2]]),
+    springs: [],
+    gears: [{ ...gear(0, 0, 0.08, 0.4), motor: { torque: 2, noLoadRpm: 60 } }],
+    meshes: [],
+    rackMeshes: [],
+    joins: [{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'gear', id: 0 } }],
+  };
+}
+
+/**
  * Rack-and-pinion steering, seen from above. The steering-column pinion moves the rack
  * sideways on its rails; tie rods push the steering arms, turning each wheel's knuckle about
  * its kingpin. The arms point inwards (Ackermann geometry), so the inner wheel turns more.
@@ -616,6 +651,7 @@ export interface Preset {
 export const presets: Preset[] = [
   { name: 'Strandbeest leg (Jansen linkage)', group: 'Famous mechanisms', build: () => jansenLeg() },
   { name: 'Strandbeest leg driven by a crank motor', group: 'Famous mechanisms', build: () => drivenJansenLeg() },
+  { name: 'Quick-return mechanism (crank and slotted lever)', group: 'Famous mechanisms', build: () => quickReturn() },
   {
     // James Watt, 1781. The planet gear is fixed to the connecting rod (bars E–P and E–Q make
     // them one rigid body) and is kept in mesh with the sun gear by the link O–P. One orbit of

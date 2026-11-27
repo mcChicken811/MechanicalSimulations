@@ -63,4 +63,35 @@ describe('copy and paste', () => {
     expect(c2[0]).toBeCloseTo(5, 12);
     expect(c2[1]).toBeCloseTo(2, 12);
   });
+
+  it('moves pins and rails over to the pasted bodies, and drops them for bodies left behind', () => {
+    const d: Design = {
+      points: [
+        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
+        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
+        { id: 2, x: 0.5, y: 0, kind: 'free', mass: 0, pin: { kind: 'link', id: 0 } },
+        { id: 3, x: 0.5, y: -0.5, kind: 'free', mass: 0, slide: { on: { kind: 'link', id: 0 }, angle: 0 } },
+        { id: 4, x: 0.5, y: -1, kind: 'free', mass: 1, slide: { on: null, angle: 30 } },
+      ],
+      links: [
+        { id: 0, a: 0, b: 1, mass: 1 },
+        { id: 1, a: 2, b: 3, mass: 1 },
+        { id: 2, a: 3, b: 4, mass: 1 },
+      ],
+      springs: [], gears: [], meshes: [], rackMeshes: [],
+    };
+    const pasted = pasteParts(d, extractParts(d, allParts(d)), 3, 0);
+    const copy = d.points.filter((p) => pasted.points.has(p.id));
+    const bar0copy = d.links.find((l) => pasted.links.has(l.id) && l.a === copy[0].id)!;
+    expect(copy[2].pin).toEqual({ kind: 'link', id: bar0copy.id });
+    expect(copy[3].slide).toEqual({ on: { kind: 'link', id: bar0copy.id }, angle: 0 });
+    expect(copy[4].slide).toEqual({ on: null, angle: 30 }); // a ground rail stays a ground rail
+    // copying only bars 1 and 2 leaves bar 0 behind: the pin and the rail on it go
+    const s = emptyParts();
+    s.links.add(1).add(2);
+    const part = extractParts(d, s);
+    expect(part.points.find((p) => p.id === 2)!.pin).toBeUndefined();
+    expect(part.points.find((p) => p.id === 3)!.slide).toBeUndefined();
+    expect(part.points.find((p) => p.id === 4)!.slide).toEqual({ on: null, angle: 30 });
+  });
 });

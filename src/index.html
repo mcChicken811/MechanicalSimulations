@@ -30,14 +30,11 @@
         <button data-tool="gear" title="Draw a gear: click a centre, drag the radius (G)">
           <svg viewBox="0 0 16 16"><circle cx="5.5" cy="8" r="3.2" class="s" /><circle cx="11.5" cy="8" r="2.4" class="s" /><circle cx="5.5" cy="8" r="0.9" /><circle cx="11.5" cy="8" r="0.8" /></svg>Gears<kbd>G</kbd>
         </button>
-        <button data-tool="fixed" title="Pin a joint to the ground (F)">
-          <svg viewBox="0 0 16 16"><path d="M8 3l4.5 7h-9z" /><path d="M2 12.5h12" class="s" /></svg>Pin to ground<kbd>F</kbd>
+        <button data-tool="pin" title="Pin a joint: click the joint, then a bar, rack or gear to pin it on, or empty space for the ground (F)">
+          <svg viewBox="0 0 16 16"><path d="M8 3l4.5 7h-9z" /><path d="M2 12.5h12" class="s" /></svg>Pin<kbd>F</kbd>
         </button>
-        <button data-tool="lockX" title="Lock x: joint slides on a vertical rail (X)">
-          <svg viewBox="0 0 16 16"><path d="M8 1v14" class="s d" /><rect x="5" y="5" width="6" height="6" rx="1" /></svg>Lock x<kbd>X</kbd>
-        </button>
-        <button data-tool="lockY" title="Lock y: joint slides on a horizontal rail (Y)">
-          <svg viewBox="0 0 16 16"><path d="M1 8h14" class="s d" /><rect x="5" y="5" width="6" height="6" rx="1" /></svg>Lock y<kbd>Y</kbd>
+        <button data-tool="slider" title="Put a joint on a rail: click the joint, then the body the rail is on (or empty space for the ground), then its direction (X)">
+          <svg viewBox="0 0 16 16"><path d="M1.5 12.5l13-9" class="s d" /><rect x="5" y="5" width="6" height="6" rx="1" transform="rotate(-35 8 8)" /></svg>Slider<kbd>X</kbd>
         </button>
         <button data-tool="free" title="Make a joint free (N)">
           <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" class="s" /></svg>Free joint<kbd>N</kbd>
