@@ -142,7 +142,7 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   for (const m of f.meshes) d.meshes.push({ id: M.get(m.id)!, a: G.get(m.a)!, b: G.get(m.b)! });
   for (const m of f.rackMeshes) d.rackMeshes.push({ id: RM.get(m.id)!, gear: G.get(m.gear)!, rack: L.get(m.rack)! });
   for (const j of f.joins ?? []) (d.joins ??= []).push({ id: J.get(j.id)!, a: body(j.a), b: body(j.b) });
-  for (const x of f.dimensions ?? []) (d.dimensions ??= []).push({ kind: x.kind, id: ({ point: P, link: L, spring: S, gear: G } as const)[x.kind].get(x.id)! });
+  for (const x of f.dimensions ?? []) (d.dimensions ??= []).push({ ...x, id: ({ point: P, link: L, spring: S, gear: G } as const)[x.kind].get(x.id)! }); // where it was dragged to, too
 
   return { points: new Set(P.values()), links: new Set(L.values()), springs: new Set(S.values()), gears: new Set(G.values()) };
 }

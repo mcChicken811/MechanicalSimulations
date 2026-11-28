@@ -474,6 +474,14 @@ export function groundHeight(g: DGround, x: number): number {
 export interface DDimension {
   kind: 'point' | 'link' | 'spring' | 'gear';
   id: number;
+  /** A length's dimension line: its distance from the part (m), signed along the part's upper (or right) side. */
+  offset?: number;
+  /** A radius: the arrow's angle (rad, in the plane) and how far from the centre its text sits (m). */
+  angle?: number;
+  dist?: number;
+  /** A joint's position label: where it sits relative to the joint (m). */
+  dx?: number;
+  dy?: number;
 }
 
 export interface Design {

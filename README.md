@@ -134,7 +134,14 @@ So a group needs at most three coordinates and adds no constraints. Its other ba
 - **Gears, wheels and propellers:** the radius, as an arrow from the centre to the rim.
 - **Joints:** the position, (x, y).
 
-Dimensions stay on the view, follow the parts while they move, and are saved with the design. Copying parts copies their dimensions, and deleting a part removes its dimension.
+**Moving a dimension:** as in CAD, press on a dimension's line or text, or on its part, and drag. It only moves once the cursor has gone 0.3 cm, so a plain click still shows or hides it.
+- **A length's dimension line** slides to pass through the cursor, nearer the part or farther from it, and to either side; its extension lines grow to reach it.
+- **A radius** swings round the centre to point at the cursor, its text following on a leader beyond the rim.
+- **A joint's label** moves to the cursor, with a thin leader back to the joint once it is away.
+
+Dragging a part whose dimension isn't shown pulls one out. Each drag is one undo step.
+
+Dimensions stay on the view, follow the parts while they move, and are saved with the design, including where they were dragged to. Copying parts copies their dimensions, and deleting a part removes its dimension.
 - **Decimals:** two by default; hold **Alt** (**Option** on a Mac) for three, or **Shift** for one.
 - **Show dimensions,** under Show labels in the settings, turns them all on or off. By default they show while editing and hide while running. The box remembers each choice separately, so ticking it while running keeps them showing on every run, even after a reload.
 

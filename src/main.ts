@@ -1,7 +1,7 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, anglesToJoins, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, type DDimension, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, anglesToJoins, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type ControllerSpec, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
@@ -9,7 +9,7 @@ import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
-import { drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
+import { dimensionAt, dimNormal, drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
 type Tool = 'select' | 'initial' | 'dimension' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
@@ -1975,7 +1975,7 @@ canvas.addEventListener('pointerdown', (e) => {
       pickInitial(w, sp);
       break;
     case 'dimension':
-      toggleDimension(w);
+      pressDimension(w, sp);
       break;
     case 'pid': {
       const pid = pointAt(w);
@@ -2067,13 +2067,15 @@ canvas.addEventListener('pointermove', (e) => {
   if (boxSel) boxSel.to = w;
   lastPointer = { w, sp };
   applyDrags(w, sp);
+  dragDimension(w, sp);
   if (constrain && constrain.body !== undefined && !constrain.ends) constrain.angle = railAngle(constrain.joint, w, constrain.body);
   hover = dragging || grab ? hover : hitTest(w);
-  canvas.style.cursor = duplicating ? 'copy' : sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' || tool === 'propeller' ? 'crosshair' : hover ? 'pointer' : 'default';
+  canvas.style.cursor = duplicating ? 'copy' : !sim && tool === 'dimension' && (dimPress?.live || (dimensionDigits() !== null && dimensionAt(view, dimScene(), sp) !== null)) ? 'move' : sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' || tool === 'propeller' ? 'crosshair' : hover ? 'pointer' : 'default';
 });
 
 canvas.addEventListener('pointerup', (e) => {
   const sp = screenOf(e);
+  releaseDimension();
   if (groundDrag) {
     const moved = groundDrag.pushed;
     groundDrag = null;
@@ -2328,10 +2330,80 @@ for (const ev of ['pointerdown', 'pointermove'] as const) window.addEventListene
 /** Decimals for dimensions: 2, 3 with Alt / Option, 1 with Shift; null when they are hidden. */
 const dimensionDigits = () => ((sim ? dimsShown.play : dimsShown.edit) && design.dimensions?.length ? (shiftHeld ? 1 : altHeld ? 3 : 2) : null);
 
-/** Show or hide the dimension of the part under w (Dimension tool). */
-function toggleDimension(w: Vec) {
+/**
+ * A press with the Dimension tool: on a dimension (its line or text) or on a part. Let go
+ * without moving and it shows or hides that part's dimension; drag (past DRAG_START) and the
+ * dimension follows the cursor (made first if it was not shown), as in CAD: a length's line
+ * slides nearer or farther, on either side; a radius swings round with its text out along it;
+ * a position label moves beside its joint.
+ */
+let dimPress: { target: DDimension; downSp: Vec; live: boolean } | null = null;
+
+const dimScene = () => ({ design, pos, gearAngle: gearAngleNow });
+
+function pressDimension(w: Vec, sp: Vec) {
+  const k = dimensionDigits() !== null ? dimensionAt(view, dimScene(), sp) : null;
+  if (k !== null) {
+    const d = design.dimensions![k];
+    dimPress = { target: { kind: d.kind, id: d.id }, downSp: sp, live: false };
+    return;
+  }
   const hit = hitTest(w);
   if (!hit || hit.kind === 'lever' || hit.kind === 'pid') return;
+  dimPress = { target: { kind: hit.kind, id: hit.id }, downSp: sp, live: false };
+}
+
+/** Drag the pressed dimension so it passes through w. */
+function dragDimension(w: Vec, sp: Vec) {
+  if (!dimPress) return;
+  if (!dimPress.live) {
+    if (Math.hypot(sp[0] - dimPress.downSp[0], sp[1] - dimPress.downSp[1]) < DRAG_START) return;
+    dimPress.live = true;
+    pushUndo();
+    const t = dimPress.target;
+    const list = (design.dimensions ??= []);
+    if (!list.some((x) => x.kind === t.kind && x.id === t.id)) {
+      list.push({ kind: t.kind, id: t.id }); // dragging out a dimension that was not shown
+      sfx('tick');
+    }
+    if (!dimsShown.edit) {
+      dimsShown.edit = true; // dragging one shows them
+      localStorage.setItem(DIMS_KEY, JSON.stringify(dimsShown));
+      refreshControls();
+    }
+  }
+  const t = dimPress.target;
+  const d = design.dimensions?.find((x) => x.kind === t.kind && x.id === t.id);
+  if (!d) return;
+  if (d.kind === 'link' || d.kind === 'spring') {
+    const seg = (d.kind === 'link' ? design.links : design.springs).find((x) => x.id === d.id);
+    if (!seg) return;
+    const [pa, pb] = [pos(seg.a), pos(seg.b)];
+    const n = dimNormal(pa, pb);
+    d.offset = +((w[0] - pa[0]) * n[0] + (w[1] - pa[1]) * n[1]).toFixed(5);
+  } else if (d.kind === 'gear') {
+    const g = design.gears.find((x) => x.id === d.id);
+    if (!g) return;
+    const c = pos(g.center);
+    d.angle = +Math.atan2(w[1] - c[1], w[0] - c[0]).toFixed(5);
+    d.dist = +Math.hypot(w[0] - c[0], w[1] - c[1]).toFixed(5);
+  } else {
+    const p = pos(d.id);
+    [d.dx, d.dy] = [+(w[0] - p[0]).toFixed(5), +(w[1] - p[1]).toFixed(5)];
+  }
+  saveSoon();
+}
+
+/** Let go: a click (no drag) shows or hides the pressed part's dimension. */
+function releaseDimension() {
+  const pr = dimPress;
+  dimPress = null;
+  if (!pr || pr.live) return;
+  toggleDimension(pr.target);
+}
+
+/** Show or hide a part's dimension. */
+function toggleDimension(hit: { kind: DDimension['kind']; id: number }) {
   const kind = hit.kind;
   pushUndo();
   const list = (design.dimensions ??= []);
@@ -2411,7 +2483,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
   motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
-  dimension: 'Click a bar, rack or spring to show its length, a gear, wheel or propeller for its radius, or a joint for its position; click again to hide it. Hold Alt / Option for three decimals, Shift for one.',
+  dimension: 'Click a bar, rack or spring to show its length, a gear, wheel or propeller for its radius, or a joint for its position; click again to hide it. Press on a dimension (or its part) and drag to move it nearer or farther. Hold Alt / Option for three decimals, Shift for one.',
   initial: 'Click a part to set its initial state: pick one of its coordinates (or a rate) from the list, move the mouse to set it while everything else follows, and click to settle. Esc cancels.',
   pid: 'Click a motor (or a gear, which gets a motor) to put a PID controller on it, in place of a lever. Then click what it should measure (a joint, bar, rack, gear, wheel or propeller) and pick the quantity. Click the motor again to remove it.',
   propeller: 'Click the centre, then the edge of a blade: the blades turn out of the page about an axis square to that line, and push along it (the arrow). In empty space it is a free body; start on a joint to mount it there. Give it a motor (O) to spin it.',

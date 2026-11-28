@@ -1,4 +1,4 @@
-import { gearLabel, GEAR_MODULE, leverOf, type DPid, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import { gearLabel, GEAR_MODULE, leverOf, type DDimension, type DPid, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
 import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
 
@@ -1077,78 +1077,164 @@ function dimHead(ctx: CanvasRenderingContext2D, a: Vec, b: Vec) {
   ctx.stroke();
 }
 
+/** What dimension geometry needs from a scene. */
+type DimScene = Pick<Scene, 'design' | 'pos' | 'gearAngle'>;
+
+/**
+ * Where a dimension is drawn (screen): its lines, arrowheads, and text (anchor, rotation,
+ * alignment) — shared by drawing and by picking it up to drag.
+ */
+interface DimGeom {
+  lines: [Vec, Vec][];
+  faint: [Vec, Vec][];
+  heads: [Vec, Vec][];
+  dot?: Vec;
+  text: { at: Vec; rot: number; align: CanvasTextAlign; base: CanvasTextBaseline; value: (digits: number) => string };
+}
+
+/**
+ * The normal a bar's or spring's dimension line is offset along (world, unit): its upper side,
+ * or its right side for an upright one. A dimension's `offset` is signed along it.
+ */
+export function dimNormal(pa: Vec, pb: Vec): Vec {
+  const [dx, dy] = [pb[0] - pa[0], pb[1] - pa[1]];
+  const L = Math.hypot(dx, dy) || 1;
+  let [nx, ny] = [-dy / L, dx / L];
+  if (ny < 0 || (ny === 0 && nx < 0)) [nx, ny] = [-nx, -ny];
+  return [nx, ny];
+}
+
+/** A dimension line's default distance from its part: 20 px. */
+const DIM_OFFSET_PX = 20;
+
+function dimGeom(v: View, s: DimScene, d: DDimension): DimGeom | null {
+  const has = (id: number) => s.design.points.some((p) => p.id === id);
+  const m = (x: number, pre = '') => (digits: number) => `${pre}${x.toFixed(digits)} m`;
+  if (d.kind === 'point') {
+    if (!has(d.id)) return null;
+    const p = s.pos(d.id);
+    const sp = toScreen(v, p);
+    const at: Vec = d.dx !== undefined && d.dy !== undefined ? toScreen(v, [p[0] + d.dx, p[1] + d.dy]) : [sp[0] + 9, sp[1] + 8];
+    const far = Math.hypot(at[0] - sp[0], at[1] - sp[1]) > 18;
+    return {
+      lines: [],
+      faint: far ? [[sp, at]] : [],
+      heads: [],
+      text: { at, rot: 0, align: 'left', base: 'top', value: (digits) => `(${p[0].toFixed(digits)}, ${p[1].toFixed(digits)})` },
+    };
+  }
+  if (d.kind === 'link' || d.kind === 'spring') {
+    const seg = (d.kind === 'link' ? s.design.links : s.design.springs).find((x) => x.id === d.id);
+    if (!seg || !has(seg.a) || !has(seg.b)) return null;
+    const [pa, pb] = [s.pos(seg.a), s.pos(seg.b)];
+    const [A, B] = [toScreen(v, pa), toScreen(v, pb)];
+    if (Math.hypot(B[0] - A[0], B[1] - A[1]) < 4) return null;
+    const nw = dimNormal(pa, pb);
+    const [nx, ny] = [nw[0], -nw[1]]; // on screen
+    const off = d.offset !== undefined ? d.offset * v.scale : DIM_OFFSET_PX;
+    const sg = off >= 0 ? 1 : -1;
+    const [a2, b2]: [Vec, Vec] = [[A[0] + nx * off, A[1] + ny * off], [B[0] + nx * off, B[1] + ny * off]];
+    const ext = (P: Vec): [Vec, Vec] => [[P[0] + nx * sg * 5, P[1] + ny * sg * 5], [P[0] + nx * (off + sg * 4), P[1] + ny * (off + sg * 4)]];
+    let ang = Math.atan2(B[1] - A[1], B[0] - A[0]);
+    if (ang > Math.PI / 2) ang -= Math.PI; // keep the text upright
+    else if (ang < -Math.PI / 2) ang += Math.PI;
+    // the text sits on the line's outer side (above it when the line is above the part)
+    const textUp = ny * sg <= 0;
+    const len = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
+    return {
+      lines: [[a2, b2]],
+      faint: Math.abs(off) > 6 ? [ext(A), ext(B)] : [],
+      heads: [[b2, a2], [a2, b2]],
+      text: {
+        at: [(a2[0] + b2[0]) / 2 + nx * sg * 2, (a2[1] + b2[1]) / 2 + ny * sg * 2],
+        rot: ang,
+        align: 'center',
+        base: textUp ? 'bottom' : 'top',
+        value: (digits) => `${d.kind === 'spring' ? 'ℓ ' : ''}${m(len)(digits)}`,
+      },
+    };
+  }
+  const g = s.design.gears.find((x) => x.id === d.id);
+  if (!g || !has(g.center)) return null;
+  const c = s.pos(g.center);
+  // the angle chosen by dragging, else along a propeller's blade line, else up and to the right
+  const a = d.angle ?? (g.propeller ? g.propeller.angle + s.gearAngle(g.id) : Math.PI / 4);
+  const C = toScreen(v, c);
+  const E = toScreen(v, [c[0] + g.radius * Math.cos(a), c[1] + g.radius * Math.sin(a)]);
+  const dist = Math.max(d.dist ?? g.radius, 0);
+  const T = toScreen(v, [c[0] + Math.max(dist, g.radius) * Math.cos(a), c[1] + Math.max(dist, g.radius) * Math.sin(a)]);
+  const [ux, uy] = [Math.cos(a), -Math.sin(a)];
+  return {
+    lines: [[C, E], ...(dist > g.radius ? ([[E, T]] as [Vec, Vec][]) : [])], // a leader out to the text
+    faint: [],
+    heads: [[C, E]],
+    dot: C,
+    text: { at: [T[0] + ux * 6, T[1] + uy * 6], rot: 0, align: ux >= 0 ? 'left' : 'right', base: 'middle', value: m(g.radius, 'R ') },
+  };
+}
+
+/**
+ * The dimension whose line or text is under screen point sp (its index in design.dimensions),
+ * so it can be picked up and dragged.
+ */
+export function dimensionAt(v: View, s: DimScene, sp: Vec, digits = 2): number | null {
+  const ctx = document.createElement('canvas').getContext('2d')!;
+  ctx.font = '600 11px system-ui, sans-serif';
+  const list = s.design.dimensions ?? [];
+  for (let k = list.length - 1; k >= 0; k--) {
+    const g = dimGeom(v, s, list[k]);
+    if (!g) continue;
+    if (g.lines.some(([a, b]) => segmentDistanceScreen(sp, a, b) < 6)) return k;
+    // the text's box, in its own turned frame
+    const w = ctx.measureText(g.text.value(digits)).width;
+    const [dx, dy] = [sp[0] - g.text.at[0], sp[1] - g.text.at[1]];
+    const [u, vv] = [dx * Math.cos(g.text.rot) + dy * Math.sin(g.text.rot), -dx * Math.sin(g.text.rot) + dy * Math.cos(g.text.rot)];
+    const [x0, x1] = g.text.align === 'center' ? [-w / 2, w / 2] : g.text.align === 'left' ? [0, w] : [-w, 0];
+    const [y0, y1] = g.text.base === 'bottom' ? [-14, 0] : g.text.base === 'top' ? [0, 14] : [-7, 7];
+    if (u >= x0 - 4 && u <= x1 + 4 && vv >= y0 - 4 && vv <= y1 + 4) return k;
+  }
+  return null;
+}
+
+function segmentDistanceScreen(p: Vec, a: Vec, b: Vec): number {
+  const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+  const L2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2));
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+
 /**
  * The dimensions chosen with the Dimension tool, live as the mechanism moves: a bar's or
  * spring's length as a dimension line beside it (extension lines, arrowheads, the value along
  * it), a gear's, wheel's or propeller's radius as an arrow from the centre to the rim, and a
- * joint's position as (x, y) beside it.
+ * joint's position as (x, y) beside it; each where it was dragged to.
  */
 function drawDimensions(ctx: CanvasRenderingContext2D, v: View, s: Scene, digits: number) {
-  const has = (id: number) => s.design.points.some((p) => p.id === id);
-  const m = (x: number) => `${x.toFixed(digits)} m`;
   ctx.save();
   ctx.strokeStyle = DIM;
   ctx.fillStyle = DIM;
   ctx.font = '600 11px system-ui, sans-serif';
   ctx.lineWidth = 1.2;
   for (const d of s.design.dimensions ?? []) {
-    if (d.kind === 'point') {
-      if (!has(d.id)) continue;
-      const p = s.pos(d.id);
-      const sp = toScreen(v, p);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      haloText(ctx, `(${p[0].toFixed(digits)}, ${p[1].toFixed(digits)})`, sp[0] + 9, sp[1] + 8);
-      continue;
+    const g = dimGeom(v, s, d);
+    if (!g) continue;
+    ctx.globalAlpha = 0.6;
+    for (const [a, b] of g.faint) line(ctx, a, b);
+    ctx.globalAlpha = 1;
+    for (const [a, b] of g.lines) line(ctx, a, b);
+    for (const [a, b] of g.heads) dimHead(ctx, a, b);
+    if (g.dot) {
+      ctx.beginPath();
+      ctx.arc(g.dot[0], g.dot[1], 2, 0, Math.PI * 2);
+      ctx.fill();
     }
-    if (d.kind === 'link' || d.kind === 'spring') {
-      const seg = (d.kind === 'link' ? s.design.links : s.design.springs).find((x) => x.id === d.id);
-      if (!seg || !has(seg.a) || !has(seg.b)) continue;
-      const [pa, pb] = [s.pos(seg.a), s.pos(seg.b)];
-      const [A, B] = [toScreen(v, pa), toScreen(v, pb)];
-      const [dx, dy] = [B[0] - A[0], B[1] - A[1]];
-      const L = Math.hypot(dx, dy);
-      if (L < 4) continue;
-      let [nx, ny] = [-dy / L, dx / L];
-      if (ny > 0 || (ny === 0 && nx < 0)) [nx, ny] = [-nx, -ny]; // always the upper side (or the left)
-      const off = 20;
-      const [a2, b2]: [Vec, Vec] = [[A[0] + nx * off, A[1] + ny * off], [B[0] + nx * off, B[1] + ny * off]];
-      ctx.globalAlpha = 0.6;
-      line(ctx, [A[0] + nx * 5, A[1] + ny * 5], [A[0] + nx * (off + 4), A[1] + ny * (off + 4)]);
-      line(ctx, [B[0] + nx * 5, B[1] + ny * 5], [B[0] + nx * (off + 4), B[1] + ny * (off + 4)]);
-      ctx.globalAlpha = 1;
-      line(ctx, a2, b2);
-      dimHead(ctx, b2, a2);
-      dimHead(ctx, a2, b2);
-      const len = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
-      let ang = Math.atan2(dy, dx);
-      if (ang > Math.PI / 2) ang -= Math.PI; // keep the text upright
-      else if (ang < -Math.PI / 2) ang += Math.PI;
-      ctx.save();
-      ctx.translate((a2[0] + b2[0]) / 2 + nx * 2, (a2[1] + b2[1]) / 2 + ny * 2);
-      ctx.rotate(ang);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      haloText(ctx, `${d.kind === 'spring' ? 'ℓ ' : ''}${m(len)}`, 0, -1);
-      ctx.restore();
-      continue;
-    }
-    const g = s.design.gears.find((x) => x.id === d.id);
-    if (!g || !has(g.center)) continue;
-    const c = s.pos(g.center);
-    // along a propeller's blade line, else up and to the right
-    const a = g.propeller ? g.propeller.angle + s.gearAngle(g.id) : Math.PI / 4;
-    const C = toScreen(v, c);
-    const E = toScreen(v, [c[0] + g.radius * Math.cos(a), c[1] + g.radius * Math.sin(a)]);
-    line(ctx, C, E);
-    dimHead(ctx, C, E);
-    ctx.beginPath();
-    ctx.arc(C[0], C[1], 2, 0, Math.PI * 2);
-    ctx.fill();
-    const [ux, uy] = [Math.cos(a), -Math.sin(a)];
-    ctx.textAlign = ux >= 0 ? 'left' : 'right';
-    ctx.textBaseline = 'middle';
-    haloText(ctx, `R ${m(g.radius)}`, E[0] + ux * 6, E[1] + uy * 6);
+    ctx.save();
+    ctx.translate(g.text.at[0], g.text.at[1]);
+    ctx.rotate(g.text.rot);
+    ctx.textAlign = g.text.align;
+    ctx.textBaseline = g.text.base;
+    haloText(ctx, g.text.value(digits), 0, g.text.base === 'bottom' ? -1 : g.text.base === 'top' ? 1 : 0);
+    ctx.restore();
   }
   ctx.restore();
 }
