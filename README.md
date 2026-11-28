@@ -110,6 +110,8 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body, for example two bars welded into an L-shaped arm. Click the same pair again to separate them. (This replaces the old Fix angle tool: designs saved with fixed angles open with those bars joined.) |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
+**Select is the default tool.** The app starts with it, and Reset, loading an example and Clear all go back to it. Esc cancels whatever is under way, such as a bar being drawn, a join or pin half done, a duplicate being placed or a box selection; pressed again with nothing under way, it switches back to Select.
+
 Bars and springs that start or end on a gear are pinned to the gear and turn with it.
 
 **Pins and rails.** The Pin and Slider tools work in steps. While a tool is waiting for your next click, the hint bar says what to do; Esc cancels. Clicking the chosen joint again removes its constraint.

@@ -45,7 +45,8 @@ let W = 0;
 let H = 0;
 const view: View = { scale: 170, ox: 0, oy: 0 };
 let design: Design = loadDesign() ?? presets[0].build(); // first visit: the Strandbeest leg
-let tool: Tool = 'bar';
+/** The tool in use: Select at first, and what everything goes back to (Reset, an example, Esc). */
+let tool: Tool = 'select';
 let selection: Selection | null = null;
 let hover: Selection | null = null;
 let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
@@ -380,7 +381,7 @@ function stopSim() {
   running = false;
   grab = null;
   simError = null;
-  refreshControls();
+  setTool('select'); // back to editing: with the Select tool (Reset, an example, Clear)
 }
 
 function togglePlay() {
@@ -2247,6 +2248,9 @@ window.addEventListener('keydown', (e) => {
       renderInspector();
     } else messages.notify('The ground needs at least two waypoints.');
   } else if (k === 'escape') {
+    // Esc cancels what is under way; with nothing under way, it goes back to the Select tool
+    const underway = !!(ic || !icMenu.hidden || duplicating || pidPick || drawing || constrain || joinFirst || boxSel);
+    if (!underway && tool !== 'select' && !sim) setTool('select');
     if (ic || !icMenu.hidden) cancelInitial();
     if (duplicating) cancelDuplicate();
     if (pidPick) cancelSensorPick();
