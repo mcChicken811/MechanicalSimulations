@@ -272,6 +272,15 @@ Both modes use one scale for all bars, so bars compare with each other, and a th
 
 The bar whose diagram is open in the graph panel keeps that diagram's colouring. The choice is remembered between visits.
 
+**Bars that break.** Tick *Bars break at |M| ≥* in the side panel and set a bending moment in N·m. While the mechanism runs, any bar whose bending moment reaches that value snaps:
+- **Where:** at the largest |M| in each stretch of the bar where |M| reaches the threshold, so a bar can break in several places at once. A break is kept at least 4% of the bar's length from its ends, leaving a short stub at the joint rather than cutting through it.
+- **The pieces** are rigid bars with the bar's mass shared by length. The first piece keeps the bar's number. Each cut makes two free joints, one at the end of each piece. Joints pinned onto the bar and rails on it go with the piece they sit on. A weld goes with the piece at the joint the two bodies share, otherwise with the longest piece. Racks don't break.
+- **Carrying on:** the equations are derived again for the broken mechanism, which the equations panel then shows. The state carries over exactly: every joint stays where it was and moves as it was, and every gear, motor housing and propeller stays turned as it was. Each piece simply continues the motion it had as part of the bar, so kinetic energy is unchanged. The equations leave out V's constant terms, which differ between mechanisms, so an offset keeps E and the energy budget continuous.
+- **Repeated breaks:** pieces can break again later, so a low threshold can shatter a mechanism.
+- **What stays the same:** joint heat stays with its joints. Graphs start again from the break, because the coordinates have changed.
+- **Reset** puts the bars back as drawn. Changes made while it ran to springs, motors and the ground are kept. The saved design and the undo history never contain broken bars.
+- **Limit:** bars are checked once per animation frame, at the recorded state, so a peak shorter than a frame (about 16 ms) can be missed.
+
 *How it works.* Cut the bar at distance s from A. The piece [0, s] is held in balance, d'Alembert style, by what the rest of the bar does on it across the cut:
 - **The piece's loads:** every point force on [0, s] where it acts (joint forces, a slider on it, teeth, welds, contact, friction, the pull), plus its share of the distributed load w(x) = μ (g − c v(x) − a(x)), with μ = m / L.
 - **The distributed load** is the bar's own weight, air drag and inertia, spread along it rather than lumped at the centre. Since the bar is rigid, v and a are linear along it.

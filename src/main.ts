@@ -11,6 +11,7 @@ import { enableScrubbing } from './ui/scrub';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
 import { barDiagram, peak, valueAt, type BeamDiagram } from './mechanics/beam';
+import { breakBars, breakPoints, transferState } from './mechanics/fracture';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { dimensionAt, dimNormal, drawScene, gridStep, stressColor, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
 
@@ -119,7 +120,7 @@ let scrubUndo: boolean | null = null;
 function pushUndo() {
   if (scrubUndo === true) return; // the rest of a drag on a number box: one undo step for it all
   if (scrubUndo === false) scrubUndo = true;
-  undoStack.push(cloneDesign(design));
+  undoStack.push(cloneDesign(persistable()));
   if (undoStack.length > 200) undoStack.shift();
 }
 
@@ -173,9 +174,23 @@ function machineState(s: Simulator): MachineState {
 }
 
 /** Call after every edit of the design. */
+/**
+ * Bars broken in this run (see mechanics/fracture.ts): the design as drawn, before the first
+ * break, while the running copy has the pieces. Reset brings it back.
+ */
+let unbroken: Design | null = null;
+
+/**
+ * The design to save and to undo to: as drawn, never with broken bars. What can be edited while
+ * it runs (springs, gears and motors, the ground) is taken from the running copy.
+ */
+function persistable(): Design {
+  return unbroken ? { ...unbroken, springs: design.springs, gears: design.gears, ground: design.ground } : design;
+}
+
 function designChanged(opts: { keepInspector?: boolean } = {}) {
   keepGroundUnder(); // the ground gives way under anything moved below it
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(design));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable()));
   scheduleDerive();
   if (!opts.keepInspector) renderInspector();
   else renderLevers();
@@ -342,6 +357,14 @@ function startSim() {
 
 function stopSim() {
   sim = null;
+  if (unbroken) {
+    // the bars as drawn again (keeping what was edited while it ran)
+    design = persistable();
+    unbroken = null;
+    if (selection && !selectionExists(selection)) selection = null;
+    scheduleDerive();
+    renderInspector();
+  }
   resetHistory();
   closeGraph();
   inspectSettings = false;
@@ -401,6 +424,7 @@ function advance(seconds: number) {
     }
   }
   if (trail.id >= 0) recordTrail(sim);
+  if (!sim) return;
   if (!grab) sim.appliedForce = [0, 0];
   simPositions = sim.jointPositions();
   simGearAngles = sim.gearAngles();
@@ -1082,7 +1106,7 @@ function syncGroundUI() {
 
 /** The ground changed: save it, hand it to a running simulation, and redescribe it. */
 function groundChanged() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(design));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable()));
   if (sim) sim.ground = groundSettings();
   syncGroundUI();
   retypeset();
@@ -2249,6 +2273,7 @@ stepBtn.addEventListener('click', () => {
   }
   advance(1 / 60);
   recordState();
+  checkBreaks();
   refreshControls();
 });
 undoBtn.addEventListener('click', undo);
@@ -2796,7 +2821,7 @@ function fmtQ(v: number, q: Quantity | undefined): string {
 /** Save the design shortly, once a stream of changes (a lever being dragged) pauses. */
 function saveSoon() {
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(design)), 250);
+  saveTimer = window.setTimeout(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable())), 250);
 }
 
 /**
@@ -3522,6 +3547,116 @@ function beamShadesNow(): Scene['beamShades'] {
   } else if (q !== 'off') beamLegend.querySelector('.bl-hi')!.textContent = 'while running';
   if (shown) out.push(shown);
   return out;
+}
+
+// ---- bars that break (the side panel's Bars break at |M| ≥) ----
+const BREAK_KEY = 'linkage-lab:breaking';
+const breaking: { on: boolean; at: number } = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(BREAK_KEY) ?? '');
+    if (typeof v.on === 'boolean' && Number.isFinite(v.at) && v.at > 0) return v;
+  } catch {
+    /* the default */
+  }
+  return { on: false, at: 2 };
+})();
+const breakBox = $<HTMLInputElement>('#breakable');
+const breakAt = $<HTMLInputElement>('#break-at');
+breakBox.checked = breaking.on;
+breakAt.value = String(breaking.at);
+const saveBreaking = () => localStorage.setItem(BREAK_KEY, JSON.stringify(breaking));
+breakBox.addEventListener('change', () => {
+  breaking.on = breakBox.checked;
+  saveBreaking();
+});
+breakAt.addEventListener('change', () => {
+  const v = parseFloat(breakAt.value);
+  if (Number.isFinite(v) && v > 0) breaking.at = v;
+  saveBreaking();
+});
+
+/** Whether a selected part is still in the design. */
+function selectionExists(s: Selection): boolean {
+  const list = { point: design.points, link: design.links, spring: design.springs, gear: design.gears, lever: design.gears, pid: design.gears }[s.kind];
+  return !!list?.some((x) => x.id === s.id);
+}
+
+/**
+ * Break the bars whose bending moment has reached the threshold (every frame while it runs, at
+ * the recorded state): each where its |M| is largest in every stretch over the threshold.
+ */
+function checkBreaks() {
+  if (!sim || !breaking.on || !history.t.length) return;
+  const found: { link: number; u: number[]; xs: number[]; M: number }[] = [];
+  for (const l of design.links) {
+    if (l.rack) continue; // a rack does not break
+    const d = beamNow(l.id);
+    if (!d) continue;
+    const xs = breakPoints(d, breaking.at);
+    if (xs.length) found.push({ link: l.id, u: xs.map((x) => x / d.L), xs, M: peak(d.M).v });
+  }
+  if (found.length) breakNow(found);
+}
+
+/** Cut the bars and carry on: derive the cut mechanism, and start it from the state it was in. */
+function breakNow(found: { link: number; u: number[]; xs: number[]; M: number }[]) {
+  const old = sim!;
+  const before = design;
+  const names = found.map((f) => `${bodyName(design, { kind: 'link', id: f.link })} (|M| = ${Math.abs(f.M).toFixed(2)} N·m, at ${f.xs.map((x) => `${x.toFixed(2)} m`).join(' and ')} from ${pointLabel(design.links.find((l) => l.id === f.link)!.a)})`);
+  const res = breakBars(design, found);
+  design = res.design;
+  derive();
+  if (!derivation || derivation.coords.length === 0) {
+    // could not carry on with the pieces: leave it whole and stop breaking
+    design = before;
+    derive();
+    breaking.on = breakBox.checked = false;
+    saveBreaking();
+    flash(`${names.join('; ')} would break, but the pieces could not be simulated (${deriveError ?? 'no coordinates'}), so breaking is turned off.`);
+    return;
+  }
+  unbroken ??= cloneDesign(before);
+  const next = new Simulator(new NumericSystem(derivation));
+  const st = transferState(old.sys, old.q, old.qd, next.sys, res.cuts, res.pieces);
+  next.q.set(st.q);
+  next.qd.set(st.qd);
+  next.project();
+  next.energyOffset = old.energy().V - next.energy().V; // V's zero moves with the mechanism: E carries on
+  next.t = old.t;
+  next.damping = settings.damping;
+  next.friction = friction;
+  next.ground = groundSettings();
+  next.motorWork = old.motorWork;
+  next.airWork = old.airWork;
+  next.dissipated = old.dissipated;
+  next.setControllers(controllerSpecs(), old.controllers);
+  // heat stays with its joints and meshes
+  const heatOf = new Map(old.sys.derivation.joints.map((j, i) => [j.id, old.jointHeat[i]]));
+  next.sys.derivation.joints.forEach((j, i) => (next.jointHeat[i] = heatOf.get(j.id) ?? 0));
+  if (next.meshHeat.length === old.meshHeat.length) next.meshHeat.set(old.meshHeat);
+  // a pull on a broken bar holds the piece it was on
+  if (grab && !grab.gear) {
+    const g = grab;
+    const from = res.cuts.find((c) => (c.a === g.a && c.b === g.b) || (c.a === g.b && c.b === g.a));
+    if (from) {
+      const u = from.a === g.a ? g.s : 1 - g.s;
+      const pc = res.pieces.find((p) => p.from === from.link && u >= p.u0 - 1e-9 && u <= p.u1 + 1e-9)!;
+      const l = design.links.find((x) => x.id === pc.id)!;
+      grab = { a: l.a, b: l.b, s: (u - pc.u0) / (pc.u1 - pc.u0) };
+    }
+  }
+  sim = next;
+  resetHistory();
+  recordState();
+  simPositions = sim.jointPositions();
+  simGearAngles = sim.gearAngles();
+  simMotorAngles = sim.motorAngles();
+  simSpinAngles = sim.spinAngles();
+  simHeat = sim.heat();
+  if (selection && !selectionExists(selection)) selection = null;
+  renderInspector();
+  flash(`Broke: ${names.join('; ')}. Reset puts the bars back.`);
+  sfx('snap');
 }
 
 const partTitle = (kind: string, id: number) =>
@@ -4968,6 +5103,7 @@ function frame(now: number) {
   if (sim && running) {
     advance(dt * settings.speed);
     recordState();
+    checkBreaks();
     if (settings.follow) followMechanism();
   }
   sound.update(sim && running ? machineState(sim) : null);

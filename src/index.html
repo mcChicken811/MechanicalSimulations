@@ -110,6 +110,10 @@
           <button data-v="set" title="Red is a value you set (N, or N·m for bending)">Set</button>
         </div>
         <div id="beam-legend" hidden><span class="bl-lo">0</span><span class="bl-bar"></span><span class="bl-hi"></span><input type="number" id="beam-scale" min="0" step="0.01" title="The value drawn red (drag sideways to change it)" hidden /><span class="bl-unit" hidden></span></div>
+        <div class="break-row" title="While it runs, a bar whose bending moment reaches this snaps there: at the largest |M| in each stretch over it (so a bar may break in several places). The pieces carry on with the motion they had; Reset puts the bars back.">
+          <label class="check"><input type="checkbox" id="breakable" /> Bars break at |M| ≥</label>
+          <input type="number" id="break-at" min="0" step="0.01" value="2" /><span>N·m</span>
+        </div>
       </div>
 
       <div class="group settings">

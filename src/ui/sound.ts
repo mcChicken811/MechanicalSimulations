@@ -42,6 +42,7 @@ export type Cue =
   | 'paste'
   | 'preset'
   | 'grab'
+  | 'snap'
   | 'error';
 
 /** What the running mechanism is doing, for its continuous sounds. */
@@ -253,6 +254,11 @@ export class SoundEngine {
       case 'unjoin':
         this.tone(t, 950, 0.05, 0.08, 'triangle');
         this.tone(t + 0.05, 260, 0.1, 0.16, 'sine', 180);
+        break;
+      case 'snap': // a bar breaking: a sharp crack, then the splintering and a low knock
+        this.burst(t, 0.012, 0.5, 'highpass', 2500, 0.7);
+        this.burst(t + 0.008, 0.09, 0.22, 'bandpass', 1800, 1.2, 600);
+        this.tone(t, 260, 0.12, 0.25, 'triangle', 110);
         break;
       case 'delete': // a pop, falling away
         this.tone(t, 700, 0.15, 0.2, 'sine', 120);

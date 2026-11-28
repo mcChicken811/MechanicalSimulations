@@ -1697,10 +1697,16 @@ export class Simulator {
     return out;
   }
 
+  /**
+   * Added to V: the derivation leaves out V's constant terms, which differ between mechanisms,
+   * so a simulation carried on with another one (bars broken) keeps E continuous with this.
+   */
+  energyOffset = 0;
+
   /** T and V, V including the energy stored in ground contacts. */
   energy() {
     const e = this.sys.energy(this.q, this.qd);
-    return { T: e.T, V: e.V + this.contactEnergy() };
+    return { T: e.T, V: e.V + this.contactEnergy() + this.energyOffset };
   }
 
   /** Current rotation of every gear, keyed by gear id. */
