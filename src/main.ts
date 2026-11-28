@@ -7,6 +7,7 @@ import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInB
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
+import { enableScrubbing } from './ui/scrub';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
@@ -109,7 +110,12 @@ function loadDesign(): Design | null {
   }
 }
 
+/** While a number box is dragged: whether the drag has taken its one undo step yet (null: no drag). */
+let scrubUndo: boolean | null = null;
+
 function pushUndo() {
+  if (scrubUndo === true) return; // the rest of a drag on a number box: one undo step for it all
+  if (scrubUndo === false) scrubUndo = true;
   undoStack.push(cloneDesign(design));
   if (undoStack.length > 200) undoStack.shift();
 }
@@ -125,6 +131,12 @@ function undo() {
   syncGroundUI();
   designChanged();
 }
+
+// ---- number boxes: drag sideways to change them (Blender style) -------------------------------
+enableScrubbing(document.body, {
+  begin: () => (scrubUndo = false),
+  end: () => (scrubUndo = null),
+});
 
 // ---- sound ----------------------------------------------------------------------------
 const sound = new SoundEngine();

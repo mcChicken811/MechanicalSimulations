@@ -690,3 +690,25 @@ table.params td {
   font-size: 9px;
   opacity: 0.8;
 }
+
+/* ---- number boxes are dragged sideways to change them (see ui/scrub.ts) ---- */
+input[type='number']:not(:focus):not(:disabled) {
+  cursor: ew-resize;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+body.scrubbing,
+body.scrubbing * {
+  cursor: ew-resize !important;
+  user-select: none;
+}

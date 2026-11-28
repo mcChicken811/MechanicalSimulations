@@ -152,6 +152,13 @@ Under the hood, the free coordinates F (the chosen one and those tied to it) fol
 
 A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
 
+**Number boxes** work as in Blender. Press on one and drag sideways to change its value continuously; a click without a drag opens it for typing.
+- **Plain drag:** steps of 0.01, at 0.01 per pixel.
+- **Alt (Option on a Mac):** shows the third decimal and moves 10× slower, 0.001 per pixel.
+- **Shift:** rounds to one decimal and moves 10× faster, 0.1 per pixel.
+- **Whole-number boxes** (teeth, blades) move by whole numbers.
+- **While dragging:** the part updates live, even while it runs (for the values that can change then). The whole drag is one undo step, and Esc puts the value back.
+
 The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, and which bodies are joined.
 
 A **tension-only** spring pulls when it is stretched beyond its rest length and goes slack when it is shorter, with no force and no energy: V = ½ k max(0, ℓ − ℓ₀)². While slack, it is drawn as a dashed line.
