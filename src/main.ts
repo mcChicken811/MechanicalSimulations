@@ -9,7 +9,8 @@ import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { Palette, type Command } from './ui/palette';
-import { autoHide } from './ui/autohide';
+import { autoHide, type AutoHide } from './ui/autohide';
+import { Messages } from './ui/messages';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
 import { barDiagram, deflection, peak, valueAt, type BeamDiagram } from './mechanics/beam';
@@ -27,7 +28,11 @@ const ctx = canvas.getContext('2d')!;
 const eomEl = $<HTMLDivElement>('#eom');
 const inspectorEl = $<HTMLDivElement>('#inspector');
 const statusEl = $<HTMLDivElement>('#status');
-const hintEl = $<HTMLDivElement>('#hint');
+/** The message bar at the top: every instruction and notice goes through it (ui/messages.ts). */
+const messages = new Messages($<HTMLDivElement>('#hint'));
+/** The inspector's sliding away (set up below; it comes back when the part it shows changes). */
+let inspectorPanel: AutoHide | undefined;
+let inspectedFor = '';
 
 const STORAGE_KEY = 'linkage-lab-design';
 const H_STEP = 1e-3; // RK4 step (s)
@@ -336,8 +341,8 @@ function startSim() {
   recordState();
   sim.setControllers(controllerSpecs());
   for (const c of sim.controllers)
-    if (c.sign === 0) flash(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures here, so the controller does nothing. Set its pushing direction to Forward or Reverse to drive it anyway.`);
-  if (sim.ground && belowGround()) flash('Some joints start below the ground, so it pushes them up.');
+    if (c.sign === 0) messages.notify(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures here, so the controller does nothing. Set its pushing direction to Forward or Reverse to drive it anyway.`);
+  if (sim.ground && belowGround()) messages.notify('Some joints start below the ground, so it pushes them up.');
   simPositions = sim.jointPositions();
   simHeat = sim.heat();
   simGearAngles = sim.gearAngles();
@@ -1194,19 +1199,13 @@ function currentParts(): PartSet | null {
 }
 
 /** Show a short message in the hint bar. */
-let flashTimer = 0;
-function flash(message: string) {
-  hintEl.textContent = message;
-  clearTimeout(flashTimer);
-  flashTimer = window.setTimeout(refreshControls, 1800);
-}
 
 function copyParts(): boolean {
   const parts = currentParts();
   if (!parts) return false;
   clipboard = extractParts(design, parts);
   const n = clipboard.points.length + clipboard.links.length + clipboard.springs.length + clipboard.gears.length;
-  flash(`Copied ${n} part${n === 1 ? '' : 's'}. Press Ctrl/⌘+V to paste them at the cursor.`);
+  messages.notify(`Copied ${n} part${n === 1 ? '' : 's'}. Press Ctrl/⌘+V to paste them at the cursor.`);
   sfx('copy');
   renderInspector();
   return true;
@@ -1367,7 +1366,7 @@ function pickInitial(w: Vec, sp: Vec) {
   derive(); // up to date with the drawing
   const sys = editSystem();
   if (!sys || !derivation) {
-    flash(deriveError ?? 'Nothing can move yet, so there is no initial state to set.');
+    messages.notify(deriveError ?? 'Nothing can move yet, so there is no initial state to set.');
     return;
   }
   const d = derivation;
@@ -1379,7 +1378,7 @@ function pickInitial(w: Vec, sp: Vec) {
     if (k >= 0 && !ks.includes(k)) ks.push(k);
   }
   if (!ks.length) {
-    flash('That part cannot move, so it has no initial state to set.');
+    messages.notify('That part cannot move, so it has no initial state to set.');
     return;
   }
   const row = (k: number, rate: boolean) => {
@@ -1438,7 +1437,7 @@ function pullInitial(dt: number) {
   if (!ic || ic.rate) return;
   const { ed, k } = ic;
   if (!ed.dragStep(mouseWorld, dt)) {
-    flash('The mechanism locked up there; settle it or press Esc.');
+    messages.notify('The mechanism locked up there; settle it or press Esc.');
     return;
   }
   ic.readout = `${ic.label} = ${coordValue(ed.sys.derivation.coords[k], ed.q[k], false)}`;
@@ -1708,7 +1707,7 @@ function finishSlider() {
     // the joint must start inside its range: an end on the far side moves to the joint
     if (lo !== null && lo > 0) [lo, hi] = [0, hi];
     if (hi !== null && hi < 0) [lo, hi] = [lo, 0];
-    if (ends.length === 2 && (Math.min(...ends) > 0 || Math.max(...ends) < 0)) flash(`Both ends were on one side of joint ${pointLabel(p.id)}, so the nearer end is at the joint.`);
+    if (ends.length === 2 && (Math.min(...ends) > 0 || Math.max(...ends) < 0)) messages.notify(`Both ends were on one side of joint ${pointLabel(p.id)}, so the nearer end is at the joint.`);
     p.slide.range = { min: lo, max: hi, restitution: 0.2 };
   }
   designChanged();
@@ -1780,7 +1779,7 @@ function constrainClick(w: Vec) {
     }
     const body = bodyAt(w);
     if (body && carries(body, p.id)) {
-      flash(`Joint ${label} already moves with ${bodyName(design, body)}. Pick another body, or empty space for the ground.`);
+      messages.notify(`Joint ${label} already moves with ${bodyName(design, body)}. Pick another body, or empty space for the ground.`);
       return;
     }
     if (t === 'pin') {
@@ -1936,7 +1935,7 @@ function toolClick(w: Vec, sp: Vec) {
       lastPick = { at: sp, under: key };
       const current = groundSel && !selection ? under.indexOf('ground') : under.findIndex((x) => x !== 'ground' && x.kind === selection?.kind && x.id === selection.id);
       const choice = under.length === 0 ? null : again && current >= 0 && under.length > 1 ? under[(current + 1) % under.length] : under[0];
-      if (choice && under.length > 1) flash(`${pickName(choice)}: ${under.indexOf(choice) + 1} of ${under.length} here (click again in the same spot for the next).`);
+      if (choice && under.length > 1) messages.notify(`${pickName(choice)}: ${under.indexOf(choice) + 1} of ${under.length} here (click again in the same spot for the next).`);
       if (choice === 'ground') {
         // the ground itself: select it, showing its waypoints
         selection = null;
@@ -2226,7 +2225,7 @@ window.addEventListener('keydown', (e) => {
     if (k === 'x') deleteParts(currentParts()!);
   } else if ((e.metaKey || e.ctrlKey) && k === 'd') {
     e.preventDefault(); // not the browser's bookmark
-    if (!sim && !startDuplicate()) flash('Select something to duplicate first (click a part, or drag a box around several).');
+    if (!sim && !startDuplicate()) messages.notify('Select something to duplicate first (click a part, or drag a box around several).');
   } else if ((e.metaKey || e.ctrlKey) && k === 'v' && !sim) {
     e.preventDefault();
     pasteClipboard();
@@ -2246,7 +2245,7 @@ window.addEventListener('keydown', (e) => {
       groundSel = { waypoint: null };
       groundChanged();
       renderInspector();
-    } else flash('The ground needs at least two waypoints.');
+    } else messages.notify('The ground needs at least two waypoints.');
   } else if (k === 'escape') {
     if (ic || !icMenu.hidden) cancelInitial();
     if (duplicating) cancelDuplicate();
@@ -2814,7 +2813,7 @@ function toggleDimension(hit: { kind: DDimension['kind']; id: number }) {
   else list.push({ kind, id: hit.id });
   if (!list.length) delete design.dimensions;
   sfx(i >= 0 ? 'free' : 'tick');
-  if (i < 0 && !dimsShown.edit) flash('Dimensions are hidden: tick Show dimensions to see them.');
+  if (i < 0 && !dimsShown.edit) messages.notify('Dimensions are hidden: tick Show dimensions to see them.');
   designChanged();
 }
 
@@ -2880,8 +2879,11 @@ eomToggle.addEventListener('click', () => {
   showEomFolded(folded);
   localStorage.setItem(EOM_KEY, String(!folded));
 });
-autoHide(eomWrap, 'right');
+autoHide(eomWrap, 'right', { part: 'start' });
 autoHide($<HTMLElement>('#toolbar'), 'left');
+// the status bar (down, off the bottom edge) and the inspector (the bottom of the right edge)
+autoHide(statusEl, 'bottom');
+inspectorPanel = autoHide(inspectorEl, 'right', { part: 'end' });
 
 const hints: Record<Tool, string> = {
   select: 'Drag joints to reshape (hold Alt / Option to move on the grid), or drag on empty space to box-select. Ctrl/⌘+D duplicates; Ctrl/⌘+C and V copy and paste.',
@@ -2916,7 +2918,7 @@ function refreshControls() {
   resetBtn.disabled = !sim;
   undoBtn.disabled = !!sim;
   clearBtn.disabled = !!sim;
-  hintEl.textContent = sim
+  messages.instruct(sim
     ? running
       ? 'Drag a bar, joint or gear to pull it (red arrow = force); it is measured in the inspector. Pause to pick parts to measure.'
       : 'Paused: click a part to measure it (again, or on empty space, to let it go); click a quantity to graph it over time.'
@@ -2932,7 +2934,7 @@ function refreshControls() {
         ? constrainHint()
         : tool === 'join' && joinFirst
         ? `Now click the body to join to ${bodyName(design, joinFirst)} (or ${bodyName(design, joinFirst)} again to cancel).`
-        : hints[tool];
+        : hints[tool]);
   renderInspector();
 }
 
@@ -2989,7 +2991,7 @@ function pickSensorAt(w: Vec, sp: Vec) {
   const g = pt === null && !l ? (propellerAt(w) ?? gearAt(w)) : null;
   const body: DSensor['body'] | null = pt !== null ? { kind: 'point', id: pt } : l ? { kind: 'link', id: l.id } : g ? { kind: 'gear', id: g.id } : null;
   if (!body) {
-    flash('Click a joint, bar, rack, gear, wheel or propeller for the sensor (Esc to leave it without one).');
+    messages.notify('Click a joint, bar, rack, gear, wheel or propeller for the sensor (Esc to leave it without one).');
     return;
   }
   const what = body.kind === 'point' ? `joint ${pointLabel(body.id)}` : bodyName(design, body as DBodyRef);
@@ -3476,6 +3478,12 @@ function inspectorLever(g: DGear, lever: NonNullable<NonNullable<DGear['motor']>
 }
 
 function renderInspector() {
+  // a different part (or parts) to inspect: the inspector comes out to show it
+  const showing = `${selection?.kind}:${selection?.id}|${multi ? partCount(multi) : 0}|${groundSel ? 'ground' : ''}|${inspectSettings}`;
+  if (showing !== inspectedFor) {
+    inspectedFor = showing;
+    inspectorPanel?.show();
+  }
   measureView = null;
   if (sim && selection && (selection.kind === 'point' || selection.kind === 'link' || selection.kind === 'gear' || selection.kind === 'spring')) {
     const key = `${selection.kind}:${selection.id}`;
@@ -4050,7 +4058,7 @@ function breakNow(found: { link: number; u: number[]; xs: number[]; M: number }[
     derive();
     breaking.on = breakBox.checked = false;
     saveBreaking();
-    flash(`${names.join('; ')} would break, but the pieces could not be simulated (${deriveError ?? 'no coordinates'}), so breaking is turned off.`);
+    messages.notify(`${names.join('; ')} would break, but the pieces could not be simulated (${deriveError ?? 'no coordinates'}), so breaking is turned off.`);
     return;
   }
   unbroken ??= cloneDesign(before);
@@ -4065,7 +4073,7 @@ function breakNow(found: { link: number; u: number[]; xs: number[]; M: number }[
     derive();
     breaking.on = breakBox.checked = false;
     saveBreaking();
-    flash(`${names.join('; ')} would break, but the motion could not be carried over to the pieces, so breaking is turned off.`);
+    messages.notify(`${names.join('; ')} would break, but the motion could not be carried over to the pieces, so breaking is turned off.`);
     return;
   }
   next.energyOffset = old.energy().V - next.energy().V; // V's zero moves with the mechanism: E carries on
@@ -4102,7 +4110,7 @@ function breakNow(found: { link: number; u: number[]; xs: number[]; M: number }[
   simHeat = sim.heat();
   if (selection && !selectionExists(selection)) selection = null;
   renderInspector();
-  flash(`Broke: ${names.join('; ')}. Reset puts the bars back.`);
+  messages.notify(`Broke: ${names.join('; ')}. Reset puts the bars back.`);
   sfx('snap');
 }
 
@@ -5562,6 +5570,9 @@ statusEl.addEventListener('pointerdown', (e) => {
   else openGraph('system', 0, sr.m, sr.at);
 });
 
+/** The last simulation error put in the message bar. */
+let toldError: string | null = null;
+
 function renderStatus() {
   const nBars = design.links.filter((l) => !l.rack).length;
   const nRacks = design.links.length - nBars;
@@ -5571,8 +5582,11 @@ function renderStatus() {
   const nGears = design.gears.length - nWheels - nProps;
   if (simError) {
     statusEl.innerHTML = `<span class="err">${simError}</span>`;
+    if (simError !== toldError) messages.notify(simError, 'error'); // up top as well, once
+    toldError = simError;
     return;
   }
+  toldError = null;
   if (!sim) {
     const dof = derivation ? derivation.coords.length - derivation.constraints.length : 0;
     statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''}${nWheels ? ` · <b>${nWheels}</b> wheel${nWheels === 1 ? '' : 's'}` : ''}${nProps ? ` · <b>${nProps}</b> propeller${nProps === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom${hasInitialRates() ? ' · starts moving (initial velocities set)' : ''}`;

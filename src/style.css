@@ -639,15 +639,43 @@ table.params td {
   color: #b23a3a;
 }
 
+/* the message bar (ui/messages.ts): a strip across the top that lets clicks through, the message centred in it */
 #hint {
   position: fixed;
-  top: 14px;
+  top: 10px;
   left: 236px;
   right: 528px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 12;
+}
+
+#hint .msg {
+  position: relative;
+  max-width: 100%;
+  padding: 6px 14px;
   text-align: center;
   color: var(--muted);
   font-size: 13px;
-  pointer-events: none;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+
+#hint .msg.empty {
+  display: none;
+}
+
+#hint .msg[data-kind='warn'] {
+  color: #8a5a00;
+  border-color: #e8c97a;
+  background: #fff9e8;
+}
+
+#hint .msg[data-kind='error'] {
+  color: #a3261b;
+  border-color: #eba69f;
+  background: #fff3f1;
 }
 
 #inspector p {
@@ -1154,6 +1182,16 @@ body.scrubbing * {
   opacity: 0;
 }
 
+.slides.away-top {
+  transform: translateY(calc(-100% - 24px));
+  opacity: 0;
+}
+
+.slides.away-bottom {
+  transform: translateY(calc(100% + 24px));
+  opacity: 0;
+}
+
 /* where a slid-away panel went: a thin tab at the top of that edge */
 .edge-tab {
   position: fixed;
@@ -1174,6 +1212,22 @@ body.scrubbing * {
 
 .edge-tab.right {
   right: 3px;
+}
+
+/* on the top and bottom edges the tab lies along the edge */
+.edge-tab.top,
+.edge-tab.bottom {
+  width: 72px;
+  height: 5px;
+}
+
+.edge-tab.top {
+  top: 3px;
+}
+
+.edge-tab.bottom {
+  top: auto;
+  bottom: 3px;
 }
 
 .edge-tab.shown {

@@ -189,8 +189,18 @@ Other controls:
   - **Summaries:** a folded heading still says what matters: the tool in use, the beam colouring, deflection and breaking that are on, and whether friction or the ground is on.
   - **Still reachable:** tool keys and the right-click list work whether or not their block is open.
 - **Panels that get out of the way.** The equations panel starts folded (its open state is remembered).
-  - **Sliding away:** it and the side bar each slide off their edge of the screen once the mouse has been away from them for 3 seconds. A thin tab at the top of the edge marks where they went.
-  - **Bringing them back:** move the mouse to the top part of that edge (down to the panel's height, or 40% of the screen) and the panel slides back in. It goes again 3 seconds after the mouse leaves.
+  - **Sliding away:** every panel slides off its edge of the screen once the mouse has been away from it for 3 seconds, and a thin tab at that edge marks where it went:
+    - the side bar to the left;
+    - the equations panel to the right;
+    - the inspector to the right;
+    - the message bar up;
+    - the status bar down.
+  - **Bringing them back:** move the mouse to the panel's part of its edge and it slides back in, going again 3 seconds after the mouse leaves. Each part:
+    - the side bar and the equations panel: the top of their edge, down to the panel's height or 40% of the screen;
+    - the inspector: the bottom of the right edge;
+    - the message bar and the status bar: the stretch of the top or bottom edge alongside them.
+  - **Coming out by themselves:** the message bar comes out whenever there's something new to say, and the inspector whenever you pick a different part to inspect.
+  - **Messages:** every message goes through one place, the message system (`src/ui/messages.ts`). There is the standing instruction for what you are doing (the tool, a pick half done, running or paused) and passing notices (copied, a bar broke, warnings), shown long enough to read before the instruction returns. Simulation errors also appear there in red, besides in the status bar.
   - **Never while in use:** a panel stays while the mouse is over it, while a press that began on it is held (dragging a slider or number box out past its edge), and while the keyboard is in one of its boxes or menus.
 - **Right-click** the drawing for a search list of everything in the side panel: tools, Play, Step and Reset, every setting and switch (beam colouring, deflection, breaking, friction, ground…), sliders and number boxes, and the examples.
   - **Opening:** the list opens at the mouse with its search box ready, so just type. Every word must appear in an entry, and entries that start with what you typed come first. A check mark shows what is on, and shortcuts and current values show on the right.
