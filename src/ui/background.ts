@@ -20,6 +20,7 @@
  * The state is plain data (the images as data URLs), saved with projects.
  */
 import { toWorld, type View } from './render';
+import { Weather, type WeatherMode } from './weather';
 
 /** An image layer of a custom background. */
 export interface ImageLayer {
@@ -48,9 +49,12 @@ export interface BackgroundAnim {
   /** The time of day (hours, 0–24) when it was set. */
   hour: number;
   birds: boolean;
+  /** The weather (ui/weather.ts): changing by itself, or one kind all the time; and whether it is heard. */
+  weather: WeatherMode;
+  weatherSound: boolean;
 }
 
-export const DEFAULT_ANIM: BackgroundAnim = { on: true, dayLength: 300, hour: 10, birds: true };
+export const DEFAULT_ANIM: BackgroundAnim = { on: true, dayLength: 300, hour: 10, birds: true, weather: 'random', weatherSound: true };
 
 export interface BackgroundState {
   /** 'none', a scene's id, or 'custom' (the scene `base` with the `layers` over it). */
@@ -80,7 +84,8 @@ const SKY_KEYS: [number, string, string, string][] = [
   [24, '#08122b', '#13234a', '#1f3462'],
 ];
 
-const hex = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+/** A colour's red, green and blue: from #rrggbb or rgb(r,g,b). */
+const hex = (c: string) => (c.startsWith('#') ? [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) : c.match(/\d+/g)!.slice(0, 3).map(Number));
 const mix = (a: string, b: string, t: number) => {
   const [x, y] = [hex(a), hex(b)];
   return `rgb(${x.map((v, i) => Math.round(v + (y[i] - v) * t)).join(',')})`;
@@ -256,14 +261,16 @@ interface SceneDef {
   name: string;
   strength: number;
   layers: SceneLayer[];
-  /** Animated: whether its sky turns with the time of day, and whether birds fly in it. */
+  /** Animated: whether its sky turns with the time of day, whether birds fly in it, whether it has weather. */
   cycle?: boolean;
   birds?: boolean;
+  weather?: boolean;
 }
 
 const SCENE_DEFS: Record<string, SceneDef> = {
   sky: {
     name: 'Blue sky with clouds',
+    weather: true,
     strength: 0.75,
     cycle: true,
     birds: true,
@@ -275,6 +282,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   city: {
     name: 'City skyline',
+    weather: true,
     strength: 0.7,
     cycle: true,
     birds: true,
@@ -287,6 +295,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   night: {
     name: 'Night sky',
+    weather: true,
     strength: 0.55,
     layers: [
       {
@@ -320,6 +329,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   sunset: {
     name: 'Sunset over hills',
+    weather: true,
     strength: 0.7,
     birds: true,
     layers: [
@@ -348,6 +358,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   mountains: {
     name: 'Mountains',
+    weather: true,
     strength: 0.7,
     cycle: true,
     birds: true,
@@ -480,7 +491,7 @@ function sceneTile(z: number): ImageLayer {
 }
 
 /** The scenes: id, name, their usual strength, and how many layers deep. */
-export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length, cycle: !!s.cycle, birds: !!s.birds, alive: !!s.cycle || !!s.birds || s.layers.some((l) => l.drift) || id === 'night' }));
+export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length, cycle: !!s.cycle, birds: !!s.birds, weather: !!s.weather, alive: !!s.cycle || !!s.birds || !!s.weather || s.layers.some((l) => l.drift) || id === 'night' }));
 
 /**
  * An image file for a layer, as a data URL: an SVG as it is; a picture scaled down to at most
@@ -533,6 +544,41 @@ export function placeLayer(l: ImageLayer, r: { x: number; y: number; w: number }
   l.rect = { x: cx + (r.x - w / 2) / s, y: cy - (r.y - h / 2) / s, w: Math.max(r.w, 4) / s };
 }
 
+/** A layer as drawn: its distance, its place among those at that distance, how it draws, whether it is lit by the time of day and the weather, and its windows. */
+type Item = { depth: number; k: number; draw: (c: CanvasRenderingContext2D) => void; lit?: boolean; glow?: (c: CanvasRenderingContext2D) => void; cloud?: boolean };
+
+/**
+ * The weather's clouds: a ceiling of grey cloud across the top of the tile, its underside ragged
+ * with heavy clouds hanging from it, all one shape in one shading (no seams): paler above,
+ * darker beneath.
+ */
+function overcast(c: CanvasRenderingContext2D, w: number, h: number, seed: number) {
+  const rnd = seeded(seed);
+  const base = h * 0.14;
+  c.fillStyle = vertical(c, h, [[0, 'rgb(152,160,172)'], [0.14, 'rgb(136,144,158)'], [0.3, 'rgb(98,106,120)'], [1, 'rgb(98,106,120)']]);
+  c.beginPath();
+  c.rect(0, 0, w, base);
+  const count = Math.max(7, Math.round(w / 120));
+  for (let i = 0; i < count; i++) {
+    const size = 130 + 160 * rnd();
+    const x = ((i + rnd()) / count) * w;
+    const y = base + h * 0.13 * rnd();
+    const puffs = 6 + Math.floor(rnd() * 4);
+    const shape = Array.from({ length: puffs }, (_, k) => {
+      const u = k / (puffs - 1) - 0.5;
+      return [u * size * 0.85, size * (0.15 + 0.13 * Math.sin(Math.PI * (u + 0.5)) + 0.05 * rnd())] as const;
+    });
+    for (const dx of [-w, 0, w]) {
+      for (const [ux, r] of shape) (c.moveTo(x + dx + ux + r, y - r * 0.55), c.arc(x + dx + ux, y - r * 0.55, r, 0, Math.PI * 2));
+      c.rect(x + dx - size * 0.42, 0, size * 0.84, y - size * 0.2); // (hanging from the ceiling)
+    }
+  }
+  c.fill();
+}
+
+/** Where the weather goes among the layers (distances): its clouds, the bolt, and the rain and hail far and near. */
+const WEATHER_DEPTH = { highCloud: 18, lowCloud: 8, bolt: 13, farFall: 7, nearFall: 1.6 };
+
 /** The background as drawn: its state, its images once loaded, and each scene's layers drawn once per window size. */
 export class Backdrop {
   state: BackgroundState = { ...NO_BACKGROUND };
@@ -546,6 +592,8 @@ export class Backdrop {
   private lastDraw = performance.now();
   private meteor: { x: number; y: number; vx: number; vy: number; life: number } | null = null;
   private meteorClock = 3;
+  /** The weather (ui/weather.ts), stepped as it is drawn. */
+  readonly weather = new Weather();
 
   /** Set the background (images load in the background; until then they do not show). */
   set(state: BackgroundState) {
@@ -622,8 +670,14 @@ export class Backdrop {
     const warm = turning ? warmth(hour) : 0;
     const dpr = window.devicePixelRatio || 1;
     const secs = now / 1000;
-    /** A layer: its distance, its place among those at that distance, how it draws, whether it is lit by the time of day, and its windows. */
-    type Item = { depth: number; k: number; draw: (c: CanvasRenderingContext2D) => void; lit?: boolean; glow?: (c: CanvasRenderingContext2D) => void };
+    // the weather: where the scene has it and it is animated
+    const weatherOn = anim && !!scene?.weather;
+    const wx = this.weather;
+    if (weatherOn) wx.step(dt, s.anim.weather);
+    else wx.clear();
+    const wet = weatherOn && wx.active;
+    const gloom = wet ? wx.now.gloom : 0;
+    const lit = turning || wet; // the scenery in the light of the time of day and the weather
     const items: Item[] = [];
 
     if (turning)
@@ -664,7 +718,8 @@ export class Backdrop {
       items.push({
         depth: z,
         k: i,
-        lit: turning,
+        lit,
+        cloud: !!layer.drift, // the scene's clouds: greyed as the sky clouds over
         draw: (c) => {
           tiles(c, this.sceneCanvas(sceneId, i, TILE_W, TILE_H, res));
           if (layer.below && r.y + r.h < h) {
@@ -679,7 +734,10 @@ export class Backdrop {
     // the night scene's sky: twinkling and shooting stars, just in front of it
     if (anim && !turning && dark > 0.3) items.push({ depth: Infinity, k: 0.5, draw: (c) => this.drawNightSky(c, w, h, dt, dark) });
     // birds by day, flying at their distance in the scene's space
-    if (anim && scene?.birds && s.anim.birds && dark < 0.9) items.push({ depth: BIRD_DEPTH, k: 1000, draw: (c) => this.drawBirds(c, v, w, h, dt, 1 - dark) });
+    // (sheltering from the rain and hail)
+    const shelter = wet ? Math.min(1, 1.6 * (wx.now.rain + wx.now.hail)) : 0;
+    if (anim && scene?.birds && s.anim.birds && dark < 0.9 && shelter < 0.98) items.push({ depth: BIRD_DEPTH, k: 1000, draw: (c) => this.drawBirds(c, v, w, h, dt, (1 - dark) * (1 - shelter)) });
+    if (wet) this.weatherItems(items, v, w, h, dt, dark);
     if (s.kind === 'custom')
       s.layers.forEach((l, n) => {
         const img = this.images.get(l.image);
@@ -687,7 +745,7 @@ export class Backdrop {
         items.push({
           depth: l.depth ?? Infinity,
           k: 2000 + (s.layers.length - 1 - n), // first in the editor's list: on top of the others at its distance
-          lit: turning, // in the same light as the scenery
+          lit, // in the same light as the scenery
           draw: (c) => {
             const r = layerRect(l, v, w, h);
             c.imageSmoothingQuality = 'high';
@@ -698,7 +756,7 @@ export class Backdrop {
     if (!items.length) return;
 
     const out = this.composite(w, h); // the layers at full strength, then the whole at its strength
-    const lighting = warm > 0.01 || dark > 0.01;
+    const lighting = warm > 0.01 || dark > 0.01 || gloom > 0.01;
     items.sort((a, b) => b.depth - a.depth || a.k - b.k);
     for (const it of items) {
       if (it.lit && lighting) {
@@ -708,6 +766,8 @@ export class Backdrop {
         sc.save();
         sc.globalCompositeOperation = 'source-atop';
         if (warm > 0.01) (sc.fillStyle = `rgba(255,128,70,${0.2 * warm})`), sc.fillRect(0, 0, w, h);
+        if (gloom > 0.01) (sc.fillStyle = `rgba(58,66,80,${0.5 * gloom})`), sc.fillRect(0, 0, w, h);
+        if (it.cloud && wet) (sc.fillStyle = `rgba(112,120,134,${0.7 * wx.now.cover})`), sc.fillRect(0, 0, w, h);
         if (dark > 0.01) (sc.fillStyle = `rgba(14,22,58,${0.62 * dark})`), sc.fillRect(0, 0, w, h);
         sc.restore();
         if (it.glow) {
@@ -725,10 +785,76 @@ export class Backdrop {
         }
       }
     }
+    // lightning: a flash over everything
+    if (wet && wx.flash > 0.01) (out.fillStyle = `rgba(232,238,255,${0.28 * wx.flash})`), out.fillRect(0, 0, w, h);
     ctx.save();
     ctx.globalAlpha = Math.min(1, Math.max(0, s.opacity));
     ctx.drawImage(out.canvas, 0, 0, w, h);
     ctx.restore();
+  }
+
+  /**
+   * The weather's layers, each at its distance: the overcast sky (in front of the sky, hiding the
+   * sun and stars) and the sky lit by lightning behind the scenery, the clouds high and low
+   * (drifting with the wind, lit like the scenery), the bolt, and the rain and hail far and near.
+   */
+  private weatherItems(items: Item[], v: View, w: number, h: number, dt: number, dark: number) {
+    const wx = this.weather;
+    const n = wx.now;
+    const dpr = window.devicePixelRatio || 1;
+    items.push({
+      depth: Infinity,
+      k: 0.6,
+      draw: (c) => {
+        // the sky clouded over: grey by day, near black by night, darker as the storm is
+        const day = mix('#9aa4b0', '#59626e', Math.min(1, n.gloom * 1.3));
+        c.fillStyle = mix(day, '#151a24', dark);
+        c.globalAlpha = Math.min(1, n.cover);
+        c.fillRect(0, 0, w, h);
+        c.globalAlpha = 1;
+        if (wx.flash > 0.01) {
+          // lightning lights the clouds from within: brightest high up
+          const g = c.createLinearGradient(0, 0, 0, h);
+          g.addColorStop(0, `rgba(225,232,255,${0.75 * wx.flash})`);
+          g.addColorStop(1, `rgba(225,232,255,${0.25 * wx.flash})`);
+          c.fillStyle = g;
+          c.fillRect(0, 0, w, h);
+        }
+      },
+    });
+    const place = (z: number) => {
+      const r = layerRect(sceneTile(z), v, w, h);
+      return { r, unit: r.w / TILE_W };
+    };
+    ([[WEATHER_DEPTH.highCloud, 0.6, 61], [WEATHER_DEPTH.lowCloud, 1, 63]] as const).forEach(([z, speed, seed]) => {
+      const { r, unit } = place(z);
+      r.x += ((wx.drift * speed) % TILE_W) * unit;
+      const res = Math.min(unit * dpr > 1.4 ? 2 : 1, MAX_TILE_PX / TILE_W) * Math.min(dpr, 2);
+      const x0 = r.x - Math.ceil(r.x / r.w) * r.w;
+      items.push({
+        depth: z,
+        k: 900,
+        lit: true,
+        draw: (c) => {
+          const cv = this.sceneCanvas('weather', seed, TILE_W, TILE_H, res, (cc, tw, th) => overcast(cc, tw, th, seed));
+          c.globalAlpha = Math.min(1, 1.15 * n.cover * (z === WEATHER_DEPTH.lowCloud ? Math.max(0, n.cover - 0.4) / 0.6 : 1));
+          for (let x = x0; x < w; x += r.w) c.drawImage(cv, x, r.y, r.w + 0.6, r.h);
+          // above the tile: the ceiling carries on
+          if (r.y > 0) (c.fillStyle = 'rgb(150,158,170)'), c.fillRect(0, 0, w, r.y + 1);
+          c.globalAlpha = 1;
+        },
+      });
+    });
+    if (wx.bolt) {
+      const { r, unit } = place(WEATHER_DEPTH.bolt);
+      items.push({ depth: WEATHER_DEPTH.bolt, k: 900, draw: (c) => wx.drawBolt(c, r.x, r.y, unit, -r.x / unit, (w - r.x) / unit) });
+    }
+    if (n.rain > 0.01 || n.hail > 0.01)
+      for (const near of [false, true]) {
+        const z = near ? WEATHER_DEPTH.nearFall : WEATHER_DEPTH.farFall;
+        const { r, unit } = place(z);
+        items.push({ depth: z, k: 950, draw: (c) => wx.drawFall(c, w, h, r.x, r.y, unit, near, dt, dark) });
+      }
   }
 
   /** A second canvas the screen's size, cleared: for lighting one layer on its own. */

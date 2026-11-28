@@ -13,6 +13,7 @@ import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
 import { Gallery, MY_PROJECTS, type GalleryItem } from './ui/gallery';
 import { Backdrop, clockText, DEFAULT_ANIM, NO_BACKGROUND, SCENES, type BackgroundState, type ImageLayer } from './ui/background';
+import { isWeatherMode, WEATHER_MODES } from './ui/weather';
 import { BackgroundEditor } from './ui/bgeditor';
 import { askDialog } from './ui/dialog';
 import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
@@ -2349,7 +2350,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
 /** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
-const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds']);
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-weather-sound']);
 
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
@@ -2542,6 +2543,8 @@ function validBackground(raw: unknown): BackgroundState | null {
     dayLength: Number.isFinite(a.dayLength) && a.dayLength! >= 0 ? a.dayLength! : DEFAULT_ANIM.dayLength,
     hour: Number.isFinite(a.hour) ? ((a.hour! % 24) + 24) % 24 : DEFAULT_ANIM.hour,
     birds: typeof a.birds === 'boolean' ? a.birds : DEFAULT_ANIM.birds,
+    weather: isWeatherMode(a.weather) ? a.weather : DEFAULT_ANIM.weather,
+    weatherSound: typeof a.weatherSound === 'boolean' ? a.weatherSound : DEFAULT_ANIM.weatherSound,
   };
   const okLayer = (l: ImageLayer) =>
     l && typeof l.image === 'string' && l.image.startsWith('data:image/') && Number.isFinite(l.aspect) && l.aspect >= 0 && (l.depth === null || (Number.isFinite(l.depth) && l.depth >= 1)) && l.ref && [l.ref.cx, l.ref.cy, l.ref.s].every(Number.isFinite) && l.ref.s > 0 && l.rect && [l.rect.x, l.rect.y, l.rect.w].every(Number.isFinite) && l.rect.w > 0;
@@ -2566,6 +2569,10 @@ function setBackground(b: BackgroundState, passing = false) {
   $<HTMLElement>('#bg-day-row').hidden = !sc?.cycle || !b.anim.on;
   $<HTMLElement>('#bg-birds-row').hidden = !sc?.birds || !b.anim.on;
   $<HTMLInputElement>('#bg-birds').checked = b.anim.birds;
+  $<HTMLElement>('#bg-weather-row').hidden = !sc?.weather || !b.anim.on;
+  $<HTMLElement>('#bg-weather-sound-row').hidden = !sc?.weather || !b.anim.on || b.anim.weather === 'clear';
+  $<HTMLSelectElement>('#bg-weather').value = b.anim.weather;
+  $<HTMLInputElement>('#bg-weather-sound').checked = b.anim.weatherSound;
   const day = $<HTMLSelectElement>('#bg-day');
   if (![...day.options].some((o) => Number(o.value) === b.anim.dayLength)) day.append(new Option(`${b.anim.dayLength} s`, String(b.anim.dayLength)));
   day.value = [...day.options].find((o) => Number(o.value) === b.anim.dayLength)!.value;
@@ -2600,6 +2607,17 @@ function showBackgroundTime() {
 }
 $<HTMLInputElement>('#bg-animate').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, on: (e.target as HTMLInputElement).checked } }));
 $<HTMLInputElement>('#bg-birds').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, birds: (e.target as HTMLInputElement).checked } }));
+for (const m of WEATHER_MODES) $<HTMLSelectElement>('#bg-weather').append(new Option(m.name, m.id));
+$<HTMLSelectElement>('#bg-weather').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, weather: (e.target as HTMLSelectElement).value as BackgroundState['anim']['weather'] } }));
+$<HTMLInputElement>('#bg-weather-sound').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, weatherSound: (e.target as HTMLInputElement).checked } }));
+/** The scene the background shows (a custom one's base). */
+const backgroundScene = () => SCENES.find((x) => x.id === (backdrop.state.kind === 'custom' ? backdrop.state.base : backdrop.state.kind));
+/** Whether the weather is on show and to be heard: a scene with weather, animated, its sounds wanted. */
+const weatherHeard = () => backdrop.state.anim.on && backdrop.state.anim.weatherSound && !!backgroundScene()?.weather;
+// lightning: its thunder, after the time the sound takes to arrive
+backdrop.weather.onThunder = (delay, loud) => {
+  if (weatherHeard()) sound.thunder(delay, loud);
+};
 $<HTMLSelectElement>('#bg-day').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, dayLength: Number((e.target as HTMLSelectElement).value) } }));
 $<HTMLInputElement>('#bg-time').addEventListener('pointerdown', () => (timeHeld = true));
 window.addEventListener('pointerup', () => (timeHeld = false));
@@ -2755,6 +2773,14 @@ function paletteCommands(): Command[] {
       bgKind.dispatchEvent(new Event('change'));
     } });
   if (backdrop.state.kind === 'custom') out.push({ label: 'Edit background…', group: 'Background', keywords: 'backdrop images layers parallax depth', run: editBackground });
+  if (!$<HTMLElement>('#bg-weather-row').hidden) {
+    const wsel = $<HTMLSelectElement>('#bg-weather');
+    for (const m of WEATHER_MODES)
+      out.push({ label: `Weather: ${m.name}`, group: 'Background', keywords: 'rain storm thunder lightning hail cloudy clouds sky', on: wsel.value === m.id, toggle: true, run: () => {
+        wsel.value = m.id;
+        wsel.dispatchEvent(new Event('change'));
+      } });
+  }
   out.push({ label: 'Background strength', group: 'Background', keywords: 'opacity fade backdrop', value: { type: 'range', min: bgOpacity.min, max: bgOpacity.max, step: bgOpacity.step, get: () => bgOpacity.value, set: (v, done) => drive(bgOpacity, v, done, ['input', 'change']), shown: () => `${Math.round(Number(bgOpacity.value) * 100)}%` } });
   // the integrator and step: each choice an entry (a toggle, like a switch's option)
   for (const [sel, name] of [[integratorSel, 'Integrator'], [stepSel, stepping.integrator === 'rk45' ? 'Largest step' : 'Step'], [toleranceSel, 'Tolerance']] as const) {
@@ -3030,7 +3056,9 @@ function blockSummaries() {
   const colour = beamColour.q === 'off' ? '' : { N: 'tension', V: 'shear', M: 'bending', w: 'deflection' }[beamColour.q];
   put('sum-beams', [colour, deflect.on && 'deflection drawn', breaking.on && `break ≥ ${breaking.at} N·m`].filter(Boolean).join(' · '));
   put('sum-physics', [friction.enabled && 'friction', design.ground && 'ground'].filter(Boolean).join(' · '));
-  put('sum-background', `${backdrop.name}${backdrop.state.anim.on && SCENES.find((x) => x.id === (backdrop.state.kind === 'custom' ? backdrop.state.base : backdrop.state.kind))?.cycle ? ` · ${clockText(backdrop.hour)}` : ''}`);
+  const bgScene = backgroundScene();
+  const bgAnim = backdrop.state.anim.on;
+  put('sum-background', [backdrop.name, bgAnim && bgScene?.cycle && clockText(backdrop.hour), bgAnim && bgScene?.weather && backdrop.weather.name.toLowerCase()].filter(Boolean).join(' · '));
   if (!$<HTMLElement>('#bg-time-row').hidden) showBackgroundTime();
 }
 
@@ -6270,6 +6298,7 @@ function drawFrame(now: number) {
     if (settings.follow) followMechanism();
   }
   sound.update(sim && running ? machineState(sim) : null);
+  sound.ambient(weatherHeard() ? backdrop.weather.sound : null);
   if (sim) {
     updateMeasures();
     updateGraph();

@@ -366,9 +366,9 @@ export class SoundEngine {
     return src;
   }
 
-  /** A continuous voice: built once, then steered with set(). */
-  private voice(key: string, build: (out: GainNode) => Omit<Voice, 'out'>): Voice {
-    let v = this.voices.get(key);
+  /** A continuous voice: built once, then steered with set() (kept in `voices`: the machine's, or the weather's). */
+  private voice(key: string, build: (out: GainNode) => Omit<Voice, 'out'>, voices = this.voices): Voice {
+    let v = voices.get(key);
     if (!v) {
       const out = this.ctx!.createGain();
       out.gain.value = 0;
@@ -379,7 +379,7 @@ export class SoundEngine {
         if (s instanceof AudioBufferSourceNode) s.start(now, Math.random() * 1.5); // each noise from its own place in the buffer
         else s.start(now);
       }
-      this.voices.set(key, v);
+      voices.set(key, v);
     }
     return v;
   }
@@ -441,8 +441,8 @@ export class SoundEngine {
     });
   }
 
-  /** Filtered noise (rumble, scrape, wind, sizzle). */
-  private noiseVoice(key: string, type: BiquadFilterType, q: number): Voice {
+  /** Filtered noise (rumble, scrape, wind, sizzle; rain and hail). */
+  private noiseVoice(key: string, type: BiquadFilterType, q: number, voices = this.voices): Voice {
     return this.voice(key, (out) => {
       const src = this.noiseSource();
       const f = this.ctx!.createBiquadFilter();
@@ -456,7 +456,7 @@ export class SoundEngine {
           out.gain.setTargetAtTime(gain, now, 0.06);
         },
       };
-    });
+    }, voices);
   }
 
   private meshVoice(): Voice {
@@ -562,6 +562,55 @@ export class SoundEngine {
       v.out.gain.setTargetAtTime(0, now, 0.06);
       this.voices.delete(key);
       for (const s of v.sources) s.stop(now + 0.5);
+    }
+  }
+
+  // ---- the weather ---------------------------------------------------------------------
+
+  /**
+   * Thunder after `delay` s, `loud` 0–1: near, a sharp crack and then the rumble; far, only a
+   * low rumble, rolling on for seconds in a few swells.
+   */
+  thunder(delay: number, loud: number) {
+    if (!this.ready) return;
+    const t = this.ctx!.currentTime + delay;
+    const l = clamp(loud, 0, 1);
+    if (l > 0.6) this.burst(t, 0.35, 0.35 * l, 'bandpass', 2400, 0.7, 300, 0.004); // the crack
+    const swells = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < swells; i++) {
+      const at = t + 0.05 + i * (0.35 + Math.random() * 0.6);
+      this.burst(at, 1.6 + Math.random() * 1.8, (0.5 * l + 0.12) * (1 - i / (swells + 1)), 'lowpass', 220 + 300 * l, 0.9, 60, 0.08 + 0.1 * Math.random());
+    }
+  }
+
+  private ambientVoices = new Map<string, Voice>();
+  /**
+   * The weather heard (call every frame): rain hissing and pattering, hail clattering, wind
+   * blowing in gusts; or quiet with null. Apart from the machine's sounds, so it plays while editing too.
+   */
+  ambient(levels: { rain: number; hail: number; wind: number } | null) {
+    if (!this.ready) return;
+    const now = this.ctx!.currentTime;
+    const v = this.ambientVoices;
+    const want: [string, BiquadFilterType, number, number, number][] = levels
+      ? [
+          ['rain-hiss', 'highpass', 0.5, 3500, 0.05 * levels.rain],
+          ['rain-body', 'bandpass', 0.6, 900, 0.07 * levels.rain],
+          ['hail', 'bandpass', 2.5, 3000 + 600 * Math.random(), 0.06 * levels.hail * (0.6 + 0.4 * Math.random())], // (a clatter, never steady)
+          ['wind', 'bandpass', 0.8, 260 + 180 * Math.sin(now * 0.7) + 120 * Math.sin(now * 1.9), 0.06 * levels.wind * (0.6 + 0.4 * Math.sin(now * 0.5))], // gusting
+        ]
+      : [];
+    const live = new Set<string>();
+    for (const [key, type, q, f, gain] of want) {
+      if (gain < (v.has(key) ? 1e-4 : 1e-3)) continue;
+      live.add(key);
+      this.noiseVoice(key, type, q, v).set({ f, gain }, now);
+    }
+    for (const [key, voice] of v) {
+      if (live.has(key)) continue;
+      voice.out.gain.setTargetAtTime(0, now, 0.3);
+      v.delete(key);
+      for (const s of voice.sources) s.stop(now + 2);
     }
   }
 

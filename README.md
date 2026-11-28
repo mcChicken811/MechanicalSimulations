@@ -136,7 +136,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
   - **Their own space:** each layer at a distance is a tile 1200 × 800 units, placed in the world like an image at that distance. It is centred on the origin, one unit being one pixel at a zoom of 170 px/m. So the scenes zoom with the view as well as pan, each layer by its own distance: zoom out 19× and the near buildings shrink to about 37% and the far ones to about 61%, while the sky stays as it is. They're re-drawn sharper when zoomed in.
   - **Endless:** panning shows the layers slide past each other. They repeat sideways and run on below, so the view never runs out of them.
   - **Strength:** the layers are put together first, near ones hiding what is behind them, and the whole background is then shown at its strength.
-  - **Drawing order:** everything is in one list sorted by distance and drawn far to near, so a nearer layer always covers a farther one: the sky with its sun, moon and stars at ∞, the scene's layers, your images and the birds at 5.
+  - **Drawing order:** everything is in one list sorted by distance and drawn far to near, so a nearer layer always covers a farther one: the sky with its sun, moon and stars at ∞, the scene's layers, your images, the birds at 5, and the weather (its clouds at 18 and 8, lightning at 13, rain and hail at 7 and 1.6).
     - **Ties:** at the same distance it goes sky, then the scene's layers, the birds, then your images. Among images, the one listed first in the editor is drawn on top, as the editor lists them and picks them when clicked.
     - **Lighting:** each piece of scenery is lit on its own by the time of day, with its windows over that, before it goes in its place, so lit windows never shine through nearer buildings.
 - **Custom…** opens the **background editor**, where you build your own over a base scene.
@@ -157,7 +157,14 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
   - **Clouds** drift at their own distances.
   - **Shooting stars** cross the night sky now and then.
   - **Birds** (sky, city, mountains, sunset) fly in a flock by Reynolds' boids rules (1987). Each bird keeps clear of those too close (separation), heads the way its neighbours head (alignment) and towards their middle (cohesion). A soft pull keeps it in the sky's band, it wanders a little, and its speed stays between a glide and a dash. They fly at distance 5 in the scene's space, so they pan and zoom with parallax, wrap round the view sideways, and beat their wings as they go. They settle at night.
-  - **Saved:** the animation's settings and the time of day reached are saved with the background, in projects, the gallery and the browser.
+  - **Weather** (sky, city, night, sunset, mountains): clear, cloudy, rain, storm, thunderstorm or hail.
+    - **Changing (random)**, the default: spells of clear sky lasting 40 s to 3 min, broken by weather of a random kind lasting 25 s to 1½ min. When a spell ends it may turn into another (rain into a thunderstorm, a storm into rain) before it clears. Choose a kind instead to keep it all the time.
+    - **Gradual:** a weather is a set of levels: overcast, gloom, rain, hail and wind. Each level eases towards what the weather wants over a few seconds, so a storm rolls in and clears away instead of switching.
+    - **The sky clouds over:** grey by day and near black at night, hiding the sun, moon and stars. Grey clouds hang from a ceiling at distances 18 and 8 and drift faster in the wind. The scenery, and the scene's own clouds, go grey and dim with the gloom.
+    - **Rain and hail** fall at two distances, 7 and 1.6, so they pan with parallax. The nearer is faster, longer and sparser, and the wind slants them. Hailstones tumble a little as they fall. Birds shelter while it rains or hails.
+    - **Lightning** strikes every few seconds in a thunderstorm, sometimes twice in quick succession. It's a forked bolt at distance 13, the clouds lit from within behind the scenery, and a flicker over everything. Its thunder follows after the time the sound takes to arrive: near, a crack and a long rumble; far, a later, quieter rumble.
+    - **Weather sounds** (with sound effects on) plays the hiss and patter of rain, the clatter of hail, gusting wind and the thunder, all synthesised. They play while editing too; untick them to keep the weather silent.
+  - **Saved:** the animation's settings (including the weather chosen) and the time of day reached are saved with the background, in projects, the gallery and the browser.
 
 **Integrators.** The *Simulation* block chooses how the equations of motion are stepped in time, and the step. Each choice shows its order and cost, and the status bar names it.
 
