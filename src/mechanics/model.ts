@@ -470,7 +470,15 @@ export function groundHeight(g: DGround, x: number): number {
   return p[p.length - 1][1];
 }
 
+/** A dimension shown on the drawing: a bar's or spring's length, a gear's radius, or a joint's position. */
+export interface DDimension {
+  kind: 'point' | 'link' | 'spring' | 'gear';
+  id: number;
+}
+
 export interface Design {
+  /** Dimensions shown on the drawing (Dimension tool). */
+  dimensions?: DDimension[];
   /**
    * Initial rates of the coordinates (by coordinate symbol, e.g. th3, x0; SI units), set with
    * the Initial state tool; any missing are 0. Made consistent with the constraints when the
@@ -567,5 +575,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map(cloneGear), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.initialRates ? { initialRates: { ...d.initialRates } } : {}), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map(cloneGear), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.initialRates ? { initialRates: { ...d.initialRates } } : {}), ...(d.dimensions ? { dimensions: d.dimensions.map((x) => ({ ...x })) } : {}), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
 }

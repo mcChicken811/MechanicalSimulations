@@ -44,6 +44,8 @@ export interface Scene {
   box?: { from: Vec; to: Vec } | null;
   /** Arrows in the world (initial velocities): from, to, colour. */
   arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
+  /** Dimensions to show, to this many decimals (null: hidden). */
+  dimensionDigits?: number | null;
   /** Grid mode (Alt / Option held): the grid is drawn, and moves and drawing snap to it. */
   grid?: boolean;
   /** A small label beside the cursor (screen position). */
@@ -187,6 +189,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
   for (const g of s.design.gears) if (g.motor?.pid?.sensor) drawSensor(ctx, v, s, g); // on top: its light shows
+  if (s.dimensionDigits != null) drawDimensions(ctx, v, s, s.dimensionDigits);
   if (s.grab) drawGrab(ctx, v, s.grab);
   if (s.railPreview) drawRailPreview(ctx, w, h, v, s.railPreview);
   if (s.box) drawBox(ctx, v, s.box);
@@ -1048,6 +1051,105 @@ function drawPadlock(ctx: CanvasRenderingContext2D, [x, y]: Vec) {
   ctx.beginPath();
   ctx.roundRect(x - 5.5, y, 11, 8, 1.5);
   ctx.fill();
+  ctx.restore();
+}
+
+const DIM = '#1f6f8b';
+
+/** Text with a white halo, so it reads over anything. */
+function haloText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number) {
+  ctx.lineWidth = 3.5;
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineJoin = 'round';
+  ctx.strokeText(text, x, y);
+  ctx.fillText(text, x, y);
+}
+
+/** A small open arrowhead at b, pointing away from a (screen). */
+function dimHead(ctx: CanvasRenderingContext2D, a: Vec, b: Vec) {
+  const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+  const L = Math.hypot(dx, dy) || 1;
+  const [ux, uy] = [dx / L, dy / L];
+  ctx.beginPath();
+  ctx.moveTo(b[0] - 7 * ux - 3.5 * uy, b[1] - 7 * uy + 3.5 * ux);
+  ctx.lineTo(b[0], b[1]);
+  ctx.lineTo(b[0] - 7 * ux + 3.5 * uy, b[1] - 7 * uy - 3.5 * ux);
+  ctx.stroke();
+}
+
+/**
+ * The dimensions chosen with the Dimension tool, live as the mechanism moves: a bar's or
+ * spring's length as a dimension line beside it (extension lines, arrowheads, the value along
+ * it), a gear's, wheel's or propeller's radius as an arrow from the centre to the rim, and a
+ * joint's position as (x, y) beside it.
+ */
+function drawDimensions(ctx: CanvasRenderingContext2D, v: View, s: Scene, digits: number) {
+  const has = (id: number) => s.design.points.some((p) => p.id === id);
+  const m = (x: number) => `${x.toFixed(digits)} m`;
+  ctx.save();
+  ctx.strokeStyle = DIM;
+  ctx.fillStyle = DIM;
+  ctx.font = '600 11px system-ui, sans-serif';
+  ctx.lineWidth = 1.2;
+  for (const d of s.design.dimensions ?? []) {
+    if (d.kind === 'point') {
+      if (!has(d.id)) continue;
+      const p = s.pos(d.id);
+      const sp = toScreen(v, p);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      haloText(ctx, `(${p[0].toFixed(digits)}, ${p[1].toFixed(digits)})`, sp[0] + 9, sp[1] + 8);
+      continue;
+    }
+    if (d.kind === 'link' || d.kind === 'spring') {
+      const seg = (d.kind === 'link' ? s.design.links : s.design.springs).find((x) => x.id === d.id);
+      if (!seg || !has(seg.a) || !has(seg.b)) continue;
+      const [pa, pb] = [s.pos(seg.a), s.pos(seg.b)];
+      const [A, B] = [toScreen(v, pa), toScreen(v, pb)];
+      const [dx, dy] = [B[0] - A[0], B[1] - A[1]];
+      const L = Math.hypot(dx, dy);
+      if (L < 4) continue;
+      let [nx, ny] = [-dy / L, dx / L];
+      if (ny > 0 || (ny === 0 && nx < 0)) [nx, ny] = [-nx, -ny]; // always the upper side (or the left)
+      const off = 20;
+      const [a2, b2]: [Vec, Vec] = [[A[0] + nx * off, A[1] + ny * off], [B[0] + nx * off, B[1] + ny * off]];
+      ctx.globalAlpha = 0.6;
+      line(ctx, [A[0] + nx * 5, A[1] + ny * 5], [A[0] + nx * (off + 4), A[1] + ny * (off + 4)]);
+      line(ctx, [B[0] + nx * 5, B[1] + ny * 5], [B[0] + nx * (off + 4), B[1] + ny * (off + 4)]);
+      ctx.globalAlpha = 1;
+      line(ctx, a2, b2);
+      dimHead(ctx, b2, a2);
+      dimHead(ctx, a2, b2);
+      const len = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
+      let ang = Math.atan2(dy, dx);
+      if (ang > Math.PI / 2) ang -= Math.PI; // keep the text upright
+      else if (ang < -Math.PI / 2) ang += Math.PI;
+      ctx.save();
+      ctx.translate((a2[0] + b2[0]) / 2 + nx * 2, (a2[1] + b2[1]) / 2 + ny * 2);
+      ctx.rotate(ang);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      haloText(ctx, `${d.kind === 'spring' ? 'ℓ ' : ''}${m(len)}`, 0, -1);
+      ctx.restore();
+      continue;
+    }
+    const g = s.design.gears.find((x) => x.id === d.id);
+    if (!g || !has(g.center)) continue;
+    const c = s.pos(g.center);
+    // along a propeller's blade line, else up and to the right
+    const a = g.propeller ? g.propeller.angle + s.gearAngle(g.id) : Math.PI / 4;
+    const C = toScreen(v, c);
+    const E = toScreen(v, [c[0] + g.radius * Math.cos(a), c[1] + g.radius * Math.sin(a)]);
+    line(ctx, C, E);
+    dimHead(ctx, C, E);
+    ctx.beginPath();
+    ctx.arc(C[0], C[1], 2, 0, Math.PI * 2);
+    ctx.fill();
+    const [ux, uy] = [Math.cos(a), -Math.sin(a)];
+    ctx.textAlign = ux >= 0 ? 'left' : 'right';
+    ctx.textBaseline = 'middle';
+    haloText(ctx, `R ${m(g.radius)}`, E[0] + ux * 6, E[1] + uy * 6);
+  }
   ctx.restore();
 }
 

@@ -85,12 +85,13 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 
 **Moving and the grid.** Dragging a selected joint, a group of selected parts or a ground waypoint moves it continuously, following the cursor's travel. A press only becomes a move once the cursor has gone 0.3 cm from where it was pressed, so a click never nudges anything.
 - **Grid mode:** hold **Alt** (**Option** on a Mac) to move on the grid instead. A joint lands on a grid point, a group moves by whole grid steps, and a waypoint's height lands on a grid line.
-- **Showing the grid:** the grid shows only while Alt / Option is held. Its spacing follows the zoom, from 1 m down to 1 mm, and snapping uses the spacing you see.
+- **Showing the grid:** the grid shows only while Alt / Option is held during something that snaps: a drag, drawing a part, placing a duplicate or a rail's ends. Its spacing follows the zoom, from 1 m down to 1 mm, and snapping uses the spacing you see.
 - **Drawing and pasting** work the same way: free by default, snapped to the grid while Alt / Option is held. That covers joints, radii (to half the spacing), a propeller's blade line (to 15° steps), rail ends, and paste and duplicate offsets.
 
 | Tool | Key | How to use it |
 |---|:-:|---|
 | Select | V | Click a part to edit it in the inspector (bottom right). Where parts overlap, clicking again in the same spot steps through everything there, from the top down, then wraps (the hint names what is picked, say "bar 1: 2 of 3 here"). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
+| Dimension | U | Click a bar, rack or spring to show its length, a gear, wheel or propeller for its radius, or a joint for its position (x, y). Click it again to hide it. |
 | Initial state | I | Click a part, then pick one of its coordinates (or a rate) from the list beside the mouse. Move the mouse to set it, with everything else following, and click to settle. Esc cancels. |
 | Draw bar | B | Drag, or click twice. Start or end on an existing joint to pin bars together. |
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Put its joints on rails (Slider, X) to make it slide. |
@@ -127,6 +128,15 @@ A **wheel** is a uniform disk like a gear, turning about its centre joint, with 
 Joining two bodies makes them one rigid body: they can no longer turn or move relative to each other. This works for any pair of bars, racks and gears, whether or not they touch. Examples are a crank arm fixed to a gear, a pinion fixed to a rack, or a bent lever made of two bars. Joined bodies are drawn in the same colour: the colour of the group's lowest-numbered bar, or of its lowest-numbered gear if the group has no bars. Joined bodies, joined directly or through others, are placed as one rigid body. The group gets a single rotation coordinate: the angle θ of its first bar, or the rotation φ of its first gear if it has no bars. Every joint of the group then sits at r_origin + Rot(θ)(u, v), with the offsets u and v taken from the drawing.
 
 So a group needs at most three coordinates and adds no constraints. Its other bars turn at θ plus a constant, and its gears turn with θ. Compared with joining bodies through constraints, the human hand example drops from 39 coordinates and 23 constraints to 16 coordinates and none, and it simulates about seven times faster.
+
+**Dimensions.** The Dimension tool (U) shows a part's size on the drawing:
+- **Bars, racks and springs:** the length, as a dimension line beside the part with extension lines, arrowheads and the value along it. A spring's is its current length, ℓ.
+- **Gears, wheels and propellers:** the radius, as an arrow from the centre to the rim.
+- **Joints:** the position, (x, y).
+
+Dimensions stay on the view, follow the parts while they move, and are saved with the design. Copying parts copies their dimensions, and deleting a part removes its dimension.
+- **Decimals:** two by default; hold **Alt** (**Option** on a Mac) for three, or **Shift** for one.
+- **Show dimensions,** under Show labels in the settings, turns them all on or off. By default they show while editing and hide while running. The box remembers each choice separately, so ticking it while running keeps them showing on every run, even after a reload.
 
 **Initial state.** A simulation starts from the drawing, at rest unless initial velocities are set. The Initial state tool (I) sets both without changing the mechanism's geometry:
 1. **Click a part:** a joint, a bar or rack, a gear, wheel or propeller. A list beside the mouse shows the coordinates the part moves with directly, for example the angles of the bars it hangs from or a free joint's x and y, with their current values. Below them it lists the same coordinates' rates (a propeller's spin rate included).

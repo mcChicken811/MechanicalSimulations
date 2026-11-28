@@ -11,7 +11,7 @@ import { enableScrubbing } from './ui/scrub';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'initial' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'initial' | 'dimension' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -863,6 +863,12 @@ function constrainHint(): string {
 }
 
 function removeOrphans() {
+  // dimensions of parts that are gone
+  if (design.dimensions) {
+    const there = { point: design.points, link: design.links, spring: design.springs, gear: design.gears };
+    design.dimensions = design.dimensions.filter((x) => there[x.kind].some((p) => p.id === x.id));
+    if (!design.dimensions.length) delete design.dimensions;
+  }
   // sensors on bodies that are gone
   for (const g of design.gears) {
     const sn = g.motor?.pid?.sensor;
@@ -1968,6 +1974,9 @@ canvas.addEventListener('pointerdown', (e) => {
     case 'initial':
       pickInitial(w, sp);
       break;
+    case 'dimension':
+      toggleDimension(w);
+      break;
     case 'pid': {
       const pid = pointAt(w);
       const g = pidAt(w) ?? leverAt(w) ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
@@ -2112,7 +2121,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', i: 'initial', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', i: 'initial', u: 'dimension', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -2298,6 +2307,43 @@ $<HTMLInputElement>('#gravity').addEventListener('change', (e) => {
   if (sim) rebuildSim();
   else derive();
 });
+// Dimensions show by default while editing and not while running; each choice is remembered.
+const DIMS_KEY = 'linkage-lab-dimensions';
+const dimsShown: { edit: boolean; play: boolean } = (() => {
+  try {
+    return { edit: true, play: false, ...JSON.parse(localStorage.getItem(DIMS_KEY) ?? '{}') };
+  } catch {
+    return { edit: true, play: false };
+  }
+})();
+const dimsBox = $<HTMLInputElement>('#dims');
+dimsBox.addEventListener('change', () => {
+  dimsShown[sim ? 'play' : 'edit'] = dimsBox.checked;
+  localStorage.setItem(DIMS_KEY, JSON.stringify(dimsShown));
+});
+let shiftHeld = false;
+for (const ev of ['keydown', 'keyup'] as const) window.addEventListener(ev, (e) => e.key === 'Shift' && (shiftHeld = ev === 'keydown'));
+window.addEventListener('blur', () => (shiftHeld = false));
+for (const ev of ['pointerdown', 'pointermove'] as const) window.addEventListener(ev, (e) => (shiftHeld = e.shiftKey), { capture: true });
+/** Decimals for dimensions: 2, 3 with Alt / Option, 1 with Shift; null when they are hidden. */
+const dimensionDigits = () => ((sim ? dimsShown.play : dimsShown.edit) && design.dimensions?.length ? (shiftHeld ? 1 : altHeld ? 3 : 2) : null);
+
+/** Show or hide the dimension of the part under w (Dimension tool). */
+function toggleDimension(w: Vec) {
+  const hit = hitTest(w);
+  if (!hit || hit.kind === 'lever' || hit.kind === 'pid') return;
+  const kind = hit.kind;
+  pushUndo();
+  const list = (design.dimensions ??= []);
+  const i = list.findIndex((x) => x.kind === kind && x.id === hit.id);
+  if (i >= 0) list.splice(i, 1);
+  else list.push({ kind, id: hit.id });
+  if (!list.length) delete design.dimensions;
+  sfx(i >= 0 ? 'free' : 'tick');
+  if (i < 0 && !dimsShown.edit) flash('Dimensions are hidden: tick Show dimensions to see them.');
+  designChanged();
+}
+
 const labelsBox = $<HTMLInputElement>('#labels');
 labelsBox.checked = settings.labels;
 labelsBox.addEventListener('change', () => {
@@ -2365,6 +2411,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
   motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
+  dimension: 'Click a bar, rack or spring to show its length, a gear, wheel or propeller for its radius, or a joint for its position; click again to hide it. Hold Alt / Option for three decimals, Shift for one.',
   initial: 'Click a part to set its initial state: pick one of its coordinates (or a rate) from the list, move the mouse to set it while everything else follows, and click to settle. Esc cancels.',
   pid: 'Click a motor (or a gear, which gets a motor) to put a PID controller on it, in place of a lever. Then click what it should measure (a joint, bar, rack, gear, wheel or propeller) and pick the quantity. Click the motor again to remove it.',
   propeller: 'Click the centre, then the edge of a blade: the blades turn out of the page about an axis square to that line, and push along it (the arrow). In empty space it is a free body; start on a joint to mount it there. Give it a motor (O) to spin it.',
@@ -2373,6 +2420,7 @@ const hints: Record<Tool, string> = {
 };
 
 function refreshControls() {
+  dimsBox.checked = sim ? dimsShown.play : dimsShown.edit; // the choice for running, or for editing
   toolButtons.forEach((b) => {
     b.classList.toggle('active', b.dataset.tool === tool && !sim);
     b.disabled = !!sim;
@@ -3475,7 +3523,8 @@ function frame(now: number) {
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
     arrows: sim ? null : initialArrows(),
     cursorLabel: ic && !sim ? { at: mouseScreen, text: ic.readout } : null,
-    grid: gridMode(),
+    grid: gridMode() && (!!dragging || !!groundDrag || !!drawing || !!duplicating || !!constrain?.ends || ['bar', 'rack', 'spring', 'gear', 'wheel', 'propeller'].includes(tool)), // only where things snap
+    dimensionDigits: dimensionDigits(),
     ghost: duplicating && !sim ? (([dx, dy]) => ({ design: duplicating!.frag, dx, dy }))(duplicateOffset()) : null,
     railPreview:
       !sim && constrain && constrain.body !== undefined

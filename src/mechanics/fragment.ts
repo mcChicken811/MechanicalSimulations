@@ -84,6 +84,7 @@ export function extractParts(d: Design, chosen: PartSet): Design {
     meshes: d.meshes.filter((m) => s.gears.has(m.a) && s.gears.has(m.b)).map((m) => ({ ...m })),
     rackMeshes: d.rackMeshes.filter((m) => s.gears.has(m.gear) && s.links.has(m.rack)).map((m) => ({ ...m })),
     joins: (d.joins ?? []).filter((j) => hasBody(s, j.a) && hasBody(s, j.b)).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })),
+    dimensions: (d.dimensions ?? []).filter((x) => s[({ point: 'points', link: 'links', spring: 'springs', gear: 'gears' } as const)[x.kind]].has(x.id)).map((x) => ({ ...x })),
   };
 }
 
@@ -141,6 +142,7 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   for (const m of f.meshes) d.meshes.push({ id: M.get(m.id)!, a: G.get(m.a)!, b: G.get(m.b)! });
   for (const m of f.rackMeshes) d.rackMeshes.push({ id: RM.get(m.id)!, gear: G.get(m.gear)!, rack: L.get(m.rack)! });
   for (const j of f.joins ?? []) (d.joins ??= []).push({ id: J.get(j.id)!, a: body(j.a), b: body(j.b) });
+  for (const x of f.dimensions ?? []) (d.dimensions ??= []).push({ kind: x.kind, id: ({ point: P, link: L, spring: S, gear: G } as const)[x.kind].get(x.id)! });
 
   return { points: new Set(P.values()), links: new Set(L.values()), springs: new Set(S.values()), gears: new Set(G.values()) };
 }
