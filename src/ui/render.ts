@@ -71,6 +71,8 @@ export interface Scene {
   ground?: [number, number][] | null;
   /** The ground is selected: its waypoints show as handles, `waypoint` the selected one. */
   groundSelected?: { waypoint: number | null } | null;
+  /** Where the scale bar goes: bottom right (the default), bottom left, or none. */
+  scaleBar?: 'right' | 'left' | 'none';
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
 }
@@ -147,7 +149,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   bendOf = new Map((s.bends ?? []).map((b) => [b.link, b]));
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
-  drawGrid(ctx, w, h, v, !!s.grid);
+  drawGrid(ctx, w, h, v, !!s.grid, s.scaleBar ?? 'right');
   if (s.ground) drawGroundLine(ctx, w, h, v, s.ground, s.groundSelected ?? null);
 
   for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
@@ -398,7 +400,7 @@ export function gridStep(v: View): number {
 }
 
 /** The grid (only in grid mode) and, always, the scale bar. */
-function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, show: boolean) {
+function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, show: boolean, scaleBar: 'right' | 'left' | 'none' = 'right') {
   const step = gridStep(v);
   const major = (u: number) => Math.abs(u / (step * 10) - Math.round(u / (step * 10))) < 1e-6;
   const [x0, y1] = toWorld(v, [0, 0]);
@@ -417,16 +419,18 @@ function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, 
     line(ctx, [0, sy], [w, sy]);
   }
   // scale bar
+  if (scaleBar === 'none') return;
   ctx.fillStyle = C.muted;
   ctx.strokeStyle = C.muted;
   ctx.lineWidth = 2;
-  // the longest round length that fits in about 200 px
-  const bar = [1, 0.5, 0.1, 0.05, 0.01, 0.005, 0.001].find((m) => m * v.scale <= 200) ?? 0.001;
+  // the longest round length that fits in about 200 px (a third of a small drawing)
+  const bar = [1, 0.5, 0.1, 0.05, 0.01, 0.005, 0.001].find((m) => m * v.scale <= Math.min(200, w / 3)) ?? 0.001;
   const len = v.scale * bar;
-  line(ctx, [w - 30 - len, h - 24], [w - 30, h - 24]);
+  const bx = scaleBar === 'left' ? 16 : w - 30 - len;
+  line(ctx, [bx, h - 24], [bx + len, h - 24]);
   ctx.font = '11px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(bar >= 0.1 ? `${bar} m` : `${Math.round(bar * 1000)} mm`, w - 30 - len / 2, h - 30);
+  ctx.fillText(bar >= 0.1 ? `${bar} m` : `${Math.round(bar * 1000)} mm`, bx + len / 2, h - 30);
 }
 
 /**

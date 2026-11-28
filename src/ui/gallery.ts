@@ -1,18 +1,19 @@
 /**
  * The examples gallery: a panel in the middle of the screen with every example as a card, its
  * drawing above its name, in groups (and a box to filter them by name or description). Choosing
- * one shows it on the right: a bigger drawing to drag and zoom (the wheel), its name and what it
- * is, what it is made of, and Open. Double-clicking a card, or Enter, opens it as well; Esc or a
+ * one shows it on the right: a bigger drawing to drag (any button) and zoom (the wheel), with its
+ * labels shown or not (a box in its corner, remembered), its name and what it is, what it is made
+ * of, and Open. Double-clicking a card, or Enter, opens it as well; Esc or a
  * click outside closes the gallery.
  */
 import type { Design } from '../mechanics/model';
 import type { Preset } from './presets';
 import { drawScene, toWorld, type Scene, type Vec, type View } from './render';
 
-/** A design drawn still, as drawn (no labels unless asked). */
-function sceneOf(d: Design, labels: boolean): Scene {
+/** A design drawn still, as drawn (no labels unless asked; the scale bar where it says). */
+function sceneOf(d: Design, labels: boolean, scaleBar: Scene['scaleBar']): Scene {
   const at = new Map(d.points.map((p) => [p.id, [p.x, p.y] as Vec]));
-  return { design: d, pos: (id) => at.get(id) ?? [0, 0], selection: null, hover: null, preview: null, gearAngle: () => 0, grab: null, simulating: false, labels, ground: d.ground ? d.ground.points : null };
+  return { design: d, pos: (id) => at.get(id) ?? [0, 0], selection: null, hover: null, preview: null, gearAngle: () => 0, grab: null, simulating: false, labels, scaleBar, ground: d.ground ? d.ground.points : null };
 }
 
 /** The view that fits a design's parts (joints, and gears to their rims) into w × h px with a margin. */
@@ -36,13 +37,13 @@ function fitDesign(d: Design, w: number, h: number, margin = 14): View {
 }
 
 /** Draw a design on a canvas at its CSS size (sharp on high-density screens). */
-function paint(cv: HTMLCanvasElement, d: Design, view: View, labels: boolean) {
+function paint(cv: HTMLCanvasElement, d: Design, view: View, labels: boolean, scaleBar: Scene['scaleBar']) {
   const dpr = window.devicePixelRatio || 1;
   const [w, h] = [cv.clientWidth, cv.clientHeight];
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) [cv.width, cv.height] = [Math.round(w * dpr), Math.round(h * dpr)];
   const ctx = cv.getContext('2d')!;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  drawScene(ctx, w, h, view, sceneOf(d, labels));
+  drawScene(ctx, w, h, view, sceneOf(d, labels, scaleBar));
 }
 
 /** What a design is made of, in words: "11 bars · 8 joints · 1 gear with a motor". */
@@ -80,6 +81,8 @@ export class Gallery {
   private chosen = -1;
   private view: View = { scale: 100, ox: 0, oy: 0 };
   private drag: { x: number; y: number; ox: number; oy: number } | null = null;
+  /** Whether the bigger drawing shows the joints' and parts' names (remembered). */
+  private labels = localStorage.getItem('linkage-lab:gallery-labels') !== 'off';
 
   /** `open(i)` is asked to open example i (it may ask about unsaved work first); the gallery closes. */
   constructor(private readonly presets: Preset[], private readonly onOpen: (i: number) => void) {
@@ -92,7 +95,10 @@ export class Gallery {
         <div class="g-main">
           <div class="g-grid"></div>
           <aside class="g-detail" hidden>
-            <canvas class="g-preview" title="Drag to move, scroll to zoom, double-click to fit"></canvas>
+            <div class="g-view">
+              <canvas class="g-preview" title="Drag to move, scroll to zoom, double-click to fit"></canvas>
+              <label class="g-labels"><input type="checkbox"> Labels</label>
+            </div>
             <h3 class="g-name"></h3>
             <p class="g-group"></p>
             <p class="g-desc"></p>
@@ -148,6 +154,15 @@ export class Gallery {
       { passive: false },
     );
     this.preview.addEventListener('dblclick', () => this.fitPreview());
+    // a right-drag pans too: no browser menu (Safari opens it on the press, ending the drag)
+    this.preview.addEventListener('contextmenu', (e) => e.preventDefault());
+    const box = this.backdrop.querySelector<HTMLInputElement>('.g-labels input')!;
+    box.checked = this.labels;
+    box.addEventListener('change', () => {
+      this.labels = box.checked;
+      localStorage.setItem('linkage-lab:gallery-labels', this.labels ? 'on' : 'off');
+      this.paintPreview();
+    });
     window.addEventListener('resize', () => {
       if (!this.backdrop.hidden && this.chosen >= 0) this.fitPreview();
     });
@@ -199,7 +214,7 @@ export class Gallery {
       const cv = card.querySelector('canvas')!;
       if (cv.dataset.drawn === String(cv.clientWidth) || !cv.clientWidth) return;
       const d = this.designs![Number(card.dataset.i)];
-      paint(cv, d, fitDesign(d, cv.clientWidth, cv.clientHeight, 8), false);
+      paint(cv, d, fitDesign(d, cv.clientWidth, cv.clientHeight, 8), false, 'none'); // a card: just the mechanism
       cv.dataset.drawn = String(cv.clientWidth);
     });
   }
@@ -241,7 +256,7 @@ export class Gallery {
   }
 
   private paintPreview() {
-    if (this.chosen >= 0) paint(this.preview, this.designs![this.chosen], this.view, true);
+    if (this.chosen >= 0) paint(this.preview, this.designs![this.chosen], this.view, this.labels, 'left'); // clear of the labels box
   }
 
   private openChosen() {

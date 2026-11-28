@@ -80,7 +80,7 @@ Open the address it prints (usually http://localhost:5173). The page reloads whe
 The first time you open the app, it shows one leg of Theo Jansen's Strandbeest. After that, it remembers your last design in the browser. Use **Examples…** to browse other mechanisms, or **Clear** to start from scratch.
 
 **The examples gallery.** **Examples…** opens a panel in the middle of the screen with every example as a card, its drawing above its name, grouped into famous mechanisms and basics. A box at the top filters them by name or description.
-- **Choosing a card** shows it on the right: a bigger drawing (drag to move it, scroll to zoom, double-click to fit), its name, what it is and what to look for, and what it is made of. **Open** loads it; so do double-clicking a card and Enter.
+- **Choosing a card** shows it on the right: a bigger drawing (drag with any mouse button to move it, scroll to zoom, double-click to fit; the *Labels* box in its corner shows or hides the names, and is remembered), its name, what it is and what to look for, and what it is made of. **Open** loads it; so do double-clicking a card and Enter.
 - **Unsaved changes:** if your drawing has changes not saved to a file, opening an example asks first. You can save the design first, open without saving (Undo can still bring your drawing back until you reload), or cancel. Tick *Don't show this again* to stop the question for this session or for good.
 - **What counts as saved:** saving or loading a design or project, or opening an example, counts as saved; any edit after that counts as a change. This is remembered across reloads.
 
