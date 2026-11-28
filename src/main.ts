@@ -8,6 +8,7 @@ import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
+import { Palette, type Command } from './ui/palette';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
 import { barDiagram, deflection, peak, valueAt, type BeamDiagram } from './mechanics/beam';
@@ -59,7 +60,8 @@ let multi: PartSet | null = null;
 let boxSel: { from: Vec; to: Vec; downAt: Vec } | null = null;
 /** Parts copied with Ctrl/Cmd+C, as a design of their own. */
 let clipboard: Design | null = null;
-let panning: { last: Vec } | null = null;
+/** A middle- or right-button drag panning the view; a right press that does not move opens the search list. */
+let panning: { last: Vec; start: Vec; right: boolean; moved: boolean } | null = null;
 let derivation: Derivation | null = null;
 let deriveError: string | null = null;
 let sim: Simulator | null = null;
@@ -1821,10 +1823,10 @@ canvas.addEventListener('pointerdown', (e) => {
   const w = toWorld(view, sp);
   mouseWorld = w;
   if (e.button === 1 || e.button === 2) {
-    panning = { last: sp };
+    panning = { last: sp, start: sp, right: e.button === 2, moved: false };
     return;
   }
-  if (e.button !== 0) return;
+  if (e.button !== 0 || palette.dismissedBy(e)) return; // a click that closed the search list does only that
   if (ic && !sim) {
     settleInitial();
     return;
@@ -2096,6 +2098,12 @@ canvas.addEventListener('pointermove', (e) => {
   mouseWorld = w;
   mouseScreen = sp;
   if (panning) {
+    // a right press is a click (the search list) until it moves a few pixels: then it pans
+    if (!panning.moved) {
+      if (Math.hypot(sp[0] - panning.start[0], sp[1] - panning.start[1]) < 4) return;
+      panning.moved = true;
+      palette.close();
+    }
     view.ox += sp[0] - panning.last[0];
     view.oy += sp[1] - panning.last[1];
     panning.last = sp;
@@ -2147,7 +2155,9 @@ canvas.addEventListener('pointerup', (e) => {
     renderInspector();
   }
   if (panning) {
+    const click = panning.right && !panning.moved;
     panning = null;
+    if (click) palette.open(e.clientX, e.clientY, paletteCommands()); // right-click: the search list, here
     return;
   }
   if (drawing && !drawing.clickMode) {
@@ -2249,6 +2259,96 @@ window.addEventListener('keydown', (e) => {
     setTool(toolKeys[k]);
   }
 });
+
+// ---- the right-click search list: everything in the side panel, found by typing (ui/palette.ts) ----
+const palette = new Palette();
+const sidePanel = $<HTMLElement>('#toolbar');
+// the list opens under the mouse: a right press on it works as on the drawing (drag: close it and pan; click: open it here)
+palette.el.addEventListener('contextmenu', (e) => e.preventDefault());
+palette.el.addEventListener('pointerdown', (e) => {
+  if (e.button !== 2) return;
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const sp: Vec = [e.clientX - r.left, e.clientY - r.top];
+  canvas.setPointerCapture(e.pointerId); // its moves and release go to the drawing
+  panning = { last: sp, start: sp, right: true, moved: false };
+});
+const textOf = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+/** Whether a control can be used now: not disabled, not inside something hidden. */
+const usable = (el: HTMLElement) => !(el as HTMLInputElement).disabled && !el.closest('[hidden]');
+
+/** Show a control in the side panel and give it the keyboard (a slider or number box chosen from the list). */
+function focusControl(el: HTMLElement) {
+  const box = (el.closest('label, .break-row, #beam-legend') as HTMLElement | null) ?? el;
+  box.scrollIntoView({ block: 'nearest' });
+  box.classList.add('flash-control');
+  setTimeout(() => box.classList.remove('flash-control'), 1400);
+  el.focus();
+}
+
+/** The search list's entries, as the side panel is now (what is on, what can be used). */
+function paletteCommands(): Command[] {
+  const out: Command[] = [];
+  for (const b of toolButtons) {
+    if (!usable(b)) continue;
+    const label = [...b.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim();
+    out.push({ label, group: 'Tool', hint: textOf(b.querySelector('kbd')), keywords: b.title, on: b.dataset.tool === tool && !sim, run: () => b.click() });
+  }
+  for (const [id, hint] of [['#play', 'Space'], ['#step', ''], ['#reset', 'R']] as const) {
+    const b = $<HTMLButtonElement>(id);
+    if (usable(b)) out.push({ label: textOf(b), group: 'Simulation', hint: hint || undefined, keywords: b.title, run: () => b.click() });
+  }
+  // toggles
+  sidePanel.querySelectorAll<HTMLLabelElement>('label.check').forEach((l) => {
+    const box = l.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (!box || !usable(box)) return;
+    out.push({ label: textOf(l).replace(/[≥×]$/, '').trim(), group: l.closest('#beam-colour') ? 'Beam forces' : 'Setting', keywords: l.title || l.closest<HTMLElement>('[title]')?.title, on: box.checked, run: () => box.click() });
+  });
+  // the beam colour switches
+  const segName: Record<string, string> = { 'beam-q': 'Beam colour', 'beam-mode': 'Beam colour mode', 'beam-scale-mode': 'Beam colour scale' };
+  sidePanel.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
+    if (!usable(seg)) return;
+    seg.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+      out.push({ label: `${segName[seg.id] ?? 'Option'}: ${textOf(b)}`, group: 'Beam forces', keywords: b.title, on: b.classList.contains('on'), run: () => b.click() }),
+    );
+  });
+  // sliders and number boxes: shown and given the keyboard
+  sidePanel.querySelectorAll<HTMLLabelElement>('label.slider').forEach((l) => {
+    const input = l.querySelector<HTMLInputElement>('input');
+    if (!input || !usable(input)) return;
+    const label = [...l.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim();
+    out.push({ label, group: l.closest('#friction-settings') ? 'Friction' : l.closest('#ground-settings') ? 'Ground' : 'Setting', hint: textOf(l.querySelector('output')), run: () => focusControl(input) });
+  });
+  const numbers: [string, string, string][] = [
+    ['#deflect-scale', 'Deflection drawn larger by', '×'],
+    ['#beam-E', "Young's modulus E (default for bars)", 'GPa'],
+    ['#beam-I', 'Second moment of area I (default for bars)', 'cm⁴'],
+    ['#break-at', 'Bars break at bending moment', 'N·m'],
+    ['#beam-scale', 'Beam colour: value drawn red', ''],
+  ];
+  for (const [id, label, unit] of numbers) {
+    const input = $<HTMLInputElement>(id);
+    if (usable(input)) out.push({ label, group: 'Beam forces', hint: `${input.value} ${unit}`.trim(), run: () => focusControl(input) });
+  }
+  for (const [id, group, hint] of [['#undo', 'Edit', 'Ctrl Z'], ['#fit', 'View', ''], ['#clear', 'Edit', '']] as const) {
+    const b = $<HTMLButtonElement>(id);
+    if (usable(b)) out.push({ label: textOf(b), group, hint: hint || undefined, keywords: b.title, run: () => b.click() });
+  }
+  const eom = $<HTMLButtonElement>('#eom-toggle');
+  out.push({ label: `Equations panel: ${eom.textContent === '–' ? 'collapse' : 'expand'}`, group: 'View', run: () => eom.click() });
+  presets.forEach((p, i) =>
+    out.push({
+      label: p.name,
+      group: 'Example',
+      keywords: p.group,
+      run: () => {
+        presetSel.value = String(i);
+        presetSel.dispatchEvent(new Event('change'));
+      },
+    }),
+  );
+  return out;
+}
 
 // ---- toolbar ----------------------------------------------------------------------
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools button')];
@@ -5153,7 +5253,7 @@ function renderInspectorPanel() {
   }
   inspectorEl.innerHTML = `
     <h4>Inspector</h4>
-    <p class="muted">Select a joint, bar, rack, spring or gear to edit it. Press <b>Play</b> to derive Lagrange's equations and integrate them with RK4. While it runs, drag any part to pull it. Right-drag pans, the wheel zooms.</p>`;
+    <p class="muted">Select a joint, bar, rack, spring or gear to edit it. Press <b>Play</b> to derive Lagrange's equations and integrate them with RK4. While it runs, drag any part to pull it. Right-click for a search list of every tool, setting and example; right-drag pans, the wheel zooms.</p>`;
 }
 
 function bindRackMeshButtons() {

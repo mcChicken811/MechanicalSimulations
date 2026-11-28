@@ -931,3 +931,80 @@ body.scrubbing * {
   padding: 2px 4px;
   font-size: 11.5px;
 }
+
+/* ---- the right-click search list ---- */
+#palette {
+  position: fixed;
+  z-index: 40;
+  width: 300px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#palette[hidden] {
+  display: none;
+}
+
+#palette input {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+}
+
+#palette input:focus {
+  border-color: var(--primary);
+}
+
+#palette .p-list {
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+}
+
+#palette .p-item {
+  display: grid;
+  grid-template-columns: 14px 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+#palette .p-item.on {
+  background: var(--accent-soft);
+}
+
+#palette .p-check {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+#palette .p-group {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#palette kbd {
+  font: 10.5px ui-monospace, monospace;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+#palette .p-none {
+  padding: 6px 8px;
+  color: var(--muted);
+}
+
+.flash-control {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+  transition: outline-color 0.6s;
+}

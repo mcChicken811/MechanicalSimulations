@@ -183,6 +183,11 @@ A **tension-only** spring pulls when it is stretched beyond its rest length and 
 Other controls:
 - Undo with Ctrl/Cmd+Z.
 - Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the scale bar, and the grid when it shows, follow.
+- **Right-click** the drawing for a search list of everything in the side panel: tools, Play, Step and Reset, every setting and switch (beam colouring, deflection, breaking, friction, ground…), sliders and number boxes, and the examples.
+  - **Opening:** the list opens at the mouse with its search box ready, so just type. Every word must appear in an entry, and entries that start with what you typed come first. A check mark shows what is on, and shortcuts and current values show on the right.
+  - **Keys:** ↑ ↓ choose and Enter runs, or click an entry; Esc, or a click elsewhere, closes it.
+  - **Sliders and number boxes:** choosing one highlights it in the side panel and gives it the keyboard.
+  - **Panning:** right-dragging, even when it starts on the list, closes the list and pans as usual.
 - **Fit view** re-centres the mechanism.
 
 ### Running it
