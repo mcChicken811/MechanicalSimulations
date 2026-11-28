@@ -207,6 +207,36 @@ While the simulation runs or is paused, the inspector measures the selected part
 - **Joints:** x, y, ẋ, ẏ and speed; for a joint carrying a mass, also its momentum, angular momentum about the origin, kinetic energy and potential energy.
 - **Springs:** length, rate of stretch, extension, tension (or push) and elastic energy.
 
+**Joint forces.** The measurements also show the forces in the joints, worked out from the motion by inverse dynamics.
+- **For a bar, rack, gear, wheel or propeller:** the force at each of its connections, as its size and its direction (°). That covers its joints, a slider pressing on a rail on it, gear teeth, a rack's teeth and welds to bodies it is joined with. It also shows the couple of a weld or of a locked gear.
+- **For a joint:** the force each body puts on it, and its support's reaction (the ground, or a rail).
+- **Arrows:** the forces are drawn as purple arrows from where they act, sized to the largest, with their size in newtons; couples are curled arrows.
+- **Graphs:** every force is a quantity like any other: graph it over time, or put it in a phase plot.
+
+*How it works.* The simulation's own Lagrange multipliers exist only for the constraints that close loops, because most joints are built into the coordinates. So the forces are found afterwards from q, q̇ and q̈, which are recorded every frame along with the simulator's point loads:
+- **Every body** obeys m a_G = ΣF and I_G α = ΣM_G; a two-bladed propeller also includes its changing yaw inertia.
+- **Every joint** (a massless pin or a point mass) obeys ΣF = m a.
+- **Known loads:** gravity, springs, motor torques (and their reaction on the housing), pin and rail friction, ground contact, slider stops, propeller air and the mouse pull.
+- **Unknowns:**
+
+  | Connection | Unknowns | Where and which way |
+  |---|---|---|
+  | Pin | 2 | at the joint |
+  | Frictionless rail | 1 | square to the rail |
+  | Gear mesh | 1 | along the tooth tangent, at the pitch point |
+  | Rack mesh | 1–2 | along the rack, and square to it when the rack holds the gear's centre distance |
+  | Weld | 1–3 | a couple, plus a force where the bodies share no joint |
+  | Fixed joint | 2 | at the joint |
+  | Locked gear | 1 | a couple |
+
+- **Solving:** all of it is solved together by least squares.
+
+*Checks and limits.*
+- **Residual:** the panel shows the model residual, which is about 1e-11 for a pendulum and essentially zero for every example. It is not zero when gear-mesh friction is on, since that is left out.
+- **Over-constrained mechanisms,** such as a parallelogram braced by a third parallel bar, have redundant supports. A rigid model can't say how they share the load, so the even (minimum-norm) split is shown and flagged.
+- **Gear teeth** carry only their tangential force, since the meshes have no pressure angle.
+- **Impacts:** joint forces spike for a few milliseconds during them.
+
 **Settings…** switches to the part's usual inspector, for values that can change while it runs, such as a motor's torque. **← Measurements** switches back.
 
 **Graphs.** Click a quantity to graph it against time; one quantity is graphed at a time. The energy figures on the status bar work the same way, in the same graph: E = T + V, heat W, motor work W_m, air work W_a, and the energy budget. So does the largest constraint error max|Φ|, in scientific notation, since it is usually round-off around 1e-13. Graphing the budget shows how well the energy is accounted for over the run, and graphing max|Φ| how well the constraints hold. Click the figure again to close its graph. The simulation records its state every frame from the start, so the whole run so far can be looked back over. Angles are unwrapped, so they run on past ±180°.

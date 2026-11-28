@@ -402,6 +402,22 @@ export interface Controller extends ControllerSpec {
   lastAngle: number | null;
 }
 
+/**
+ * A force the simulator applies at a point, outside the symbolic equations (ground contact,
+ * propeller air, the mouse pull): where, how much, and on what — a joint, a bar or a gear, or a
+ * point at fraction s along a joint pair (the mouse pull on a bar, found by its ends).
+ */
+export interface PointLoad {
+  at: [number, number];
+  F: [number, number];
+  on: { kind: 'node'; id: number } | { kind: 'link'; id: number } | { kind: 'gear'; id: number } | { kind: 'seg'; a: number; b: number };
+}
+/** The loads applied at a state: point forces, and slider-stop pushes along their rails (+ raises the travel s). */
+export interface Loads {
+  points: PointLoad[];
+  stops: { joint: number; along: number }[];
+}
+
 /** Something that happened in a step, for sound: a landing on the ground or a slider hitting a stop, with its speed and the effective mass it stopped. */
 export interface SimEvent {
   kind: 'impact' | 'stop';
@@ -490,10 +506,16 @@ export class Simulator {
   private readonly candidates: ContactCandidate[];
   private readonly contacts: (ContactState | null)[];
   private readonly disks: Disk[];
+  /** The gear id of each disk. */
+  private readonly diskGear: number[];
   /** Rim contacts in progress, by "disk:feature" (see diskFeatures). */
   private readonly diskContacts = new Map<string, ContactState>();
   /** Bars, by the point indices of their ends, for the terrain's peaks to push on. */
-  private readonly bars: { ia: number; ib: number }[];
+  private readonly bars: { ia: number; ib: number; link: number }[];
+  /** While set, every point force applied is also written here (see snapshot). */
+  private capture: Loads | null = null;
+  /** Joint ids by point index. */
+  private readonly pointIds: number[];
   /** Peak–bar contacts in progress, by "peak:bar": the effective mass along the bar's normal. */
   private readonly peakContacts = new Map<string, number>();
   private readonly Jn: Float64Array;
@@ -546,13 +568,14 @@ export class Simulator {
     this.motorParams = d.motors.map((m) => ({ terms: m.terms, tau: paramIndex.get(m.tau)!, b: m.b ? paramIndex.get(m.b)! : -1 }));
     this.candidates = [...sys.pointIndex.values()].map((point) => ({ point }));
     this.disks = d.gearDisks.map((g) => ({ point: sys.pointIndex.get(g.center)!, phi: sys.gearCoord.get(g.id) ?? -1, radius: g.radius }));
+    this.diskGear = d.gearDisks.map((g) => g.id);
     this.contacts = this.candidates.map(() => null);
     const seen = new Set<number>();
     this.bars = d.joints.flatMap((j) =>
       j.bars.flatMap((b) => {
         if (seen.has(b.link)) return [];
         seen.add(b.link);
-        return [{ ia: sys.pointIndex.get(b.a)!, ib: sys.pointIndex.get(b.b)! }];
+        return [{ ia: sys.pointIndex.get(b.a)!, ib: sys.pointIndex.get(b.b)!, link: b.link }];
       }),
     );
     this.stopBuf = new Float64Array(d.sliderStops.length * (n + 1));
@@ -564,6 +587,8 @@ export class Simulator {
     this.K2 = new Float64Array((n + nc) * (n + nc));
     this.r2 = new Float64Array(n + nc);
     this.gearAngleBuf = new Float64Array(sys.gearIds.length);
+    this.pointIds = [];
+    for (const [id, i] of sys.pointIndex) this.pointIds[i] = id;
     this.propHub = d.propellers.map((pr) => sys.gearIds.indexOf(pr.id));
   }
 
@@ -706,7 +731,7 @@ export class Simulator {
    * candidate, with pos and jac already filled, and return its gap above the ground and its
    * position along the ground.
    */
-  private contactGeometry(c: ContactCandidate, g: GroundSettings): { gap: number; along: number } {
+  private contactGeometry(c: ContactCandidate, g: GroundSettings): { gap: number; along: number; nx: number; ny: number; tx: number; ty: number } {
     const { n, pos, jac, Jn, Jt } = this;
     const i = c.point;
     const px = pos[2 * i];
@@ -720,7 +745,7 @@ export class Simulator {
       Jn[m] = nx * jx + ny * jy;
       Jt[m] = tx * jx + ty * jy;
     }
-    return { gap: nx * (px - seg.x0) + ny * (py - seg.y0), along: seg.s + tx * (px - seg.x0) + ty * (py - seg.y0) };
+    return { gap: nx * (px - seg.x0) + ny * (py - seg.y0), along: seg.s + tx * (px - seg.x0) + ty * (py - seg.y0), nx, ny, tx, ty };
   }
 
   /**
@@ -834,7 +859,7 @@ export class Simulator {
     sys.jacobians(q, jac);
     let power = 0;
     // one touching point: Jn, Jt filled; its state is created when it first touches
-    const push = (gap: number, along: number, rolling: boolean, state: () => ContactState | undefined | null, start: (st: ContactState) => void) => {
+    const push = (gap: number, along: number, rolling: boolean, state: () => ContactState | undefined | null, start: (st: ContactState) => void, where?: () => PointLoad & { n: [number, number]; t: [number, number] }) => {
       let st = state();
       if (!st) {
         // a new contact: the effective masses it pushes against, along n and along t
@@ -853,10 +878,21 @@ export class Simulator {
       const { Fn, Ft, loss } = this.contactForce(st, g, -gap, vn, vt, along, rolling);
       for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
       power += loss;
+      if (this.capture && where) {
+        const w = where();
+        this.capture.points.push({ at: w.at, on: w.on, F: [Fn * w.n[0] + Ft * w.t[0], Fn * w.n[1] + Ft * w.t[1]] });
+      }
     };
     candidates.forEach((c, ci) => {
-      const { gap, along } = this.contactGeometry(c, g);
-      if (gap < 0) push(gap, along, false, () => contacts[ci], (st) => (contacts[ci] = st));
+      const { gap, along, nx, ny, tx, ty } = this.contactGeometry(c, g);
+      if (gap < 0)
+        push(gap, along, false, () => contacts[ci], (st) => (contacts[ci] = st), () => ({
+          at: [pos[2 * c.point], pos[2 * c.point + 1]],
+          on: { kind: 'node', id: this.pointIds[c.point] },
+          F: [0, 0],
+          n: [nx, ny],
+          t: [tx, ty],
+        }));
     });
     const { diskContacts } = this;
     this.disks.forEach((_, k) => {
@@ -864,7 +900,15 @@ export class Simulator {
         if (ft.gap >= 0) continue;
         this.diskJacobians(k, ft.nx, ft.ny);
         // a rolling rim has no fixed contact point: its friction is viscous, on the slip speed
-        push(ft.gap, ft.along, true, () => diskContacts.get(ft.key), (st) => diskContacts.set(ft.key, st));
+        const dk = this.disks[k];
+        push(ft.gap, ft.along, true, () => diskContacts.get(ft.key), (st) => diskContacts.set(ft.key, st), () => ({
+          // the rim's touching point, R from the centre against the normal, on the gear
+          at: [pos[2 * dk.point] - dk.radius * ft.nx, pos[2 * dk.point + 1] - dk.radius * ft.ny],
+          on: { kind: 'gear', id: this.diskGear[k] },
+          F: [0, 0],
+          n: [ft.nx, ft.ny],
+          t: [ft.ny, -ft.nx],
+        }));
       }
     });
     power += this.applyPeaks(q, qd, f, g);
@@ -888,7 +932,7 @@ export class Simulator {
     let power = 0;
     const live = new Set<string>();
     for (const [pi, [vx, vy]] of peaks.entries()) {
-      bars.forEach(({ ia, ib }, bi) => {
+      bars.forEach(({ ia, ib, link }, bi) => {
         const [ax, ay, bx, by] = [pos[2 * ia], pos[2 * ia + 1], pos[2 * ib], pos[2 * ib + 1]];
         const [dx, dy] = [bx - ax, by - ay];
         const L = Math.hypot(dx, dy);
@@ -933,6 +977,7 @@ export class Simulator {
         Ft = Math.max(-lim, Math.min(lim, Ft));
         for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
         power += vn * (kk * delta - Fn) - Ft * vt;
+        this.capture?.points.push({ at: [ax + s * dx, ay + s * dy], on: { kind: 'link', id: link }, F: [Fn * nx + Ft * tx, Fn * ny + Ft * ty] });
       });
     }
     for (const key of [...peakContacts.keys()]) if (!live.has(key)) peakContacts.delete(key);
@@ -1125,6 +1170,7 @@ export class Simulator {
         let F = kk * delta + 2 * dampingRatio(st.restitution) * mass * w0 * ddelta;
         if (F < 0) F = 0;
         for (let m = 0; m < n; m++) f[m] += push * F * g[m];
+        this.capture?.stops.push({ joint: st.joint, along: push * F });
         power += ddelta * (F - kk * delta); // what the damper takes
       });
     });
@@ -1207,6 +1253,7 @@ export class Simulator {
       const Fx = T * nx + H * ex;
       const Fy = T * ny + H * ey;
       for (let m = 0; m < n; m++) f[m] += jac[i * 2 * n + m] * Fx + jac[i * 2 * n + n + m] * Fy;
+      this.capture?.points.push({ at: [pos[2 * i], pos[2 * i + 1]], on: { kind: 'gear', id: pr.id }, F: [Fx, Fy] });
       if (pr.spin >= 0) f[pr.spin] += Q;
       power += Fx * vx + Fy * vy + Q * w;
       if (stage <= 0) this.thrust.set(pr.id, T);
@@ -1262,6 +1309,23 @@ export class Simulator {
     return best;
   }
 
+  /**
+   * The accelerations q̈ at the current state and every load applied there (point forces and
+   * slider-stop pushes), for working out the constraint forces (see forces.ts).
+   */
+  snapshot(): { qdd: Float64Array; loads: Loads } {
+    const qdd = new Float64Array(this.n);
+    this.capture = { points: [], stops: [] };
+    try {
+      if (!this.accelerations(this.q, this.qd, qdd, -1)) qdd.fill(NaN);
+    } finally {
+      const loads = this.capture;
+      this.capture = null;
+      // eslint-disable-next-line no-unsafe-finally
+      return { qdd, loads: loads! };
+    }
+  }
+
   /** Number of points touching the ground now. */
   contactCount(): number {
     return this.contacts.reduce((k, c) => k + (c ? 1 : 0), this.diskContacts.size);
@@ -1310,6 +1374,7 @@ export class Simulator {
     const Fy = g.stiffness * (g.target[1] - ry) - c * vy;
     this.appliedForce = [Fx, Fy];
     for (let j = 0; j < n; j++) f[j] += J(0, j) * Fx + J(1, j) * Fy;
+    this.capture?.points.push({ at: [rx, ry], F: [Fx, Fy], on: g.gear ? { kind: 'gear', id: g.gear.id } : g.a === g.b ? { kind: 'node', id: g.a } : { kind: 'seg', a: g.a, b: g.b } });
   }
 
   /** One classical 4th-order Runge–Kutta step of size h on y = (q, q̇). */

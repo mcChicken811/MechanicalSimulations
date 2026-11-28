@@ -42,6 +42,11 @@ export interface Scene {
   multi?: PartSet | null;
   /** The selection box being dragged, in world coordinates. */
   box?: { from: Vec; to: Vec } | null;
+  /**
+   * Joint forces on the selected part (while measuring): each force drawn from where it acts,
+   * pxPerN pixels per newton, with its size; a couple as a curled arrow.
+   */
+  forceArrows?: { items: { at: Vec; F: Vec; M?: number; label: string }[]; pxPerN: number } | null;
   /** Arrows in the world (initial velocities): from, to, colour. */
   arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
   /** Dimensions to show, to this many decimals (null: hidden). */
@@ -195,6 +200,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.box) drawBox(ctx, v, s.box);
   if (s.ghost) drawGhost(ctx, v, s.ghost);
   for (const a of s.arrows ?? []) arrowLine(ctx, toScreen(v, a.from), toScreen(v, a.to), a.color, a.width ?? 2);
+  if (s.forceArrows) drawForceArrows(ctx, v, s.forceArrows);
   if (s.cursorLabel) {
     const [x, y] = s.cursorLabel.at;
     ctx.save();
@@ -1235,6 +1241,45 @@ function drawDimensions(ctx: CanvasRenderingContext2D, v: View, s: Scene, digits
     ctx.textBaseline = g.text.base;
     haloText(ctx, g.text.value(digits), 0, g.text.base === 'bottom' ? -1 : g.text.base === 'top' ? 1 : 0);
     ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** Joint forces on a part: an arrow from where each acts, its size beside the tip; couples as a curled arrow. */
+function drawForceArrows(ctx: CanvasRenderingContext2D, v: View, fa: NonNullable<Scene['forceArrows']>) {
+  const col = '#8e3fb0';
+  ctx.save();
+  ctx.font = '600 10.5px system-ui, sans-serif';
+  for (const it of fa.items) {
+    const p = toScreen(v, it.at);
+    const mag = Math.hypot(it.F[0], it.F[1]);
+    if (mag * fa.pxPerN > 3) {
+      const tip: Vec = [p[0] + it.F[0] * fa.pxPerN, p[1] - it.F[1] * fa.pxPerN];
+      arrowLine(ctx, p, tip, col, 2.2);
+      const [ux, uy] = [(tip[0] - p[0]) / (mag * fa.pxPerN), (tip[1] - p[1]) / (mag * fa.pxPerN)];
+      ctx.fillStyle = col;
+      ctx.textAlign = ux >= 0 ? 'left' : 'right';
+      ctx.textBaseline = uy >= 0 ? 'top' : 'bottom';
+      haloText(ctx, it.label, tip[0] + ux * 4, tip[1] + uy * 4);
+    }
+    if (it.M && Math.abs(it.M) > 1e-6) {
+      // a couple: three quarters of a circle, arrowhead the way it turns (anticlockwise for M > 0)
+      const r = 13;
+      const [a0, a1] = it.M > 0 ? [0.3, 0.3 + 1.5 * Math.PI] : [Math.PI - 0.3, Math.PI - 0.3 - 1.5 * Math.PI];
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], r, -a0, -a1, it.M > 0);
+      ctx.stroke();
+      const e: Vec = [p[0] + r * Math.cos(-a1), p[1] + r * Math.sin(-a1)];
+      const dir = it.M > 0 ? -1 : 1;
+      const tan: Vec = [-Math.sin(-a1) * dir, Math.cos(-a1) * dir];
+      arrowLine(ctx, [e[0] - tan[0] * 6, e[1] - tan[1] * 6], e, col, 2);
+      ctx.fillStyle = col;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      haloText(ctx, `${it.M.toFixed(3)} N·m`, p[0] + r + 3, p[1] - r);
+    }
   }
   ctx.restore();
 }

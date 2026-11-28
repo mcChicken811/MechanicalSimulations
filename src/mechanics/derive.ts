@@ -86,6 +86,8 @@ export interface Constraint {
   rack?: { xi: Poly; sR: Poly; rel: Poly; C: Poly };
   /** A rack's centre-distance constraint, dropped when the mechanism already enforces it. */
   rackDistance?: boolean;
+  /** For a rack's centre-distance constraint, its rack mesh's id. */
+  rackMesh?: number;
   /** One of the (up to three) equations of a join, by join id; dropped when already enforced. */
   joined?: number;
   /** An equation of a joint pinned to, or sliding on, a body, by joint id; dropped when already enforced. */
@@ -729,7 +731,7 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     if (movable(h)) {
       // Drawn tangent: the centre stays R from the pitch line. Otherwise keep the drawn distance.
       const target = Math.abs(Math.abs(h0) - gr.radius) < 1e-6 ? R.scale(side) : param(`hr${rm.id}`, `h_{${gl},${rl}}`, h0, 'm');
-      constraints.push({ phi: h.sub(target), reason: `${lab}: the gear centre keeps its distance from the rack's pitch line`, rackDistance: true });
+      constraints.push({ phi: h.sub(target), reason: `${lab}: the gear centre keeps its distance from the rack's pitch line`, rackDistance: true, rackMesh: rm.id });
     }
     const rel = gearAngle.get(gr.id)!.sub(th);
     const sR = R.scale(side);

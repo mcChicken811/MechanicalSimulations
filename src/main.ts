@@ -2,15 +2,16 @@ import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
 import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, type DDimension, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, anglesToJoins, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
-import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type ControllerSpec, type GroundSettings, type Heat } from './mechanics/simulate';
+import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type ControllerSpec, type GroundSettings, type Heat, type Loads } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
+import { jointForces, type ForceItem, type ForceResult } from './mechanics/forces';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
-import { dimensionAt, dimNormal, drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
+import { dimensionAt, dimNormal, drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
 
 type Tool = 'select' | 'initial' | 'dimension' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
@@ -3129,12 +3130,16 @@ interface History {
   wm: number[];
   wa: number[];
   phi: number[];
+  /** The accelerations and the simulator's point loads, for the joint forces. */
+  qdd: Float64Array[];
+  loads: Loads[];
 }
-const emptyHistory = (): History => ({ t: [], q: [], qd: [], e: [], w: [], wm: [], wa: [], phi: [] });
+const emptyHistory = (): History => ({ t: [], q: [], qd: [], e: [], w: [], wm: [], wa: [], phi: [], qdd: [], loads: [] });
 let history: History = emptyHistory();
 
 function resetHistory() {
   history = emptyHistory();
+  forceCache.clear();
   if (graph) for (const x of [graph, ...graph.extra]) x.vals = [];
 }
 
@@ -3145,6 +3150,9 @@ function recordState() {
   h.t.push(sim.t);
   h.q.push(sim.q.slice());
   h.qd.push(sim.qd.slice());
+  const snap = sim.snapshot();
+  h.qdd.push(snap.qdd);
+  h.loads.push(snap.loads);
   const { T, V } = sim.energy();
   h.e.push(T + V);
   h.w.push(sim.dissipated);
@@ -3153,9 +3161,127 @@ function recordState() {
   h.phi.push(sim.constraintError());
   if (h.t.length > HISTORY_MAX) {
     const drop = 2000;
-    for (const a of [h.t, h.q, h.qd, h.e, h.w, h.wm, h.wa, h.phi]) a.splice(0, drop);
+    for (const a of [h.t, h.q, h.qd, h.e, h.w, h.wm, h.wa, h.phi, h.qdd, h.loads]) a.splice(0, drop);
+    forceCache.clear(); // its indices have moved
     if (graph) for (const x of [graph, ...graph.extra]) x.vals.splice(0, Math.min(drop, x.vals.length));
   }
+}
+
+// ---- joint forces: inverse dynamics at any recorded frame (see mechanics/forces.ts) ----------
+const forceCache = new Map<number, ForceResult>();
+
+/** The joint forces at history index i (cached). */
+function forcesAt(i: number): ForceResult | null {
+  if (!sim || i < 0 || i >= history.t.length) return null;
+  let r = forceCache.get(i);
+  if (!r) {
+    const gp = sim.sys.derivation.params.find((p) => p.sym === 'g');
+    r = jointForces(design, sim.sys, history.q[i], history.qd[i], history.qdd[i], history.loads[i], {
+      gravity: gp ? sys0(gp.sym) : 0,
+      friction: friction.enabled ? { enabled: true, pin: friction.pin, rail: friction.rail } : null,
+    });
+    if (forceCache.size > 4000) forceCache.clear();
+    forceCache.set(i, r);
+  }
+  return r;
+}
+/** A parameter's value in the running simulation. */
+const sys0 = (sym: string) => {
+  const k = sim!.sys.derivation.params.findIndex((p) => p.sym === sym);
+  return k >= 0 ? sim!.sys.params[k] : 0;
+};
+/** The joint forces now (the latest recorded frame). */
+const forcesNow = () => forcesAt(history.t.length - 1);
+
+/** A force's name and symbol: what it is and where (on a body, or on a joint for a joint). */
+function forceName(it: ForceItem, onJoint: boolean): { sym: string; name: string } {
+  const at = it.node !== undefined ? pointLabel(it.node) : '';
+  if (it.key.startsWith('ground@')) return { sym: `R<sub>${at}</sub>`, name: `ground support at ${at}` };
+  if (it.key.startsWith('rail@')) return { sym: `N<sub>${at}</sub>`, name: `${it.label} at ${at}` };
+  if (it.key.startsWith('brail:')) return { sym: `N<sub>${at}</sub>`, name: `slider ${at} pressing on its rail` };
+  if (it.key.startsWith('pin:')) {
+    const b = it.body!;
+    const bn = b.kind === 'link' ? bodyName(design, b) : b.kind === 'motor' ? `motor M${gearLabel(b.id)}` : gearName(design, b.id);
+    return onJoint ? { sym: `F<sub>${at}</sub>`, name: `from ${bn}` } : { sym: `F<sub>${at}</sub>`, name: `at joint ${at}` };
+  }
+  if (it.key.startsWith('mesh:')) return { sym: 'F<sub>t</sub>', name: `tooth force, ${it.label}` };
+  if (it.key.startsWith('rack:')) return { sym: 'F<sub>r</sub>', name: `tooth force, ${it.label}` };
+  if (it.key.startsWith('weld:')) {
+    const other = (design.joins ?? []).find((j) => `weld:${j.id}` === it.key.slice(0, it.key.lastIndexOf(':')));
+    const ref = other && (it.key.endsWith(':a') ? other.b : other.a);
+    return { sym: 'F<sub>w</sub>', name: `weld to ${ref ? bodyName(design, ref) : 'its group'}` };
+  }
+  if (it.key.startsWith('lock:')) return { sym: 'M<sub>h</sub>', name: 'held by the ground' };
+  return { sym: 'F', name: it.label };
+}
+
+/**
+ * The joint forces on a part, as quantities: for a body, the force at each of its connections
+ * (size and direction) and the couples of welds and locks; for a joint, the force each body puts
+ * on it and its support's reaction.
+ */
+function forceMeasures(kind: 'point' | 'link' | 'gear' | 'spring', id: number): Measure[] {
+  if (kind === 'spring') return [];
+  const now = forcesNow();
+  if (!now) return [];
+  const onJoint = kind === 'point';
+  const mine = now.items.filter((it) => (onJoint ? it.node === id && (it.body === null || it.key.startsWith('pin:')) : it.body?.kind === kind && it.body.id === id));
+  const out: Measure[] = [];
+  for (const it of mine) {
+    const key = it.key;
+    const sign = onJoint && key.startsWith('pin:') ? -1 : 1; // on the joint: the body's force back on it
+    const pick = (r: ForceResult | null) => r?.items.find((x) => x.key === key);
+    const F = (r: ForceResult | null): [number, number] => {
+      const x = pick(r);
+      return x ? [sign * x.F[0], sign * x.F[1]] : [NaN, NaN];
+    };
+    const { sym, name } = forceName(it, onJoint);
+    const hasForce = !key.startsWith('lock:') && !(key.startsWith('weld:') && Math.hypot(...it.F) === 0 && it.M !== undefined && pick(now) && isSharedWeld(key));
+    if (hasForce) {
+      out.push({ key: `F:${key}:mag`, sym: `|${sym}|`, name: `${name}: size`, unit: 'N', value: () => Math.hypot(...F(forcesNow())), atHistory: (i) => Math.hypot(...F(forcesAt(i))) });
+      out.push({ key: `F:${key}:dir`, sym: `∠${sym}`, name: `${name}: direction`, unit: '°', angle: true, value: () => (Math.atan2(F(forcesNow())[1], F(forcesNow())[0]) * 180) / Math.PI, atHistory: (i) => (Math.atan2(F(forcesAt(i))[1], F(forcesAt(i))[0]) * 180) / Math.PI });
+    }
+    if (it.M !== undefined) {
+      const M = (r: ForceResult | null) => pick(r)?.M ?? NaN;
+      out.push({ key: `F:${key}:M`, sym: key.startsWith('lock:') ? sym : 'M<sub>w</sub>', name: `${name}: couple`, unit: 'N·m', value: () => M(forcesNow()), atHistory: (i) => M(forcesAt(i)) });
+    }
+  }
+  return out;
+}
+
+/** Whether a weld's bodies share a joint (it carries only a couple then). */
+function isSharedWeld(key: string): boolean {
+  const j = (design.joins ?? []).find((x) => key.startsWith(`weld:${x.id}:`));
+  if (!j) return false;
+  const nodesOf = (r: DBodyRef) => {
+    if (r.kind === 'link') {
+      const l = design.links.find((x) => x.id === r.id);
+      return l ? [l.a, l.b] : [];
+    }
+    const g = design.gears.find((x) => x.id === r.id);
+    return g ? [g.center, ...design.points.filter((p) => p.gear === g.id).map((p) => p.id)] : [];
+  };
+  const a = nodesOf(j.a);
+  return nodesOf(j.b).some((x) => a.includes(x));
+}
+
+/** Arrows for the joint forces on the part being measured, scaled so the largest is about 70 px. */
+function forceArrowsNow(): Scene['forceArrows'] {
+  if (!sim || !measureView || inspectSettings) return null;
+  const { kind, id } = measureView;
+  if (kind === 'spring') return null;
+  const now = forcesNow();
+  if (!now) return null;
+  const onJoint = kind === 'point';
+  const items = now.items
+    .filter((it) => (onJoint ? it.node === id && (it.body === null || it.key.startsWith('pin:')) : it.body?.kind === kind && it.body.id === id))
+    .map((it) => {
+      const s = onJoint && it.key.startsWith('pin:') ? -1 : 1;
+      const F: Vec = [s * it.F[0], s * it.F[1]];
+      return { at: it.at, F, M: it.M, label: `${Math.hypot(...F).toFixed(2)} N` };
+    });
+  const big = Math.max(1e-9, ...items.map((x) => Math.hypot(...x.F)));
+  return { items, pxPerN: 70 / big };
 }
 
 const partTitle = (kind: string, id: number) =>
@@ -3164,7 +3290,9 @@ const g0 = () => (settings.gravity ? 9.81 : 0);
 
 /** The inspector while it runs: the selected part's physical quantities, each one a button for its graph. */
 function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number) {
-  const measures = measuresOf(design, kind, id, g0());
+  const forces = forceMeasures(kind, id);
+  const measures = [...measuresOf(design, kind, id, g0()), ...forces];
+  const now = forcesNow();
   measureView = { kind, id, measures };
   const title = partTitle(kind, id);
   inspectorEl.innerHTML = `
@@ -3175,6 +3303,11 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
           `<button class="m-row${isGraphed(kind, id, m.key) ? ' on' : ''}" data-key="${m.key}" title="${esc(m.name)}: click to graph it over time; shift-click to add it to a phase plot"><span class="m-sym">${m.sym}</span><span class="m-name">${esc(m.name)}</span><span class="m-val" id="m-${m.key}">–</span><span class="m-unit">${m.unit}</span></button>`,
       )
       .join('')}</div>
+    ${
+      forces.length && now
+        ? `<p class="muted m-note">Joint forces (purple arrows) by inverse dynamics, Newton–Euler for every body; model residual ${now.residual.toExponential(1)}.${now.indeterminate ? ' <b>Redundant supports:</b> the mechanism is over-constrained, so how the load splits between them is not fixed by a rigid model; this is the even (minimum-norm) split.' : ''}${friction.enabled && design.meshes.length ? ' Gear-mesh friction is left out of the forces.' : ''}</p>`
+        : ''
+    }
     <p class="muted">Click a quantity to graph it over time; shift-click others (here, or on other parts) for a phase plot. ${running ? 'Pause to pick another part.' : 'Click another part to measure it, or empty space to let go.'} <button id="m-settings">Settings…</button></p>`;
   inspectorEl.querySelectorAll<HTMLButtonElement>('.m-row').forEach((b) =>
     b.addEventListener('click', (e) => {
@@ -3195,7 +3328,7 @@ function updateMeasures() {
   if (!sim || !measureView) return;
   const s = new StateAt(sim.sys, sim.q, sim.qd);
   for (const m of measureView.measures) {
-    const el = inspectorEl.querySelector(`#m-${m.key}`);
+    const el = inspectorEl.querySelector(`#${CSS.escape(`m-${m.key}`)}`);
     if (el) el.textContent = fmt3(m.value(s));
   }
 }
@@ -3295,7 +3428,7 @@ function energySeries(key: string): { m: Measure; at: (i: number) => number } | 
 }
 
 function openGraph(kind: GraphKind, id: number, m: Measure, at?: (i: number) => number) {
-  const value = at ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
+  const value = at ?? m.atHistory ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
   graph = { kind, id, key: m.key, m, at: value, vals: [], extra: [], rot: { ...PHASE_ROT }, hoverY: null, big: graph?.big ?? false, hoverX: null, view: { span: GRAPH_SPAN, end: null, yAuto: true, lo: 0, hi: 1 }, layout: null, drag: null };
   graphEl.hidden = false;
   graphEl.classList.toggle('big', graph.big);
@@ -3337,7 +3470,7 @@ function addSeries(kind: GraphKind, id: number, m: Measure, at?: (i: number) => 
     openGraph(kind, id, m, at);
     return;
   }
-  const value = at ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
+  const value = at ?? m.atHistory ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
   const same = (x: { kind: GraphKind; id: number; key: string }) => x.kind === kind && x.id === id && x.key === m.key;
   if (same(graph)) {
     // the first one out: the next becomes the first
@@ -4457,6 +4590,7 @@ function frame(now: number) {
           })()
         : null,
     trail: trail.n > 1 ? trail : null,
+    forceArrows: forceArrowsNow(),
   });
   renderStatus();
   requestAnimationFrame(frame);

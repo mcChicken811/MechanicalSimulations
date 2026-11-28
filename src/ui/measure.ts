@@ -74,6 +74,8 @@ export interface Measure {
   unit: string;
   /** An angle (in °): its history is unwrapped so it runs on past ±180°. */
   angle?: boolean;
+  /** Its value at history index i, when that is not a function of the recorded state alone (joint forces). */
+  atHistory?: (i: number) => number;
   /** How to write a value, if not to three decimals. */
   fmt?: (v: number) => string;
   value: (s: StateAt) => number;
