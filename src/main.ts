@@ -3420,42 +3420,76 @@ function beamShadeNow(): NonNullable<Scene['beamShades']>[number] | null {
 
 // ---- every bar coloured by an internal force (the side panel's Beam forces as colour) ----
 /**
- * Which force colours the bars (off, or V, N, M), and how: 'max', each bar one colour for its
- * largest size; 'dist', along each bar. Both on one scale for all bars (red: the largest any bar
- * has reached in this run).
+ * Which force colours the bars (off, or V, N, M), how ('max': each bar one colour for its largest
+ * size; 'dist': along each bar), and what is red, on one scale for all bars: 'now', the largest
+ * across the bars at this moment; 'run', the largest any bar has reached in this run; 'set', a
+ * value of the user's (kept for each force, N or N·m).
  */
+interface BeamColour {
+  q: 'off' | BeamQ;
+  mode: 'max' | 'dist';
+  scale: 'now' | 'run' | 'set';
+  fixed: Partial<Record<BeamQ, number>>;
+}
 const BEAM_COLOUR_KEY = 'linkage-lab:beam-colour';
-const beamColour: { q: 'off' | BeamQ; mode: 'max' | 'dist' } = (() => {
+const beamColour: BeamColour = (() => {
+  const out: BeamColour = { q: 'off', mode: 'max', scale: 'now', fixed: {} };
   try {
     const v = JSON.parse(localStorage.getItem(BEAM_COLOUR_KEY) ?? '');
-    if (['off', 'N', 'V', 'M'].includes(v.q) && ['max', 'dist'].includes(v.mode)) return v;
+    if (['off', 'N', 'V', 'M'].includes(v.q)) out.q = v.q;
+    if (['max', 'dist'].includes(v.mode)) out.mode = v.mode;
+    if (['now', 'run', 'set'].includes(v.scale)) out.scale = v.scale;
+    for (const k of ['N', 'V', 'M'] as BeamQ[]) if (Number.isFinite(v.fixed?.[k]) && v.fixed[k] > 0) out.fixed[k] = v.fixed[k];
   } catch {
-    /* the default */
+    /* the defaults */
   }
-  return { q: 'off', mode: 'max' };
+  return out;
 })();
-/** The largest size any bar has reached in this run: red in 'max' mode. */
+/** The largest size any bar has reached in this run: red with the 'run' scale. */
 let beamColourPeak = 0;
+/** The size drawn red in the last frame (to start a set scale from). */
+let beamColourScale = 0;
 const beamQBox = $<HTMLElement>('#beam-q');
 const beamModeBox = $<HTMLElement>('#beam-mode');
+const beamScaleBox = $<HTMLElement>('#beam-scale-mode');
 const beamLegend = $<HTMLElement>('#beam-legend');
+const beamScaleInput = $<HTMLInputElement>('#beam-scale');
+const saveBeamColour = () => localStorage.setItem(BEAM_COLOUR_KEY, JSON.stringify(beamColour));
 
 function showBeamColour() {
-  beamQBox.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === beamColour.q));
-  beamModeBox.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === beamColour.mode));
-  beamModeBox.hidden = beamColour.q === 'off';
-  beamLegend.hidden = beamColour.q === 'off';
+  const off = beamColour.q === 'off';
+  const set = beamColour.scale === 'set';
+  for (const [box, v] of [[beamQBox, beamColour.q], [beamModeBox, beamColour.mode], [beamScaleBox, beamColour.scale]] as const)
+    box.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v));
+  beamModeBox.hidden = beamScaleBox.hidden = beamLegend.hidden = off;
+  beamScaleInput.hidden = !set;
+  beamLegend.querySelector<HTMLElement>('.bl-unit')!.hidden = !set;
+  beamLegend.querySelector<HTMLElement>('.bl-hi')!.hidden = set;
+  const q = beamColour.q;
+  if (q !== 'off') {
+    beamLegend.querySelector('.bl-unit')!.textContent = q === 'M' ? 'N·m' : 'N';
+    if (set && document.activeElement !== beamScaleInput) beamScaleInput.value = String(beamColour.fixed[q] ?? 1);
+  }
 }
-for (const [box, field] of [[beamQBox, 'q'], [beamModeBox, 'mode']] as const)
+for (const [box, field] of [[beamQBox, 'q'], [beamModeBox, 'mode'], [beamScaleBox, 'scale']] as const)
   box.addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-v]');
     if (!b) return;
-    (beamColour as Record<string, string>)[field] = b.dataset.v!;
+    (beamColour as unknown as Record<string, string>)[field] = b.dataset.v!;
     if (field === 'q') beamColourPeak = 0; // another force: its own scale
-    localStorage.setItem(BEAM_COLOUR_KEY, JSON.stringify(beamColour));
+    // a set scale starts from what is red now, the first time for each force
+    const q = beamColour.q;
+    if (beamColour.scale === 'set' && q !== 'off' && beamColour.fixed[q] === undefined && beamColourScale > 0 && field !== 'q') beamColour.fixed[q] = +beamColourScale.toPrecision(3);
+    saveBeamColour();
     showBeamColour();
     sfx('select');
   });
+beamScaleInput.addEventListener('change', () => {
+  const v = parseFloat(beamScaleInput.value);
+  if (beamColour.q === 'off' || !Number.isFinite(v) || v <= 0) return;
+  beamColour.fixed[beamColour.q] = v;
+  saveBeamColour();
+});
 showBeamColour();
 
 /**
@@ -3472,18 +3506,19 @@ function beamShadesNow(): Scene['beamShades'] {
     const peaks = ds.map(({ d }) => (d ? Math.abs(peak(d[q]).v) : 0)).map((v) => (Number.isFinite(v) ? v : 0));
     const frameMax = Math.max(0, ...peaks);
     beamColourPeak = Math.max(beamColourPeak, frameMax);
+    const red = Math.max(beamColour.scale === 'set' ? (beamColour.fixed[q] ?? 1) : beamColour.scale === 'run' ? beamColourPeak : frameMax, 1e-9);
+    beamColourScale = red;
     ds.forEach(({ link, d }, k) => {
       if (!d) return;
       if (beamColour.mode === 'max') {
-        const f = beamColourPeak > 0 ? peaks[k] / beamColourPeak : 0;
+        const f = Math.min(1, peaks[k] / red);
         out.push({ link, s: [0, 1], f: [f, f], marker: null });
       } else {
         // along it, on the same scale as every other bar
-        const scale = Math.max(beamColourPeak, 1e-9);
-        out.push({ link, s: d.s.map((x) => x / d.L), f: d[q].map((v) => (Number.isFinite(v) ? Math.min(1, Math.abs(v) / scale) : 0)), marker: null });
+        out.push({ link, s: d.s.map((x) => x / d.L), f: d[q].map((v) => (Number.isFinite(v) ? Math.min(1, Math.abs(v) / red) : 0)), marker: null });
       }
     });
-    beamLegend.querySelector('.bl-hi')!.textContent = `${beamColourPeak.toPrecision(3)} ${unit}`;
+    beamLegend.querySelector('.bl-hi')!.textContent = `${red.toPrecision(3)} ${unit}`;
   } else if (q !== 'off') beamLegend.querySelector('.bl-hi')!.textContent = 'while running';
   if (shown) out.push(shown);
   return out;

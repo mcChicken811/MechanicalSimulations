@@ -262,8 +262,13 @@ Click one to see its diagram along the bar in the graph panel, from end A (`l.a`
 - **No phase plots:** these diagrams don't join phase plots. Shift-clicking another quantity while one is shown just graphs that quantity instead.
 
 **Beam forces as colour.** The side panel's *Beam forces as colour* switch colours every bar by one internal force while the mechanism runs: **Off**, **Shear** (V), **Tension** (N, the colour shows its size, so compression counts too) or **Bending** (M). A second switch picks how:
-- **Maximum:** each bar is one colour for its largest value. All bars share one scale in newtons (or N·m), so they compare with each other. Red is the largest any bar has reached in this run, and the side panel shows that value. The scale starts again when you choose another force or reset.
-- **Distribution:** each bar is coloured along its length, on the same shared scale as Maximum, so it shows both where in each bar the load is and how it compares with the other bars.
+- **Maximum:** each bar is one colour for its largest value.
+- **Distribution:** each bar is coloured along its length, so it shows where in each bar the load is.
+
+Both modes use one scale for all bars, so bars compare with each other, and a third switch sets what is red (the legend shows the value):
+- **Now** (the default): the largest value across all bars at this moment.
+- **Run peak:** the largest any bar has reached in this run. It starts again when you choose another force or reset. A jolt at start-up can leave everything green afterwards.
+- **Set:** a value you type or drag in the number box. It is kept separately for forces (N) and bending (N·m), and the first time it starts from what is red at that moment.
 
 The bar whose diagram is open in the graph panel keeps that diagram's colouring. The choice is remembered between visits.
 

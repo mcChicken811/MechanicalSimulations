@@ -912,3 +912,9 @@ body.scrubbing * {
   border-radius: 4px;
   background: linear-gradient(90deg, hsl(120, 78%, 44%), hsl(60, 78%, 50%), hsl(0, 78%, 44%));
 }
+
+#beam-legend input {
+  width: 64px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
