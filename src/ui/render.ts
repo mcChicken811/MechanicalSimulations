@@ -71,6 +71,8 @@ export interface Scene {
   ground?: [number, number][] | null;
   /** The ground is selected: its waypoints show as handles, `waypoint` the selected one. */
   groundSelected?: { waypoint: number | null } | null;
+  /** A background drawn over the plain paper, before anything else (ui/background.ts). */
+  backdrop?: ((ctx: CanvasRenderingContext2D, w: number, h: number, v: View) => void) | null;
   /** Where the scale bar goes: bottom right (the default), bottom left, or none. */
   scaleBar?: 'right' | 'left' | 'none';
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
@@ -149,6 +151,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   bendOf = new Map((s.bends ?? []).map((b) => [b.link, b]));
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
+  s.backdrop?.(ctx, w, h, v);
   drawGrid(ctx, w, h, v, !!s.grid, s.scaleBar ?? 'right');
   if (s.ground) drawGroundLine(ctx, w, h, v, s.ground, s.groundSelected ?? null);
 

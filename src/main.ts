@@ -12,6 +12,7 @@ import { Palette, type Command } from './ui/palette';
 import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
 import { Gallery, MY_PROJECTS, type GalleryItem } from './ui/gallery';
+import { Backdrop, imageFileToDataUrl, NO_BACKGROUND, SCENES, type BackgroundState } from './ui/background';
 import { askDialog } from './ui/dialog';
 import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
@@ -2337,7 +2338,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
 /** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
-const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale']);
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-mode', 'bg-width', 'bg-opacity']);
 
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
@@ -2390,7 +2391,7 @@ async function saveDesign(): Promise<boolean> {
 
 /** The project as it is now: the drawing, the side panel's settings, the beam colouring, the view. */
 function buildProject(): ProjectFile {
-  return { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: cloneDesign(persistable()), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view } };
+  return { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: cloneDesign(persistable()), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view }, background: { ...backdrop.state } };
 }
 
 async function saveProject(): Promise<boolean> {
@@ -2476,6 +2477,7 @@ function applyProject(project: ProjectFile, d: Design, title: string) {
   const v = project.view;
   if (v && [v.ox, v.oy, v.scale].every(Number.isFinite) && v.scale > 0) Object.assign(view, { ox: v.ox, oy: v.oy, scale: v.scale });
   else fitView();
+  setBackground(validBackground(project.background) ?? { ...NO_BACKGROUND }); // a project without one has none
   sfx('preset');
 }
 
@@ -2507,6 +2509,122 @@ $<HTMLButtonElement>('#save-project').addEventListener('click', () => void saveP
 $<HTMLButtonElement>('#load-design').addEventListener('click', () => void loadDesignFile());
 $<HTMLButtonElement>('#load-project').addEventListener('click', () => void loadProjectFile());
 $<HTMLButtonElement>('#import-design').addEventListener('click', () => void importDesignFile());
+
+// ---- the background (the Background block): a scene, or the user's own image; saved with projects ----
+const BACKGROUND_KEY = 'linkage-lab:background';
+const backdrop = new Backdrop();
+const bgKind = $<HTMLSelectElement>('#bg-kind');
+const bgMode = $<HTMLSelectElement>('#bg-mode');
+const bgWidth = $<HTMLInputElement>('#bg-width');
+const bgOpacity = $<HTMLInputElement>('#bg-opacity');
+bgKind.append(new Option('None (plain)', 'none'));
+for (const sc of SCENES) bgKind.append(new Option(sc.name, sc.id));
+bgKind.append(new Option('Your image…', 'image'));
+
+/** A background read from storage or a project, made safe: null if it is not one. */
+function validBackground(raw: unknown): BackgroundState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const b = raw as Partial<BackgroundState>;
+  const kind = b.kind === 'image' ? (typeof b.image === 'string' && b.image.startsWith('data:image/') ? 'image' : 'none') : SCENES.some((x) => x.id === b.kind) ? b.kind! : 'none';
+  const r = b.rect;
+  const rect = r && [r.x, r.y, r.w].every(Number.isFinite) && r.w > 0 ? { x: r.x, y: r.y, w: r.w } : undefined;
+  return { kind, image: kind === 'image' ? b.image : undefined, mode: b.mode === 'cover' ? 'cover' : 'world', rect, opacity: Number.isFinite(b.opacity) ? Math.min(1, Math.max(0.05, b.opacity!)) : 0.7 };
+}
+
+/** Show the background and its controls, and keep it in the browser (an image too big for that stays for now, and in saved projects). */
+function setBackground(b: BackgroundState, remember = true) {
+  backdrop.set(b);
+  const img = b.kind === 'image';
+  bgKind.value = b.kind;
+  $<HTMLElement>('#bg-image-row').hidden = !img;
+  $<HTMLElement>('#bg-mode-row').hidden = !img || !b.image;
+  $<HTMLElement>('#bg-width-row').hidden = !img || !b.image || b.mode !== 'world';
+  bgMode.value = b.mode;
+  if (b.rect && document.activeElement !== bgWidth) bgWidth.value = String(+b.rect.w.toPrecision(4));
+  bgOpacity.value = String(b.opacity);
+  $<HTMLOutputElement>('#bg-opacity-out').textContent = `${Math.round(b.opacity * 100)}%`;
+  if (!remember) return;
+  try {
+    localStorage.setItem(BACKGROUND_KEY, JSON.stringify(b));
+  } catch {
+    localStorage.removeItem(BACKGROUND_KEY);
+    messages.notify('That image is too big to keep in the browser between visits: it shows now, and is kept in projects you save.', 'warn');
+  }
+}
+
+/** The image across what is in view now (most of its width, centred), keeping its shape. */
+function fitBackgroundToView(b: BackgroundState): BackgroundState {
+  const [x0, y1] = toWorld(view, [W * 0.1, H * 0.1]);
+  const [x1] = toWorld(view, [W * 0.9, H * 0.9]);
+  const w = x1 - x0;
+  const [cx, cy] = toWorld(view, [W / 2, H / 2]);
+  const h = w * backdrop.aspect;
+  void y1;
+  return { ...b, mode: 'world', rect: { x: cx - w / 2, y: cy + h / 2, w } };
+}
+
+/** Ask for an image file and make it the background, across the view. */
+async function chooseBackgroundImage() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*,.svg';
+  const file = await new Promise<File | null>((res) => {
+    input.addEventListener('change', () => res(input.files?.[0] ?? null));
+    input.addEventListener('cancel', () => res(null));
+    input.click();
+  });
+  if (!file) {
+    if (!backdrop.state.image) setBackground({ ...backdrop.state, kind: 'none' });
+    return;
+  }
+  try {
+    const { url, width, height } = await imageFileToDataUrl(file);
+    // across the view, in its shape
+    const [x0] = toWorld(view, [W * 0.1, 0]);
+    const [x1] = toWorld(view, [W * 0.9, 0]);
+    const [cx, cy] = toWorld(view, [W / 2, H / 2]);
+    const w = x1 - x0;
+    const h = (w * height) / width;
+    setBackground({ kind: 'image', image: url, mode: 'world', rect: { x: cx - w / 2, y: cy + h / 2, w }, opacity: backdrop.state.kind === 'image' ? backdrop.state.opacity : 0.6 });
+    messages.notify(`Background: ${file.name}, in the drawing (it pans and zooms with it). Set its width, or fill the screen instead.`);
+  } catch (e) {
+    messages.notify(`${file.name}: ${errorText(e)}`, 'error');
+  }
+}
+
+bgKind.addEventListener('change', () => {
+  const kind = bgKind.value;
+  if (kind === 'image') {
+    if (backdrop.state.image) setBackground({ ...backdrop.state, kind: 'image' });
+    else void chooseBackgroundImage();
+    return;
+  }
+  const scene = SCENES.find((x) => x.id === kind);
+  setBackground({ ...backdrop.state, kind, opacity: scene ? scene.strength : backdrop.state.opacity });
+});
+bgMode.addEventListener('change', () => {
+  const b = { ...backdrop.state, mode: bgMode.value as BackgroundState['mode'] };
+  setBackground(b.mode === 'world' && !b.rect ? fitBackgroundToView(b) : b);
+});
+bgWidth.addEventListener('change', () => {
+  const w = parseFloat(bgWidth.value);
+  const r = backdrop.state.rect;
+  if (!r || !(w > 0)) return;
+  // keep its centre: the height follows the shape
+  const [cx, cy] = [r.x + r.w / 2, r.y - (r.w * backdrop.aspect) / 2];
+  setBackground({ ...backdrop.state, rect: { x: cx - w / 2, y: cy + (w * backdrop.aspect) / 2, w } });
+});
+bgOpacity.addEventListener('input', () => setBackground({ ...backdrop.state, opacity: Number(bgOpacity.value) }, false));
+bgOpacity.addEventListener('change', () => setBackground({ ...backdrop.state, opacity: Number(bgOpacity.value) }));
+$<HTMLButtonElement>('#bg-choose').addEventListener('click', () => void chooseBackgroundImage());
+$<HTMLButtonElement>('#bg-fit').addEventListener('click', () => setBackground(fitBackgroundToView({ ...backdrop.state, kind: 'image' })));
+setBackground(validBackground((() => {
+  try {
+    return JSON.parse(localStorage.getItem(BACKGROUND_KEY) ?? 'null');
+  } catch {
+    return null;
+  }
+})()) ?? { ...NO_BACKGROUND }, false);
 
 // ---- the integrator and its step (the Simulation block) ----
 const integratorSel = $<HTMLSelectElement>('#integrator');
@@ -2606,6 +2724,13 @@ function paletteCommands(): Command[] {
       value: { type: 'range', min: input.min, max: input.max, step: input.step, get: () => input.value, set: (v, done) => drive(input, v, done, ['input', 'change']), shown: () => textOf(output) },
     });
   });
+  // the background: each scene an entry, and choosing an image
+  for (const o of bgKind.options)
+    out.push({ label: `Background: ${o.textContent}`, group: 'Background', keywords: 'backdrop scene image picture', on: bgKind.value === o.value, toggle: o.value !== 'image', run: () => {
+      bgKind.value = o.value;
+      bgKind.dispatchEvent(new Event('change'));
+    } });
+  out.push({ label: 'Background strength', group: 'Background', keywords: 'opacity fade backdrop', value: { type: 'range', min: bgOpacity.min, max: bgOpacity.max, step: bgOpacity.step, get: () => bgOpacity.value, set: (v, done) => drive(bgOpacity, v, done, ['input', 'change']), shown: () => `${Math.round(Number(bgOpacity.value) * 100)}%` } });
   // the integrator and step: each choice an entry (a toggle, like a switch's option)
   for (const [sel, name] of [[integratorSel, 'Integrator'], [stepSel, stepping.integrator === 'rk45' ? 'Largest step' : 'Step'], [toleranceSel, 'Tolerance']] as const) {
     if (!usable(sel)) continue;
@@ -2880,6 +3005,7 @@ function blockSummaries() {
   const colour = beamColour.q === 'off' ? '' : { N: 'tension', V: 'shear', M: 'bending', w: 'deflection' }[beamColour.q];
   put('sum-beams', [colour, deflect.on && 'deflection drawn', breaking.on && `break ≥ ${breaking.at} N·m`].filter(Boolean).join(' · '));
   put('sum-physics', [friction.enabled && 'friction', design.ground && 'ground'].filter(Boolean).join(' · '));
+  put('sum-background', backdrop.name);
 }
 
 function setTool(t: Tool) {
@@ -6177,6 +6303,7 @@ function drawFrame(now: number) {
         : null,
     trail: trail.n > 1 ? trail : null,
     forceArrows: fbd,
+    backdrop: (c, w, h, v) => backdrop.draw(c, w, h, v),
     beamShades: beamShadesNow(),
     bends: bendsNow(),
   });

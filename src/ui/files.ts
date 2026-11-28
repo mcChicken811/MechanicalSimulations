@@ -19,6 +19,8 @@ export interface ProjectFile {
   controls: Record<string, boolean | string>;
   beamColour?: unknown;
   view?: { ox: number; oy: number; scale: number };
+  /** The background: a scene, or an image (as a data URL) and where it lies (ui/background.ts). */
+  background?: unknown;
 }
 
 /** What a file holds: a design (from a design file, a project, or bare), and the project if it is one. */

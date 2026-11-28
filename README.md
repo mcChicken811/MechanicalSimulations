@@ -127,6 +127,14 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body, for example two bars welded into an L-shaped arm. Click the same pair again to separate them. (This replaces the old Fix angle tool: designs saved with fixed angles open with those bars joined.) |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
+**Backgrounds.** The *Background* block puts a scene or your own image behind the drawing. Backgrounds are saved in projects (files and the gallery) and remembered in the browser.
+- **Scenes:** blue sky with clouds, a city skyline, a night sky, a sunset over hills, mountains, a blueprint and graph paper. They are drawn by the app, the same every time, and stay put as you pan and zoom.
+- **Your image** (PNG, JPEG, SVG and other picture files) is placed one of two ways:
+  - **in the drawing:** it pans and zooms with the mechanism, so you can trace over a photo or a sketch at its true size. Set its **width** in metres; **Fit to view** lays it across what is in view.
+  - **filling the screen:** it covers the screen, centred, and stays put.
+  - **Large pictures** are scaled down to at most 2048 px across, so they fit in the browser and in project files; SVGs are kept as they are. If an image is still too big for the browser to keep between visits, it says so; it stays for now and is saved in projects.
+- **Strength** sets how strongly the background shows behind the mechanism. Each scene starts at a strength that keeps the mechanism easy to read.
+
 **Integrators.** The *Simulation* block chooses how the equations of motion are stepped in time, and the step. Each choice shows its order and cost, and the status bar names it.
 
 | Integrator | Order | Evaluations a step | What it is like |
