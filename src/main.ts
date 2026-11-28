@@ -9,6 +9,7 @@ import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { Palette, type Command } from './ui/palette';
+import { autoHide } from './ui/autohide';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
 import { barDiagram, deflection, peak, valueAt, type BeamDiagram } from './mechanics/beam';
@@ -2863,11 +2864,24 @@ function followMechanism() {
   view.oy += (ty - view.oy) * 0.08;
 }
 
+// the equations panel: folded at first (remembered); like the side bar, it slides off its edge
+// when the mouse has been away from it for 3 s, and back when the mouse comes to that edge's top
+const EOM_KEY = 'linkage-lab:eom-open';
 const eomWrap = $<HTMLElement>('#eom-wrap');
-$<HTMLButtonElement>('#eom-toggle').addEventListener('click', (e) => {
-  eomWrap.classList.toggle('collapsed');
-  (e.target as HTMLButtonElement).textContent = eomWrap.classList.contains('collapsed') ? '+' : '–';
+const eomToggle = $<HTMLButtonElement>('#eom-toggle');
+const showEomFolded = (folded: boolean) => {
+  eomWrap.classList.toggle('collapsed', folded);
+  eomToggle.textContent = folded ? '+' : '–';
+  eomToggle.title = folded ? 'Expand' : 'Collapse';
+};
+showEomFolded(localStorage.getItem(EOM_KEY) !== 'true');
+eomToggle.addEventListener('click', () => {
+  const folded = !eomWrap.classList.contains('collapsed');
+  showEomFolded(folded);
+  localStorage.setItem(EOM_KEY, String(!folded));
 });
+autoHide(eomWrap, 'right');
+autoHide($<HTMLElement>('#toolbar'), 'left');
 
 const hints: Record<Tool, string> = {
   select: 'Drag joints to reshape (hold Alt / Option to move on the grid), or drag on empty space to box-select. Ctrl/⌘+D duplicates; Ctrl/⌘+C and V copy and paste.',
