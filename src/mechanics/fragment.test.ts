@@ -43,9 +43,8 @@ describe('copy and paste', () => {
   });
 
   it('a pasted copy of a whole mechanism keeps all its constraints', () => {
-    // gears, gear pins and a mesh; add a fixed angle and a join so every kind is covered
+    // gears, gear pins and a mesh; add a join so every kind is covered
     const d = build("Watt's sun");
-    d.angles = [{ id: 0, a: 1, b: 3 }];
     d.joins = [{ id: 0, a: { kind: 'gear', id: 1 }, b: { kind: 'link', id: 2 } }];
     const before = dof(d);
     const frag = extractParts(d, allParts(d));
@@ -57,7 +56,6 @@ describe('copy and paste', () => {
     for (const l of d.links.filter((x) => pasted.links.has(x.id))) expect(pasted.points.has(l.a) && pasted.points.has(l.b)).toBe(true);
     for (const p of d.points.filter((x) => pasted.points.has(x.id) && x.gear !== undefined)) expect(pasted.gears.has(p.gear!)).toBe(true);
     expect(d.meshes).toHaveLength(2);
-    expect(d.angles).toHaveLength(2);
     expect(d.joins).toHaveLength(2);
     // two independent copies: twice the constraints and degrees of freedom
     const after = dof(d);

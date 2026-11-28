@@ -28,10 +28,6 @@
  *    s = ±1 the side the gear is on, rolling without slip gives ξ + s R (φ − θ_rack) = C, and
  *    the centre stays at (r_c − r_a)·n = s R. The second constraint is dropped when the rest
  *    of the mechanism already enforces it (a rack on rails meshing with a pinion on an axle).
- * 10. A fixed angle between two bars adds θ_b − θ_a = α, α being the drawn angle. A bar whose
- *    angle is not a coordinate gets an explicit one, as for gears. The constraint is dropped,
- *    with a warning, when the mechanism already holds that angle (say, two sides of a rigid
- *    triangle), since a redundant constraint would make the equations singular.
  * 11. Bodies joined into one (bars, racks, gears, joined directly or through others) are
  *    placed as a single rigid body: one rotation coordinate for the whole group (the first
  *    bar's angle θ, or the first gear's φ), and every joint of the group at
@@ -57,7 +53,7 @@
  *    generalized forces worked out in the simulator each step.
  */
 import { defineSymbol, Poly, timeDerivative, trigSimplify } from '../cas/poly';
-import { bodyName, drawnAngle, gearLabel, motorTorque, propellerAero, propellerInertia, linkLabel, motorHousingRadius, railOf, sameBody, sharedJoint, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
+import { bodyName, gearLabel, motorTorque, propellerAero, propellerInertia, linkLabel, motorHousingRadius, railOf, sameBody, type DBodyRef, pointLabel, springLabel, type Design, type DLink, type DPoint } from './model';
 
 export interface Coordinate {
   sym: string;
@@ -90,8 +86,6 @@ export interface Constraint {
   rack?: { xi: Poly; sR: Poly; rel: Poly; C: Poly };
   /** A rack's centre-distance constraint, dropped when the mechanism already enforces it. */
   rackDistance?: boolean;
-  /** A fixed angle between bars a and b, dropped (with a warning) when already enforced. */
-  fixedAngle?: { a: number; b: number };
   /** One of the (up to three) equations of a join, by join id; dropped when already enforced. */
   joined?: number;
   /** An equation of a joint pinned to, or sliding on, a body, by joint id; dropped when already enforced. */
@@ -745,25 +739,6 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     meshParts.push({ id: rm.id, kind: 'rack', a: gr.id, b: rack.id, v: R.mul(rel) });
   }
 
-  // ---- fixed angles -------------------------------------------------------------
-  for (const fa of design.angles ?? []) {
-    const la = links.find((l) => l.id === fa.a);
-    const lb = links.find((l) => l.id === fa.b);
-    if (!la || !lb || la === lb) continue;
-    const lab = `bars ${linkLabel(la.id)} and ${linkLabel(lb.id)}`;
-    const rel = angleOf(lb).sub(angleOf(la));
-    if (!movable(rel)) {
-      warnings.push(`The angle between ${lab} cannot change anyway, so fixing it has no effect.`);
-      continue;
-    }
-    const a0 = rel.evaluate(initialEnv());
-    const alpha = param(`al${fa.id}`, `\\alpha_{${linkLabel(la.id)},${linkLabel(lb.id)}}`, a0, 'rad');
-    const at = sharedJoint(la, lb);
-    const where = at !== null ? `at joint ${pointLabel(at)} ` : '';
-    const deg = drawnAngle(design, la, lb).toFixed(1);
-    constraints.push({ phi: rel.sub(alpha), reason: `the angle ${where}between ${lab} is fixed (${deg}°)`, fixedAngle: { a: la.id, b: lb.id } });
-  }
-
   // ---- joined bodies -------------------------------------------------------------
   /** A body's angle (and its coordinate symbol, null if it cannot turn) and reference point. */
   const bodyFrame = (ref: DBodyRef): { angle: Poly; sym: string | null; at: [Poly, Poly] } | null => {
@@ -1083,13 +1058,11 @@ export function* deriveSteps(design: Design, opts: DeriveOptions): Generator<num
     basis.push(r.map((x) => x / norm));
     return true;
   };
-  // Fixed angles get the same test: welding two sides of a rigid triangle adds nothing.
-  const optional = (c: Constraint) => c.rackDistance || c.fixedAngle || c.joined !== undefined || c.attached !== undefined;
+  const optional = (c: Constraint) => c.rackDistance || c.joined !== undefined || c.attached !== undefined;
   for (const c of movableKept) if (!optional(c)) independent(c.phi);
   const kept = movableKept.filter((c) => {
     if (!optional(c)) return true;
     if (independent(c.phi)) return true;
-    if (c.fixedAngle) warnings.push(`${c.reason[0].toUpperCase()}${c.reason.slice(1)}, but the mechanism already holds that angle, so the constraint was dropped.`);
     return false;
   });
   for (const [id, lab] of attachNames)

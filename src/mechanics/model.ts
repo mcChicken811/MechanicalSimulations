@@ -367,17 +367,6 @@ export interface DRackMesh {
   rack: number;
 }
 
-/**
- * Two bars whose relative angle is held at its drawn value: θ_b − θ_a = α. Bars that share a
- * joint are then welded there into one rigid piece; bars apart from each other stay parallel
- * (or at the drawn angle) wherever they move.
- */
-export interface DAngle {
-  id: number;
-  a: number;
-  b: number;
-}
-
 /** A rigid body of the design: a bar (racks included) or a gear. */
 export interface DBodyRef {
   /** A bar or rack, a gear, or the housing of the motor on gear `id`. */
@@ -488,8 +477,6 @@ export interface Design {
   gears: DGear[];
   meshes: DMesh[];
   rackMeshes: DRackMesh[];
-  /** Fixed angles between bars (absent in designs saved before they existed). */
-  angles?: DAngle[];
   /** Bodies joined into one (absent in designs saved before joins existed). */
   joins?: DJoin[];
   /** Ground contact; absent when there is no ground. */
@@ -497,29 +484,29 @@ export interface Design {
 }
 
 export function emptyDesign(): Design {
-  return { points: [], links: [], springs: [], gears: [], meshes: [], rackMeshes: [], angles: [], joins: [] };
+  return { points: [], links: [], springs: [], gears: [], meshes: [], rackMeshes: [], joins: [] };
 }
 
 /**
- * The angle (degrees, 0–180) between two bars as drawn: the corner angle at the joint they
- * share, or the angle between their lines when they do not touch.
+ * Designs saved with the old Fix angle tool: each fixed angle becomes a join of its two bars
+ * (the same thing for bars sharing a joint; bars apart become rigidly fixed to each other
+ * rather than only kept at their angle). Returns how many were converted.
  */
-export function drawnAngle(d: Design, la: DLink, lb: DLink): number {
-  const p = (id: number) => d.points.find((x) => x.id === id)!;
-  const dir = (l: DLink, from: number) => {
-    const [o, e] = from === l.a ? [p(l.a), p(l.b)] : [p(l.b), p(l.a)];
-    return Math.atan2(e.y - o.y, e.x - o.x);
-  };
-  const common = sharedJoint(la, lb);
-  const period = common !== null ? 2 * Math.PI : Math.PI;
-  const diff = Math.abs(dir(lb, common ?? lb.a) - dir(la, common ?? la.a)) % period;
-  return (Math.min(diff, period - diff) * 180) / Math.PI;
+export function anglesToJoins(d: Design & { angles?: { id: number; a: number; b: number }[] }): number {
+  const old = Array.isArray(d.angles) ? d.angles : [];
+  delete d.angles;
+  let n = 0;
+  d.joins ??= [];
+  for (const a of old) {
+    if (a.a === a.b || !d.links.some((l) => l.id === a.a) || !d.links.some((l) => l.id === a.b)) continue;
+    const [ra, rb]: DBodyRef[] = [{ kind: 'link', id: a.a }, { kind: 'link', id: a.b }];
+    if (d.joins.some((j) => (sameBody(j.a, ra) && sameBody(j.b, rb)) || (sameBody(j.a, rb) && sameBody(j.b, ra)))) continue;
+    d.joins.push({ id: nextId(d.joins), a: ra, b: rb });
+    n++;
+  }
+  return n;
 }
 
-/** The joint two bars share, if any. */
-export function sharedJoint(a: { a: number; b: number }, b: { a: number; b: number }): number | null {
-  return a.a === b.a || a.a === b.b ? a.a : a.b === b.a || a.b === b.b ? a.b : null;
-}
 
 export function pointLabel(id: number): string {
   const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -574,5 +561,5 @@ export function linkLength(d: Design, l: { a: number; b: number }): number {
 }
 
 export function cloneDesign(d: Design): Design {
-  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map(cloneGear), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), angles: (d.angles ?? []).map((a) => ({ ...a })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
+  return { points: d.points.map((p) => ({ ...p })), links: d.links.map((l) => ({ ...l })), springs: d.springs.map((s) => ({ ...s })), gears: d.gears.map(cloneGear), meshes: d.meshes.map((m) => ({ ...m })), rackMeshes: d.rackMeshes.map((m) => ({ ...m })), joins: (d.joins ?? []).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })), ...(d.ground ? { ground: { ...d.ground, points: d.ground.points.map((p) => [p[0], p[1]] as [number, number]) } } : {}) };
 }

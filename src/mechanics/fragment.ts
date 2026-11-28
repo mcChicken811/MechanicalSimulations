@@ -1,7 +1,7 @@
 /**
  * Groups of parts: selecting them, copying them out of a design, and pasting them back in.
  * A copied fragment keeps every constraint among its own parts (ground pins and rails, joints
- * pinned on its gears, gear and rack meshes, fixed angles, joined bodies); constraints to
+ * pinned on its gears, gear and rack meshes, joined bodies); constraints to
  * parts that were not copied are left behind.
  */
 import { cloneGear, nextId, nextLeverColor, type DBodyRef, type Design } from './model';
@@ -83,7 +83,6 @@ export function extractParts(d: Design, chosen: PartSet): Design {
       }),
     meshes: d.meshes.filter((m) => s.gears.has(m.a) && s.gears.has(m.b)).map((m) => ({ ...m })),
     rackMeshes: d.rackMeshes.filter((m) => s.gears.has(m.gear) && s.links.has(m.rack)).map((m) => ({ ...m })),
-    angles: (d.angles ?? []).filter((a) => s.links.has(a.a) && s.links.has(a.b)).map((a) => ({ ...a })),
     joins: (d.joins ?? []).filter((j) => hasBody(s, j.a) && hasBody(s, j.b)).map((j) => ({ id: j.id, a: { ...j.a }, b: { ...j.b } })),
   };
 }
@@ -111,7 +110,6 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   const G = renumber(f.gears, d.gears);
   const M = renumber(f.meshes, d.meshes);
   const RM = renumber(f.rackMeshes, d.rackMeshes);
-  const A = renumber(f.angles ?? [], d.angles ?? []);
   const J = renumber(f.joins ?? [], d.joins ?? []);
   const body = (r: DBodyRef): DBodyRef => ({ kind: r.kind, id: (r.kind === 'link' ? L : G).get(r.id)! });
 
@@ -142,7 +140,6 @@ export function pasteParts(d: Design, f: Design, dx: number, dy: number): PartSe
   }
   for (const m of f.meshes) d.meshes.push({ id: M.get(m.id)!, a: G.get(m.a)!, b: G.get(m.b)! });
   for (const m of f.rackMeshes) d.rackMeshes.push({ id: RM.get(m.id)!, gear: G.get(m.gear)!, rack: L.get(m.rack)! });
-  for (const a of f.angles ?? []) (d.angles ??= []).push({ id: A.get(a.id)!, a: L.get(a.a)!, b: L.get(a.b)! });
   for (const j of f.joins ?? []) (d.joins ??= []).push({ id: J.get(j.id)!, a: body(j.a), b: body(j.b) });
 
   return { points: new Set(P.values()), links: new Set(L.values()), springs: new Set(S.values()), gears: new Set(G.values()) };

@@ -3,7 +3,7 @@
 **Linkage Lab** is a browser app for building planar mechanisms out of bars, springs, gears and racks. It derives their equations of motion automatically with Lagrangian mechanics and simulates them in real time.
 
 - You draw the mechanism. The app picks generalized coordinates, builds the kinetic and potential energy symbolically, and shows Lagrange's equations, M(q) q̈ = f(q, q̇) + Q + Φ_qᵀλ, as typeset math.
-- Closed loops, locked axes, meshing gears, rack-and-pinion pairs, fixed angles between bars and joined bodies become constraints, handled with Lagrange multipliers.
+- Closed loops, locked axes, meshing gears, rack-and-pinion pairs and joined bodies become constraints, handled with Lagrange multipliers.
 - An optional ground that parts land on, bounce off and slide along, with adjustable restitution and friction.
 - Motors that drive gears with a constant torque, or one that falls off with speed like a DC motor.
 - The equations are integrated with 4th-order Runge–Kutta (RK4) with a 1 ms step. While it runs, you can drag any part to pull on it.
@@ -100,8 +100,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Lever | E | Click a motor to give it a control lever, worked from the dock at the bottom right. On a gear without a motor, a motor is added too. Click the motor again to remove the lever. |
 | PID controller | C | Click a motor to put a PID controller on it, in place of its lever. Then click what it should measure and pick the quantity from the menu. Click the motor again to remove it. |
 | Motor | O | Click a gear or wheel to put a motor on it. Click again to remove it. Set its torque and no-load speed in the gear's inspector. |
-| Fix angle | A | Click one bar, then another, to hold the angle between them at its drawn value. Click the same pair again to free it. |
-| Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body. Click the same pair again to separate them. |
+| Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body, for example two bars welded into an L-shaped arm. Click the same pair again to separate them. (This replaces the old Fix angle tool: designs saved with fixed angles open with those bars joined.) |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
 Bars and springs that start or end on a gear are pinned to the gear and turn with it.
@@ -119,8 +118,6 @@ A rack is a rigid body like a bar, with the same mass and inertia, and bars atta
 
 A **wheel** is a uniform disk like a gear, turning about its centre joint, with the same mass, inertia and motor options, and joints can be pinned on it. It has no teeth, so it can't mesh with a gear or rack, and a mesh with one is ignored with a warning. Its tyre touches the ground like any rim: it rolls, gripping with the ground's friction. A locked wheel is braked and skids. Wheels are drawn with a dark tyre and spokes, labelled w1, w2 and so on.
 
-A fixed angle adds the constraint θ_b − θ_a = α, with α the angle as drawn. Two bars that share a joint are welded there into one rigid piece, for example an L-shaped or bent arm. A purple double arc at the joint shows the angle in degrees. Bars that don't touch are joined by a dashed line and stay at their drawn angle to each other wherever they move. If the mechanism already holds that angle, as for two sides of a rigid triangle, the constraint is dropped with a warning, because a duplicate would make the equations singular.
-
 Joining two bodies makes them one rigid body: they can no longer turn or move relative to each other. This works for any pair of bars, racks and gears, whether or not they touch. Examples are a crank arm fixed to a gear, a pinion fixed to a rack, or a bent lever made of two bars. Joined bodies are drawn in the same colour: the colour of the group's lowest-numbered bar, or of its lowest-numbered gear if the group has no bars. Joined bodies, joined directly or through others, are placed as one rigid body. The group gets a single rotation coordinate: the angle θ of its first bar, or the rotation φ of its first gear if it has no bars. Every joint of the group then sits at r_origin + Rot(θ)(u, v), with the offsets u and v taken from the drawing.
 
 So a group needs at most three coordinates and adds no constraints. Its other bars turn at θ plus a constant, and its gears turn with θ. Compared with joining bodies through constraints, the human hand example drops from 39 coordinates and 23 constraints to 16 coordinates and none, and it simulates about seven times faster.
@@ -132,9 +129,9 @@ So a group needs at most three coordinates and adds no constraints. Its other ba
 - Ctrl/⌘+V pastes a copy centred on the cursor. You can paste as many times as you like.
 - Ctrl/⌘+D (or **Duplicate** in the inspector) duplicates the selection. The copy follows the cursor as a dashed outline, snapped to the grid like a paste, until a left click places it there. Esc cancels, as do switching tools and pressing Play.
 
-A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes, fixed angles and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
+A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
 
-The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, which bars have a fixed angle, and which bodies are joined.
+The inspector lets you change masses, positions, spring stiffness and rest length, gear radius, tooth count and mass, which side a rack's teeth are on, which gears and racks mesh, and which bodies are joined.
 
 A **tension-only** spring pulls when it is stretched beyond its rest length and goes slack when it is shorter, with no force and no energy: V = ½ k max(0, ℓ − ℓ₀)². While slack, it is drawn as a dashed line.
 

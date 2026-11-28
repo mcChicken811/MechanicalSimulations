@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveEquations } from './derive';
-import { cloneDesign, propellerInertia, type Design } from './model';
+import { anglesToJoins, cloneDesign, propellerInertia, type Design } from './model';
 import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
 import { motorCar, twinRotor } from '../ui/presets';
 
@@ -539,7 +539,7 @@ describe('trapezoid steering preset', () => {
   });
 });
 
-describe('fixed angles', () => {
+describe('old fixed angles become joins', () => {
   const run = (d: Design, seconds: number) => {
     const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
     for (let i = 0; i < seconds * 1000; i++) sim.step(1e-3);
@@ -550,11 +550,22 @@ describe('fixed angles', () => {
     return Math.atan2(pb[1] - pc[1], pb[0] - pc[0]) - Math.atan2(pa[1] - pc[1], pa[0] - pc[0]);
   };
 
-  it('welds a double pendulum into one rigid L, moving like the same L braced by a massless bar', () => {
-    const welded = { ...doublePendulum(), angles: [{ id: 0, a: 0, b: 1 }] };
+  it('converts each fixed angle of a saved design into a join, skipping broken and repeated ones', () => {
+    const d: Design & { angles?: { id: number; a: number; b: number }[] } = {
+      ...doublePendulum(),
+      joins: [],
+      angles: [{ id: 0, a: 0, b: 1 }, { id: 1, a: 1, b: 0 }, { id: 2, a: 0, b: 7 }, { id: 3, a: 1, b: 1 }],
+    };
+    expect(anglesToJoins(d)).toBe(1);
+    expect(d.angles).toBeUndefined();
+    expect(d.joins).toEqual([{ id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 1 } }]);
+  });
+
+  it('a welded double pendulum (joined) swings like the same L braced by a massless bar', () => {
+    const welded: Design & { angles?: { id: number; a: number; b: number }[] } = { ...doublePendulum(), angles: [{ id: 0, a: 0, b: 1 }] };
+    anglesToJoins(welded);
     const d = deriveEquations(welded, { gravity: G });
     expect(d.coords.length - d.constraints.length).toBe(1);
-    expect(d.warnings).toEqual([]);
     const braced = doublePendulum();
     braced.links.push({ id: 2, a: 0, b: 2, mass: 1e-6 });
     const [s1, s2] = [run(welded, 2), run(braced, 2)];
@@ -563,32 +574,10 @@ describe('fixed angles', () => {
       expect(p1.get(id)![0]).toBeCloseTo(p2.get(id)![0], 4);
       expect(p1.get(id)![1]).toBeCloseTo(p2.get(id)![1], 4);
     }
-    // the corner at joint 1 stays square
-    expect(Math.abs(Math.cos(angleAt(p1, 1, 0, 2)))).toBeLessThan(1e-9);
+    expect(Math.abs(Math.cos(angleAt(p1, 1, 0, 2)))).toBeLessThan(1e-9); // the corner stays square
   });
 
-  it('drops a weld the mechanism already holds, with a warning', () => {
-    const tri: Design = {
-      points: [
-        { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
-        { id: 1, x: 1, y: 0, kind: 'free', mass: 0 },
-        { id: 2, x: 0.5, y: -0.8, kind: 'free', mass: 0 },
-      ],
-      links: [
-        { id: 0, a: 0, b: 1, mass: 1 },
-        { id: 1, a: 1, b: 2, mass: 1 },
-        { id: 2, a: 2, b: 0, mass: 1 },
-      ],
-      springs: [], gears: [], meshes: [], rackMeshes: [],
-      angles: [{ id: 0, a: 0, b: 2 }],
-    };
-    const d = deriveEquations(tri, { gravity: G });
-    expect(d.coords.length - d.constraints.length).toBe(1);
-    expect(d.constraints.some((c) => c.fixedAngle)).toBe(false);
-    expect(d.warnings.some((w) => w.includes('already holds that angle'))).toBe(true);
-  });
-
-  it('holds the angle at a joint across a loop (five-bar becomes one degree of freedom)', () => {
+  it('a joint welded inside a loop: the five-bar becomes one degree of freedom', () => {
     const five: Design = {
       points: [
         { id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 },
@@ -604,7 +593,7 @@ describe('fixed angles', () => {
         { id: 3, a: 3, b: 4, mass: 1 },
       ],
       springs: [], gears: [], meshes: [], rackMeshes: [],
-      angles: [{ id: 0, a: 1, b: 2 }],
+      joins: [{ id: 0, a: { kind: 'link', id: 1 }, b: { kind: 'link', id: 2 } }],
     };
     const d = deriveEquations(five, { gravity: G });
     expect(d.coords.length - d.constraints.length).toBe(1);

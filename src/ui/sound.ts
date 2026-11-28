@@ -24,7 +24,6 @@ export type Cue =
   | 'free'
   | 'join'
   | 'unjoin'
-  | 'angle'
   | 'delete'
   | 'undo'
   | 'play'
@@ -254,10 +253,6 @@ export class SoundEngine {
       case 'unjoin':
         this.tone(t, 950, 0.05, 0.08, 'triangle');
         this.tone(t + 0.05, 260, 0.1, 0.16, 'sine', 180);
-        break;
-      case 'angle':
-        this.tone(t, 2400, 0.03, 0.08);
-        this.tone(t + 0.04, 1600, 0.04, 0.08);
         break;
       case 'delete': // a pop, falling away
         this.tone(t, 700, 0.15, 0.2, 'sine', 120);

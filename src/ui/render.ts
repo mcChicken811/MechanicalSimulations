@@ -1,4 +1,4 @@
-import { gearLabel, GEAR_MODULE, leverOf, type DPid, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, sharedJoint, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
+import { gearLabel, GEAR_MODULE, leverOf, type DPid, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
 import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
 
@@ -177,7 +177,6 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     ctx.restore();
     dot(ctx, b, 5, '#fff', C.accent);
   }
-  for (const fa of s.design.angles ?? []) drawFixedAngle(ctx, v, s, fa.a, fa.b);
   if (s.trail) drawTrail(ctx, v, s.trail);
   if (s.heat) drawHeat(ctx, v, s, s.heat);
   for (const p of s.design.points) drawJoint(ctx, v, s, p);
@@ -234,58 +233,6 @@ function drawGhost(ctx: CanvasRenderingContext2D, v: View, gh: { design: Design;
   ctx.restore();
 }
 
-/**
- * A fixed angle between two bars: a double arc at the joint they share, with the angle in
- * degrees. Bars that do not touch are joined by a dashed line between their midpoints.
- */
-function drawFixedAngle(ctx: CanvasRenderingContext2D, v: View, s: Scene, aId: number, bId: number) {
-  const la = s.design.links.find((l) => l.id === aId);
-  const lb = s.design.links.find((l) => l.id === bId);
-  if (!la || !lb) return;
-  const sp = (id: number) => toScreen(v, s.pos(id));
-  ctx.save();
-  ctx.strokeStyle = C.angle;
-  ctx.fillStyle = C.angle;
-  ctx.lineWidth = 1.6;
-  ctx.font = '600 11px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const common = sharedJoint(la, lb);
-  if (common !== null) {
-    const c = sp(common);
-    const end = (l: { a: number; b: number }) => sp(l.a === common ? l.b : l.a);
-    const [ea, eb] = [end(la), end(lb)];
-    const t0 = Math.atan2(ea[1] - c[1], ea[0] - c[0]);
-    let d = Math.atan2(eb[1] - c[1], eb[0] - c[0]) - t0;
-    d = Math.atan2(Math.sin(d), Math.cos(d)); // the smaller side, in (−π, π]
-    for (const r of [13, 17]) {
-      ctx.beginPath();
-      ctx.arc(c[0], c[1], r, t0, t0 + d, d < 0);
-      ctx.stroke();
-    }
-    if (showLabels) {
-      const mid = t0 + d / 2;
-      ctx.fillText(`${Math.round((Math.abs(d) * 180) / Math.PI)}°`, c[0] + 30 * Math.cos(mid), c[1] + 30 * Math.sin(mid));
-    }
-  } else {
-    const mid = (l: { a: number; b: number }): Vec => {
-      const [p, q] = [sp(l.a), sp(l.b)];
-      return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
-    };
-    const [ma, mb] = [mid(la), mid(lb)];
-    ctx.setLineDash([4, 4]);
-    line(ctx, ma, mb);
-    ctx.setLineDash([]);
-    for (const m of [ma, mb]) dot(ctx, m, 3, C.angle, C.angle, 0);
-    if (showLabels) {
-      const dir = (l: { a: number; b: number }) => Math.atan2(s.pos(l.b)[1] - s.pos(l.a)[1], s.pos(l.b)[0] - s.pos(l.a)[0]);
-      let d = Math.abs(dir(lb) - dir(la)) % Math.PI;
-      d = Math.min(d, Math.PI - d); // the angle between the two lines
-      ctx.fillText(`∠ ${Math.round((d * 180) / Math.PI)}°`, (ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2 - 10);
-    }
-  }
-  ctx.restore();
-}
 
 /** The ground: a line across the view, rising at its slope, shaded and hatched below. */
 /**

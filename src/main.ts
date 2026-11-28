@@ -1,7 +1,7 @@
 import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
-import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, drawnAngle, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, sharedJoint, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
+import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, anglesToJoins, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
 import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type ControllerSpec, type GroundSettings, type Heat } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
@@ -9,7 +9,7 @@ import { presets } from './ui/presets';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { drawScene, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'angle' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -84,9 +84,8 @@ function loadDesign(): Design | null {
       } else delete d.ground;
     }
     if (d.ground && (d.ground.points.length < 2 || d.ground.points.some((p) => !Array.isArray(p) || p.length !== 2))) delete d.ground;
-    if (!Array.isArray(d.angles)) d.angles = []; // saved before fixed angles existed
-    d.angles = d.angles.filter((a) => a.a !== a.b && d.links.some((l) => l.id === a.a) && d.links.some((l) => l.id === a.b));
     if (!Array.isArray(d.joins)) d.joins = []; // saved before joins existed
+    anglesToJoins(d); // the old Fix angle tool: its fixed angles become joins
     d.joins = d.joins.filter((j) => bodyExists(d, j.a) && bodyExists(d, j.b));
     for (const p of d.points) {
       if (p.pin && !bodyExists(d, p.pin)) delete p.pin;
@@ -780,7 +779,6 @@ function removeOrphans() {
     if (p.slide?.on && !bodyExists(design, p.slide.on)) delete p.slide;
   }
   design.joins = joinsOf(design).filter((j) => bodyExists(design, j.a) && bodyExists(design, j.b));
-  design.angles = anglesOf(design).filter((a) => design.links.some((l) => l.id === a.a) && design.links.some((l) => l.id === a.b));
   design.rackMeshes = design.rackMeshes.filter((m) => design.gears.some((g) => g.id === m.gear) && design.links.some((l) => l.id === m.rack && l.rack));
   design.points = design.points.filter(
     (p) =>
@@ -790,22 +788,6 @@ function removeOrphans() {
   );
 }
 
-// ---- fixed angles ---------------------------------------------------------------
-const anglesOf = (d: Design) => (d.angles ??= []);
-/** The first bar clicked with the Fix angle tool, waiting for the second. */
-let angleFirst: number | null = null;
-
-const findAngle = (a: number, b: number) => anglesOf(design).find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
-
-/** Fix the angle between two bars, or free it if it is already fixed. */
-function toggleAngle(a: number, b: number) {
-  pushUndo();
-  const found = findAngle(a, b);
-  if (found) design.angles = anglesOf(design).filter((x) => x !== found);
-  else anglesOf(design).push({ id: nextId(anglesOf(design)), a, b });
-  sfx(found ? 'free' : 'angle');
-  designChanged();
-}
 
 // ---- joined bodies ---------------------------------------------------------------
 function bodyExists(d: Design, ref: DBodyRef): boolean {
@@ -1457,23 +1439,6 @@ canvas.addEventListener('pointerdown', (e) => {
     case 'mass':
       toggleMass(w);
       break;
-    case 'angle': {
-      const hit = linkAt(w);
-      if (!hit) {
-        angleFirst = null;
-        selection = null;
-      } else if (angleFirst === null || angleFirst === hit.id || !design.links.some((l) => l.id === angleFirst)) {
-        angleFirst = angleFirst === hit.id ? null : hit.id; // clicking the same bar again cancels
-        selection = angleFirst === null ? null : { kind: 'link', id: hit.id };
-      } else {
-        const first = angleFirst;
-        angleFirst = null;
-        selection = { kind: 'link', id: hit.id };
-        toggleAngle(first, hit.id);
-      }
-      refreshControls();
-      break;
-    }
     case 'join': {
       const hit = bodyAt(w);
       if (!hit) {
@@ -1725,7 +1690,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', a: 'angle', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1798,7 +1763,6 @@ function setTool(t: Tool) {
   groundSel = null;
   if (t !== 'select') multi = null;
   tool = t;
-  angleFirst = null;
   joinFirst = null;
   drawing = null;
   refreshControls();
@@ -1980,7 +1944,6 @@ const hints: Record<Tool, string> = {
   pid: 'Click a motor (or a gear, which gets a motor) to put a PID controller on it, in place of a lever. Then click what it should measure (a joint, bar, rack, gear, wheel or propeller) and pick the quantity. Click the motor again to remove it.',
   propeller: 'Click the centre, then the edge of a blade: the blades turn out of the page about an axis square to that line, and push along it (the arrow). In empty space it is a free body; start on a joint to mount it there. Give it a motor (O) to spin it.',
   lever: 'Click a motor (or a gear, which gets a motor) to give it a control lever; its control appears at the bottom right. Drag the control up or down to set the torque, even while it runs. Click the motor again to remove the lever.',
-  angle: 'Click two bars to fix the angle between them. Click the same pair again to free it.',
   join: 'Click two bodies (bars, racks or gears) to join them into one. Click the same pair again to separate them.',
 };
 
@@ -1995,9 +1958,7 @@ function refreshControls() {
   clearBtn.disabled = !!sim;
   hintEl.textContent = sim
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
-    : tool === 'angle' && angleFirst !== null
-      ? `Now click the bar whose angle to bar ${linkLabel(angleFirst)} should stay fixed (or bar ${linkLabel(angleFirst)} again to cancel).`
-      : duplicating
+    : duplicating
         ? `Duplicating ${duplicating.frag.points.length} joint${duplicating.frag.points.length === 1 ? '' : 's'} and what is on them: move to where the copy should go and click to place it (Esc to cancel).`
         : pidPick
         ? `Now click what the PID controller on motor M${gearLabel(pidPick.gear)} should measure: a joint, bar, rack, gear, wheel or propeller (Esc to leave it without a sensor).`
@@ -2633,7 +2594,7 @@ function renderInspector() {
       <h4>${n} parts selected</h4>
       ${rows}
       <div class="field"><span></span> <span><button id="i-dup" title="Ctrl/⌘+D: the copy follows the cursor until you click to place it">Duplicate</button> <button id="i-copy">Copy</button> <button id="i-paste" ${clipboard ? '' : 'disabled'}>Paste</button> <button id="i-delete">Delete</button></span></div>
-      <p class="muted">Drag any selected part to move them together. Ctrl/⌘+D duplicates them: the copy follows the cursor as an outline until you click to place it (Esc cancels). Ctrl/⌘+C copies them and Ctrl/⌘+V pastes a copy at the cursor, keeping the constraints among the copied parts (pins, rails, meshes, fixed angles, joins). Ctrl/⌘+X cuts, Delete removes, Esc deselects.</p>`;
+      <p class="muted">Drag any selected part to move them together. Ctrl/⌘+D duplicates them: the copy follows the cursor as an outline until you click to place it (Esc cancels). Ctrl/⌘+C copies them and Ctrl/⌘+V pastes a copy at the cursor, keeping the constraints among the copied parts (pins, rails, meshes, joins). Ctrl/⌘+X cuts, Delete removes, Esc deselects.</p>`;
     inspectorEl.querySelector('#i-copy')!.addEventListener('click', copyParts);
     inspectorEl.querySelector('#i-dup')!.addEventListener('click', () => startDuplicate());
     inspectorEl.querySelector('#i-paste')!.addEventListener('click', pasteClipboard);
@@ -2705,24 +2666,11 @@ function renderInspector() {
     const l = design.links.find((x) => x.id === sel.id);
     if (l) {
       const meshed = design.rackMeshes.filter((m) => m.rack === l.id);
-      const locks = anglesOf(design).filter((x) => x.a === l.id || x.b === l.id);
-      const other = (x: { a: number; b: number }) => design.links.find((k) => k.id === (x.a === l.id ? x.b : x.a))!;
-      // bars sharing a joint with this one first, as those are the usual ones to weld
-      const lockable = design.links
-        .filter((k) => k.id !== l.id && !findAngle(l.id, k.id))
-        .sort((p, q) => Number(sharedJoint(l, q) !== null) - Number(sharedJoint(l, p) !== null) || p.id - q.id);
-      const anglesHtml = `
-        <div class="field"><span>Fixed angle to</span><span>${
-          locks.map((x) => `bar ${linkLabel(other(x).id)} (${drawnAngle(design, l, other(x)).toFixed(1)}°) <button data-unangle="${x.id}" title="Free this angle" ${disabled}>×</button>`).join('<br>') ||
-          '<span class="muted">none</span>'
-        }</span></div>
-        ${lockable.length ? `<label class="field">Fix angle to<select id="i-angle" ${disabled}><option value="">choose a bar…</option>${lockable.map((k) => `<option value="${k.id}">bar ${linkLabel(k.id)} (${pointLabel(k.a)}–${pointLabel(k.b)})</option>`).join('')}</select></label>` : ''}`;
       const candidates = design.gears.filter((g) => !g.wheel && !meshed.some((m) => m.gear === g.id));
       inspectorEl.innerHTML = `
         <h4>${l.rack ? 'Rack' : 'Bar'} ${linkLabel(l.id)} <span class="muted">(${pointLabel(l.a)}–${pointLabel(l.b)})</span></h4>
         <label class="field">Mass (kg)<input id="i-mass" type="number" min="0.01" step="0.1" value="${l.mass}" ${disabled}></label>
         <div class="field"><span>Length</span><span>${linkLength(design, l).toFixed(3)} m</span></div>
-        ${anglesHtml}
         ${joinsHtml({ kind: 'link', id: l.id }, disabled)}
         <label class="field">Toothed<span><input id="i-rack" type="checkbox" ${l.rack ? 'checked' : ''} ${disabled}> rack</span></label>
         ${
@@ -2747,17 +2695,6 @@ function renderInspector() {
       });
       bindField('#i-side', (v) => (l.rack = v === '-1' ? -1 : 1));
       bindJoinControls({ kind: 'link', id: l.id });
-      inspectorEl.querySelectorAll<HTMLButtonElement>('[data-unangle]').forEach((b) =>
-        b.addEventListener('click', () => {
-          pushUndo();
-          design.angles = anglesOf(design).filter((x) => x.id !== Number(b.dataset.unangle));
-          designChanged();
-        }),
-      );
-      inspectorEl.querySelector<HTMLSelectElement>('#i-angle')?.addEventListener('change', (e) => {
-        const k = Number((e.target as HTMLSelectElement).value);
-        if (design.links.some((x) => x.id === k)) toggleAngle(l.id, k);
-      });
       bindRackMeshButtons();
       inspectorEl.querySelector<HTMLSelectElement>('#i-rmesh')?.addEventListener('change', (e) => {
         const g = design.gears.find((x) => x.id === Number((e.target as HTMLSelectElement).value));
