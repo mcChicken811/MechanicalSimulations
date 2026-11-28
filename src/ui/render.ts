@@ -42,6 +42,8 @@ export interface Scene {
   multi?: PartSet | null;
   /** The selection box being dragged, in world coordinates. */
   box?: { from: Vec; to: Vec } | null;
+  /** Parts being duplicated, drawn as an outline shifted by (dx, dy) to where a click will place them. */
+  ghost?: { design: Design; dx: number; dy: number } | null;
   /** A rail being placed with the Slider tool: through `at`, at `angle` degrees, with the ends chosen so far (m along it). */
   railPreview?: { at: Vec; angle: number; ends?: number[] } | null;
   /** The ground's terrain waypoints, if there is a ground. */
@@ -183,6 +185,53 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.grab) drawGrab(ctx, v, s.grab);
   if (s.railPreview) drawRailPreview(ctx, w, h, v, s.railPreview);
   if (s.box) drawBox(ctx, v, s.box);
+  if (s.ghost) drawGhost(ctx, v, s.ghost);
+}
+
+/** The outline of parts about to be placed: dashed bars, springs, gears and joints in the accent colour. */
+function drawGhost(ctx: CanvasRenderingContext2D, v: View, gh: { design: Design; dx: number; dy: number }) {
+  const at = new Map(gh.design.points.map((p) => [p.id, toScreen(v, [p.x + gh.dx, p.y + gh.dy])]));
+  ctx.save();
+  ctx.strokeStyle = C.accent;
+  ctx.fillStyle = 'rgba(224,123,57,0.08)';
+  ctx.lineCap = 'round';
+  ctx.setLineDash([6, 5]);
+  ctx.lineWidth = 1.6;
+  for (const g of gh.design.gears) {
+    const c = at.get(g.center);
+    if (!c) continue;
+    const R = g.radius * v.scale;
+    if (g.propeller) {
+      const [ex, ey] = [Math.cos(g.propeller.angle), -Math.sin(g.propeller.angle)];
+      line(ctx, [c[0] - R * ex, c[1] - R * ey], [c[0] + R * ex, c[1] + R * ey]);
+      continue;
+    }
+    ctx.beginPath();
+    ctx.arc(c[0], c[1], R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.lineWidth = 3;
+  for (const l of gh.design.links) {
+    const [a, b] = [at.get(l.a), at.get(l.b)];
+    if (a && b) line(ctx, a, b);
+  }
+  ctx.lineWidth = 1.5;
+  for (const sp of gh.design.springs) {
+    const [a, b] = [at.get(sp.a), at.get(sp.b)];
+    if (a && b) zigzag(ctx, a, b);
+  }
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 0.9;
+  for (const c of at.values()) {
+    ctx.beginPath();
+    ctx.arc(c[0], c[1], 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /**

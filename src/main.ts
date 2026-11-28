@@ -323,6 +323,7 @@ function stopSim() {
 }
 
 function togglePlay() {
+  duplicating = null;
   if (!sim) startSim();
   else running = !running;
   sfx(running ? 'play' : 'pause');
@@ -1068,6 +1069,52 @@ function copyParts(): boolean {
   return true;
 }
 
+// ---- duplicating: Ctrl/⌘+D, then click to place ----------------------------------------
+/** A copy of the selected parts following the cursor as an outline, until a click places it (Esc cancels). */
+let duplicating: { frag: Design; centre: Vec } | null = null;
+
+/** Start duplicating the selected parts (or the parts chosen together). */
+function startDuplicate(): boolean {
+  const parts = currentParts();
+  if (!parts || sim) return false;
+  const frag = extractParts(design, parts);
+  if (!frag.points.length) return false;
+  duplicating = { frag, centre: fragmentCentre(frag) };
+  drawing = null;
+  constrain = null;
+  sfx('copy');
+  refreshControls();
+  return true;
+}
+
+/** Where the duplicate would go now: its centre on the cursor, snapped like a paste. */
+function duplicateOffset(): Vec {
+  const c = duplicating!.centre;
+  let off: Vec = [mouseWorld[0] - c[0], mouseWorld[1] - c[1]];
+  if (settings.snap) off = [snapValue(off[0]), snapValue(off[1])];
+  return off;
+}
+
+/** Place the duplicate where its outline is; it becomes the new selection. */
+function placeDuplicate() {
+  if (!duplicating) return;
+  const off = duplicateOffset();
+  const frag = duplicating.frag;
+  duplicating = null;
+  pushUndo();
+  setTool('select');
+  selection = null;
+  multi = pasteParts(design, frag, off[0], off[1]);
+  sfx('paste');
+  designChanged();
+  refreshControls();
+}
+
+function cancelDuplicate() {
+  duplicating = null;
+  refreshControls();
+}
+
 /** Paste the copied parts centred on the cursor; they become the new selection, ready to drag. */
 function pasteClipboard() {
   if (!clipboard || sim) return;
@@ -1301,6 +1348,10 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (e.button !== 0) return;
+  if (duplicating && !sim) {
+    placeDuplicate();
+    return;
+  }
   if (pidPick && !sim) {
     pickSensorAt(w, sp); // choosing what a PID controller measures, whatever the tool
     return;
@@ -1622,7 +1673,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   hover = dragging || grab ? hover : hitTest(w);
-  canvas.style.cursor = sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' || tool === 'propeller' ? 'crosshair' : hover ? 'pointer' : 'default';
+  canvas.style.cursor = duplicating ? 'copy' : sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' || tool === 'propeller' ? 'crosshair' : hover ? 'pointer' : 'default';
 });
 
 canvas.addEventListener('pointerup', (e) => {
@@ -1694,6 +1745,9 @@ window.addEventListener('keydown', (e) => {
     if (!copyParts()) return;
     e.preventDefault();
     if (k === 'x') deleteParts(currentParts()!);
+  } else if ((e.metaKey || e.ctrlKey) && k === 'd') {
+    e.preventDefault(); // not the browser's bookmark
+    if (!sim && !startDuplicate()) flash('Select something to duplicate first (click a part, or drag a box around several).');
   } else if ((e.metaKey || e.ctrlKey) && k === 'v' && !sim) {
     e.preventDefault();
     pasteClipboard();
@@ -1715,6 +1769,7 @@ window.addEventListener('keydown', (e) => {
       renderInspector();
     } else flash('The ground needs at least two waypoints.');
   } else if (k === 'escape') {
+    if (duplicating) cancelDuplicate();
     if (pidPick) cancelSensorPick();
     drawing = null;
     constrain = null;
@@ -1738,6 +1793,7 @@ toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.t
 
 function setTool(t: Tool) {
   if (pidPick) cancelSensorPick();
+  duplicating = null;
   constrain = null;
   groundSel = null;
   if (t !== 'select') multi = null;
@@ -1792,6 +1848,7 @@ presetSel.addEventListener('change', () => {
   presetSel.value = '';
   if (!p) return;
   stopSim();
+  duplicating = null;
   pushUndo();
   sfx('preset');
   design = p.build();
@@ -1906,7 +1963,7 @@ $<HTMLButtonElement>('#eom-toggle').addEventListener('click', (e) => {
 });
 
 const hints: Record<Tool, string> = {
-  select: 'Drag joints to reshape, or drag on empty space to box-select. Ctrl/⌘+C and V copy and paste.',
+  select: 'Drag joints to reshape, or drag on empty space to box-select. Ctrl/⌘+D duplicates; Ctrl/⌘+C and V copy and paste.',
   bar: 'Drag, or click twice, to draw a bar. Start or end on an existing joint to pin bars together.',
   rack: 'Drag to draw a rack (a toothed bar). Pass along a gear and it snaps tangent and meshes. Lock its joints on rails to make it slide.',
   spring: 'Drag, or click twice, to draw a spring between joints. An end in empty space is anchored to the ground.',
@@ -1940,7 +1997,9 @@ function refreshControls() {
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
     : tool === 'angle' && angleFirst !== null
       ? `Now click the bar whose angle to bar ${linkLabel(angleFirst)} should stay fixed (or bar ${linkLabel(angleFirst)} again to cancel).`
-      : pidPick
+      : duplicating
+        ? `Duplicating ${duplicating.frag.points.length} joint${duplicating.frag.points.length === 1 ? '' : 's'} and what is on them: move to where the copy should go and click to place it (Esc to cancel).`
+        : pidPick
         ? `Now click what the PID controller on motor M${gearLabel(pidPick.gear)} should measure: a joint, bar, rack, gear, wheel or propeller (Esc to leave it without a sensor).`
         : constrain
         ? constrainHint()
@@ -2573,9 +2632,10 @@ function renderInspector() {
     inspectorEl.innerHTML = `
       <h4>${n} parts selected</h4>
       ${rows}
-      <div class="field"><span></span><span><button id="i-copy">Copy</button> <button id="i-paste" ${clipboard ? '' : 'disabled'}>Paste</button> <button id="i-delete">Delete</button></span></div>
-      <p class="muted">Drag any selected part to move them together. Ctrl/⌘+C copies them and Ctrl/⌘+V pastes a copy at the cursor, keeping the constraints among the copied parts (pins, rails, meshes, fixed angles, joins). Ctrl/⌘+X cuts, Delete removes, Esc deselects.</p>`;
+      <div class="field"><span></span> <span><button id="i-dup" title="Ctrl/⌘+D: the copy follows the cursor until you click to place it">Duplicate</button> <button id="i-copy">Copy</button> <button id="i-paste" ${clipboard ? '' : 'disabled'}>Paste</button> <button id="i-delete">Delete</button></span></div>
+      <p class="muted">Drag any selected part to move them together. Ctrl/⌘+D duplicates them: the copy follows the cursor as an outline until you click to place it (Esc cancels). Ctrl/⌘+C copies them and Ctrl/⌘+V pastes a copy at the cursor, keeping the constraints among the copied parts (pins, rails, meshes, fixed angles, joins). Ctrl/⌘+X cuts, Delete removes, Esc deselects.</p>`;
     inspectorEl.querySelector('#i-copy')!.addEventListener('click', copyParts);
+    inspectorEl.querySelector('#i-dup')!.addEventListener('click', () => startDuplicate());
     inspectorEl.querySelector('#i-paste')!.addEventListener('click', pasteClipboard);
     inspectorEl.querySelector('#i-delete')!.addEventListener('click', () => deleteParts(group));
     return;
@@ -3046,6 +3106,7 @@ function frame(now: number) {
     groundSelected: !sim && design.ground ? groundSel : null,
     multi: sim ? null : liveMulti(),
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
+    ghost: duplicating && !sim ? (([dx, dy]) => ({ design: duplicating!.frag, dx, dy }))(duplicateOffset()) : null,
     railPreview:
       !sim && constrain && constrain.body !== undefined
         ? (() => {

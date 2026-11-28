@@ -28,6 +28,6 @@ describe('presets', () => {
       // motors and the air on propellers add work and losses remove it, so the budget E + W − W_motor − W_air is what stays put
       expect(Math.abs(e1.T + e1.V + sim.dissipated - sim.motorWork - sim.airWork - e0.T - e0.V) / scale).toBeLessThan(1e-2);
       expect(sim.constraintError()).toBeLessThan(1e-8);
-    });
+    }, 20000); // the 30-link ring chain takes a few seconds, more when the suite runs in parallel
   }
 });

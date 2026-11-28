@@ -130,6 +130,7 @@ So a group needs at most three coordinates and adds no constraints. Its other ba
 - Drag any selected part to move the whole group.
 - Ctrl/⌘+C copies the group, Ctrl/⌘+X cuts it, and Delete removes it. Esc deselects.
 - Ctrl/⌘+V pastes a copy centred on the cursor. You can paste as many times as you like.
+- Ctrl/⌘+D (or **Duplicate** in the inspector) duplicates the selection. The copy follows the cursor as a dashed outline, snapped to the grid like a paste, until a left click places it there. Esc cancels, as do switching tools and pressing Play.
 
 A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes, fixed angles and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
 
