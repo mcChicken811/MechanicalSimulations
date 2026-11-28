@@ -3859,7 +3859,11 @@ interface GraphLayout {
   H: number;
 }
 type GraphKind = 'point' | 'link' | 'gear' | 'spring' | 'system';
-/** A quantity in the graph: where it is from, what it is, its value at history index i, and its values so far. */
+/**
+ * A quantity in the graph: where it is from, what it is, its value at history index i, and its
+ * values at the history's indices, worked out as they come into view (a hole: not yet; see
+ * fillSeries). A joint force costs a force solve per frame, so a long run is never done all at once.
+ */
 interface Series {
   kind: GraphKind;
   id: number;
@@ -3867,6 +3871,51 @@ interface Series {
   m: Measure;
   at: (i: number) => number;
   vals: number[];
+}
+
+/** Time spent working out graph values per animation frame (ms): the rest of the frame stays smooth. */
+const GRAPH_FILL_MS = 6;
+
+/**
+ * Work out series x's values at history indices lo…hi that are not known yet, coarse to fine
+ * (every 2ᵏ·finest-th first, then halving down to every finest-th), so the curve shows at once and
+ * sharpens, until `deadline` (performance.now()). Whether all of them are done.
+ */
+function fillSeries(x: Series, lo: number, hi: number, finest: number, deadline: number): boolean {
+  lo = Math.max(0, lo);
+  hi = Math.min(history.t.length - 1, hi);
+  if (hi < lo) return true;
+  let stride = Math.max(1, finest);
+  while ((hi - lo) / stride > 64) stride *= 2;
+  for (;;) {
+    for (let i = Math.ceil(lo / stride) * stride; i <= hi; i += stride)
+      if (x.vals[i] === undefined) {
+        x.vals[i] = x.at(i);
+        if (performance.now() > deadline) return false;
+      }
+    if (stride <= Math.max(1, finest)) return true;
+    stride = Math.max(Math.max(1, finest), stride / 2);
+  }
+}
+
+/** The time window a graph shows (s, a…b) and the history indices covering it (i0…i1). */
+function graphWindow(t: number[], n: number, view: GraphView) {
+  const [t0, t1] = [t[0], t[n - 1]];
+  // `span` seconds ending at the latest time (following) or where it was scrolled to; early in a
+  // run it starts at the beginning, the rest still to fill
+  let b = view.end ?? t1;
+  let a = b - view.span;
+  if (a < t0) [a, b] = [t0, t0 + view.span];
+  const find = (tt: number) => {
+    let [lo, hi] = [0, n - 1];
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (t[mid] < tt) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
+  return { a, b, t0, t1, find, i0: Math.max(0, find(a)), i1: Math.min(n - 1, find(b) + 1) };
 }
 let graph: {
   /** The second and third quantities (shift-clicked): a phase plot of the first against them. */
@@ -4143,7 +4192,31 @@ function updateGraph() {
   }
   const { m } = graph;
   const h = history;
-  for (const x of [graph, ...graph.extra]) for (let i = x.vals.length; i < h.t.length; i++) x.vals.push(x.at(i));
+  const n = h.t.length;
+  const series = [graph, ...graph.extra];
+  // only what is in view is worked out, a little each frame (the latest always, for the readout)
+  const deadline = performance.now() + GRAPH_FILL_MS;
+  for (const x of series) {
+    if (x.vals.length < n) x.vals.length = n;
+    if (n && x.vals[n - 1] === undefined) x.vals[n - 1] = x.at(n - 1);
+  }
+  let complete = true;
+  if (n && graph.extra.length) {
+    // a phase plot: its path, as far back as a joint's trail
+    let i0 = n - 1;
+    while (i0 > 0 && h.t[i0 - 1] >= h.t[n - 1] - TRAIL_SECONDS) i0--;
+    for (const x of series) complete = fillSeries(x, i0, n - 1, 1, deadline) && complete;
+  } else if (n) {
+    const w = graphWindow(h.t, n, graph.view);
+    // at most about four values per pixel of the plot
+    const finest = Math.max(1, Math.floor((w.i1 - w.i0) / (4 * Math.max(50, graphCanvas.clientWidth - 68))));
+    complete = fillSeries(graph, w.i0, w.i1, finest, deadline);
+    // then half a window either side, ready for scrolling
+    if (complete) {
+      const margin = Math.round((w.i1 - w.i0) / 2);
+      fillSeries(graph, w.i0 - margin, w.i1 + margin, finest, deadline);
+    }
+  }
   const vals = m.angle ? unwrapDegrees(graph.vals) : graph.vals;
   const all = [graph, ...graph.extra].map((x) => ({ m: x.m, vals: x.m.angle ? unwrapDegrees(x.vals) : x.vals }));
   graphEl.querySelector('.g-now')!.textContent = all
@@ -4152,7 +4225,7 @@ function updateGraph() {
   if (graph.extra.length) {
     graph.layout = null;
     drawPhase(graphCanvas, h.t, all, graph.rot, graph.hoverX, graph.hoverY);
-  } else graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX);
+  } else graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX, !complete);
 }
 
 /** The graph panel's place: above the inspector, or beside it if the inspector is too tall. */
@@ -4543,7 +4616,7 @@ function niceStep(span: number, n: number): number {
  * with gridlines and labels, and a cursor line where the mouse is. Returns the layout, for the
  * mouse.
  */
-function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measure, view: GraphView, hoverX: number | null): GraphLayout | null {
+function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measure, view: GraphView, hoverX: number | null, loading = false): GraphLayout | null {
   const dpr = window.devicePixelRatio || 1;
   const [W, H] = [cv.clientWidth, cv.clientHeight];
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) [cv.width, cv.height] = [Math.round(W * dpr), Math.round(H * dpr)];
@@ -4553,22 +4626,7 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
   const [L, R, T, B] = [58, 10, 8, 22];
   const n = Math.min(t.length, vals.length);
   if (n < 1) return null;
-  const [t0, t1] = [t[0], t[n - 1]];
-  // the window: `span` seconds ending at the latest time (following) or where it was scrolled to;
-  // early in a run it starts at the beginning, the rest still to fill
-  let b = view.end ?? t1;
-  let a = b - view.span;
-  if (a < t0) [a, b] = [t0, t0 + view.span];
-  const find = (tt: number) => {
-    let [lo, hi] = [0, n - 1];
-    while (hi - lo > 1) {
-      const mid = (lo + hi) >> 1;
-      if (t[mid] < tt) lo = mid;
-      else hi = mid;
-    }
-    return lo;
-  };
-  const [i0, i1] = [Math.max(0, find(a)), Math.min(n - 1, find(b) + 1)];
+  const { a, b, t0, t1, find, i0, i1 } = graphWindow(t, n, view);
   // the value range: fitted to what is visible, unless set by the user
   let [lo, hi] = [view.lo, view.hi];
   if (view.yAuto) {
@@ -4632,11 +4690,14 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
   let started = false;
   const per = Math.max(1, Math.floor((i1 - i0 + 1) / (2 * Math.max(1, pw))));
   for (let i = i0; i <= i1; i += per) {
-    let [imin, imax] = [i, i];
+    // (values not worked out yet are holes: skipped, the line joins the known ones)
+    let [imin, imax] = [-1, -1];
     for (let j = i; j < Math.min(i1 + 1, i + per); j++) {
-      if (vals[j] < vals[imin]) imin = j;
-      if (vals[j] > vals[imax]) imax = j;
+      if (!Number.isFinite(vals[j])) continue;
+      if (imin < 0 || vals[j] < vals[imin]) imin = j;
+      if (imax < 0 || vals[j] > vals[imax]) imax = j;
     }
+    if (imin < 0) continue;
     for (const j of imin < imax ? [imin, imax] : [imax, imin]) {
       if (!Number.isFinite(vals[j])) continue;
       if (!started) c.moveTo(X(t[j]), Y(vals[j]));
@@ -4646,6 +4707,14 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
   }
   c.stroke();
   c.restore();
+  // still working out the values in view (a long run's joint forces): say so
+  if (loading) {
+    c.font = '600 10px system-ui, sans-serif';
+    c.textAlign = 'left';
+    c.textBaseline = 'top';
+    c.fillStyle = '#9a9ca3';
+    c.fillText('working out…', L + 4, T + 2);
+  }
   // scrolled back from the current time: say so, at the top right
   if (view.end !== null) {
     c.font = '600 10px system-ui, sans-serif';
@@ -4666,6 +4735,11 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
     c.moveTo(hoverX, T);
     c.lineTo(hoverX, H - B);
     c.stroke();
+  }
+  // the nearest value worked out, if that one is not yet
+  for (let d = 0; !Number.isFinite(vals[k]) && d <= i1 - i0; d++) {
+    if (k - d >= i0 && Number.isFinite(vals[k - d])) k -= d;
+    else if (k + d <= i1 && Number.isFinite(vals[k + d])) k += d;
   }
   const [px, py] = [X(t[k]), Y(vals[k])];
   if (Number.isFinite(vals[k]) && px >= L - 1 && px <= W - R + 1 && py >= T && py <= H - B) {

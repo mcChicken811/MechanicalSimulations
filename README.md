@@ -311,6 +311,11 @@ The bar whose diagram is open in the graph panel keeps that diagram's colouring.
 - **Scrolling back:** drag the plot or the time axis sideways to move through time. Over the plot, the mouse wheel or a sideways trackpad swipe also scrolls. Scrolling back stops the graph following, and it says "scrolled back" at the top; scroll to the end again, or double-click, and it follows the current time once more.
 - **Scales:** hover the time axis (its labels) and turn the wheel to zoom the time scale, from 0.05 s to 10 minutes, about the time under the mouse. Hover the value axis and turn the wheel to zoom the value scale about the value under the mouse, or drag it to slide the range. The value range fits what is visible until you set it.
 - **Resetting:** double-click the time axis to come back to the current time, keeping the zoom, or the value axis to fit the values again. Double-clicking the plot does both.
+- **Loading as you look:** a graph works out its values only for the time in view, plus half a window either side ready for scrolling. Each joint force or load costs a force solve per frame, so a long run is never worked through all at once.
+  - **Coarse to fine:** the curve shows at once and sharpens over the next few frames, using at most about four values per pixel. It says "working out…" until it's done.
+  - **Time budget:** the work takes at most 6 ms of each frame, so the app stays smooth.
+  - **Kept:** values once worked out are kept, so scrolling back over them is instant.
+  - **Phase plots:** these only work out their path, as far back as a joint's trail.
 
 **Phase plots.** With a graph open, **Shift-click** another quantity, on the same part, another part or the status bar.
 - **Two quantities:** the graph becomes a phase plot, the first quantity across (x) and the second up (y).

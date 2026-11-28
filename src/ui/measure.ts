@@ -224,17 +224,23 @@ export function measuresOf(d: Design, kind: 'point' | 'link' | 'spring' | 'gear'
 
 /** A history of values, angles unwrapped so they run on past ±180°. */
 export function unwrapDegrees(vals: number[]): number[] {
+  // values not worked out yet (holes, undefined) are skipped: each is unwrapped against the last known
   const out = vals.slice();
-  for (let i = 1; i < out.length; i++) {
-    let d = out[i] - out[i - 1];
-    while (d > 180) {
-      out[i] -= 360;
-      d -= 360;
+  let prev: number | null = null;
+  for (let i = 0; i < out.length; i++) {
+    if (!Number.isFinite(out[i])) continue;
+    if (prev !== null) {
+      let d = out[i] - prev;
+      while (d > 180) {
+        out[i] -= 360;
+        d -= 360;
+      }
+      while (d < -180) {
+        out[i] += 360;
+        d += 360;
+      }
     }
-    while (d < -180) {
-      out[i] += 360;
-      d += 360;
-    }
+    prev = out[i];
   }
   return out;
 }
