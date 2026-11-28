@@ -136,6 +136,9 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
   - **Their own space:** each layer at a distance is a tile 1200 × 800 units, placed in the world like an image at that distance. It is centred on the origin, one unit being one pixel at a zoom of 170 px/m. So the scenes zoom with the view as well as pan, each layer by its own distance: zoom out 19× and the near buildings shrink to about 37% and the far ones to about 61%, while the sky stays as it is. They're re-drawn sharper when zoomed in.
   - **Endless:** panning shows the layers slide past each other. They repeat sideways and run on below, so the view never runs out of them.
   - **Strength:** the layers are put together first, near ones hiding what is behind them, and the whole background is then shown at its strength.
+  - **Drawing order:** everything is in one list sorted by distance and drawn far to near, so a nearer layer always covers a farther one: the sky with its sun, moon and stars at ∞, the scene's layers, your images and the birds at 5.
+    - **Ties:** at the same distance it goes sky, then the scene's layers, the birds, then your images. Among images, the one listed first in the editor is drawn on top, as the editor lists them and picks them when clicked.
+    - **Lighting:** each piece of scenery is lit on its own by the time of day, with its windows over that, before it goes in its place, so lit windows never shine through nearer buildings.
 - **Custom…** opens the **background editor**, where you build your own over a base scene.
   - **Add image…** (PNG, JPEG, SVG and other picture files) places an image across the middle of the view, at distance 1.
   - On the drawing, drag an image to move it and its corner handle to resize it (its shape is kept).

@@ -188,7 +188,7 @@ export class BackgroundEditor {
       const r = layerRect(sel, v, w, h);
       if (Math.abs(sp[0] - (r.x + r.w)) <= HANDLE && Math.abs(sp[1] - (r.y + r.h)) <= HANDLE) return { id: sel.id, mode: 'size' };
     }
-    // nearest first: smaller distance, then earlier in the list
+    // nearest first, as drawn on top: smaller distance, then earlier in the list (drawn over later ones)
     const order = s.layers.map((l, k) => ({ l, k })).sort((a, b) => (a.l.depth ?? Infinity) - (b.l.depth ?? Infinity) || a.k - b.k);
     for (const { l } of order) {
       const r = layerRect(l, v, w, h);

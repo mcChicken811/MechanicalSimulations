@@ -526,6 +526,7 @@ export class Backdrop {
   private images = new Map<string, HTMLImageElement>();
   private cache = new Map<string, HTMLCanvasElement>();
   private layered: HTMLCanvasElement | null = null;
+  private apart: HTMLCanvasElement | null = null;
   /** The time of day: what it was at `at` (ms), running on at the day's length. */
   private clock = { at: performance.now(), hour: DEFAULT_ANIM.hour, dayLength: DEFAULT_ANIM.dayLength };
   private flock = new Flock();
@@ -585,106 +586,148 @@ export class Backdrop {
     return cv;
   }
 
-  /** Draw it over the plain paper (w × h CSS px), for view v: the layers far to near, living if animated. */
+  /**
+   * Draw it over the plain paper (w × h CSS px), for view v, living if animated: every layer in
+   * one list sorted by distance and drawn far to near, so a nearer one always covers a farther
+   * one. The list holds the sky (∞: when the day turns, its colours, stars, the sun or moon and
+   * shooting stars), the scene's layers, the user's images and the birds (at BIRD_DEPTH); at the
+   * same distance, the sky first, then the scene's layers in their order, the birds, the images
+   * (the first in the editor's list last, on top: as it picks and lists them). Each piece of scenery is lit on its own (warm at dawn and dusk, dark at night,
+   * and its windows lit over that) before it goes in its place, so the lighting keeps the order.
+   */
   draw(ctx: CanvasRenderingContext2D, w: number, h: number, v: View) {
     const s = this.state;
     const now = performance.now();
     const dt = Math.min(0.05, Math.max(0, (now - this.lastDraw) / 1000));
     this.lastDraw = now;
-    const out = this.composite(w, h); // the layers at full strength, then the whole at its strength
     const sceneId = s.kind === 'custom' ? s.base : s.kind;
     const scene = SCENE_DEFS[sceneId];
     const anim = s.anim.on && !!scene;
     const turning = anim && !!scene?.cycle; // its sky follows the time of day
     const hour = this.hour;
     const dark = turning ? darkness(hour) : sceneId === 'night' ? 1 : 0;
-    const items: { depth: number; draw: () => void }[] = [];
-    const glows: (() => void)[] = [];
+    const warm = turning ? warmth(hour) : 0;
     const dpr = window.devicePixelRatio || 1;
     const secs = now / 1000;
-    scene?.layers.forEach((layer, i) => {
-      const z = layer.depth ?? Infinity;
-      if (turning && layer.sky) return; // the moving sky is drawn instead (behind everything, below)
+    /** A layer: its distance, its place among those at that distance, how it draws, whether it is lit by the time of day, and its windows. */
+    type Item = { depth: number; k: number; draw: (c: CanvasRenderingContext2D) => void; lit?: boolean; glow?: (c: CanvasRenderingContext2D) => void };
+    const items: Item[] = [];
+
+    if (turning)
       items.push({
-        depth: z,
-        draw: () => {
-          if (!Number.isFinite(z)) return out.drawImage(this.sceneCanvas(sceneId, i, w, h, dpr), 0, 0, w, h); // infinitely far: the screen
-          // in the scene's own space: its tile placed in the world like an image at that distance
-          // (so it pans by 1/z and zooms by (s/s₀)^(1/z)), repeating across, its ground running on below
-          const r = layerRect(sceneTile(z), v, w, h);
-          const unit = r.w / TILE_W;
-          if (anim && layer.drift) r.x += ((secs * layer.drift) % TILE_W) * unit; // drifting along
-          const want = unit * dpr; // canvas px per unit it is shown at
-          const res = Math.min(want > 1.4 ? 2 : 1, MAX_TILE_PX / TILE_W) * Math.min(dpr, 2);
-          const cv = this.sceneCanvas(sceneId, i, TILE_W, TILE_H, res);
-          const x0 = r.x - Math.ceil(r.x / r.w) * r.w;
-          for (let x = x0; x < w; x += r.w) out.drawImage(cv, x, r.y, r.w + 0.6, r.h); // (a hair over: no seams)
-          if (layer.below && r.y + r.h < h) {
-            out.fillStyle = layer.below;
-            out.fillRect(0, r.y + r.h - 0.5, w, h - (r.y + r.h) + 0.5);
+        depth: Infinity,
+        k: -1,
+        draw: (c) => {
+          // the sky itself, then (in front) its stars, the sun or moon, shooting stars
+          const [top, mid, low] = skyAt(hour);
+          c.fillStyle = vertical(c, h, [[0, top], [0.55, mid], [1, low]]);
+          c.fillRect(0, 0, w, h);
+          if (dark > 0.02) {
+            c.globalAlpha = dark;
+            c.drawImage(this.starCanvas(w, h), 0, 0, w, h);
+            c.globalAlpha = 1;
           }
-          // lit windows: over the night's darkening, as bright as it is dark
-          if (anim && layer.glow && dark > 0.02) {
-            const gl = this.sceneCanvas(`${sceneId}`, -1 - i, TILE_W, TILE_H, res, layer.glow);
-            glows.push(() => {
-              out.globalAlpha = dark;
-              for (let x = x0; x < w; x += r.w) out.drawImage(gl, x, r.y, r.w + 0.6, r.h);
-              out.globalAlpha = 1;
-            });
-          }
+          this.drawSunMoon(c, w, h, hour);
+          if (dark > 0.3) this.drawNightSky(c, w, h, dt, dark);
         },
       });
+    scene?.layers.forEach((layer, i) => {
+      const z = layer.depth ?? Infinity;
+      if (turning && layer.sky) return; // the moving sky above stands in for it
+      if (!Number.isFinite(z)) {
+        items.push({ depth: z, k: i, draw: (c) => c.drawImage(this.sceneCanvas(sceneId, i, w, h, dpr), 0, 0, w, h) }); // infinitely far: the screen
+        return;
+      }
+      // in the scene's own space: its tile placed in the world like an image at that distance
+      // (so it pans by 1/z and zooms by (s/s₀)^(1/z)), repeating across, its ground running on below
+      const r = layerRect(sceneTile(z), v, w, h);
+      const unit = r.w / TILE_W;
+      if (anim && layer.drift) r.x += ((secs * layer.drift) % TILE_W) * unit; // drifting along
+      const res = Math.min(unit * dpr > 1.4 ? 2 : 1, MAX_TILE_PX / TILE_W) * Math.min(dpr, 2);
+      const x0 = r.x - Math.ceil(r.x / r.w) * r.w;
+      const tiles = (c: CanvasRenderingContext2D, cv: HTMLCanvasElement) => {
+        for (let x = x0; x < w; x += r.w) c.drawImage(cv, x, r.y, r.w + 0.6, r.h); // (a hair over: no seams)
+      };
+      items.push({
+        depth: z,
+        k: i,
+        lit: turning,
+        draw: (c) => {
+          tiles(c, this.sceneCanvas(sceneId, i, TILE_W, TILE_H, res));
+          if (layer.below && r.y + r.h < h) {
+            c.fillStyle = layer.below;
+            c.fillRect(0, r.y + r.h - 0.5, w, h - (r.y + r.h) + 0.5);
+          }
+        },
+        // lit windows: over this layer's darkening, as bright as it is dark (and under anything nearer)
+        glow: anim && layer.glow && dark > 0.02 ? (c) => tiles(c, this.sceneCanvas(sceneId, -1 - i, TILE_W, TILE_H, res, layer.glow)) : undefined,
+      });
     });
+    // the night scene's sky: twinkling and shooting stars, just in front of it
+    if (anim && !turning && dark > 0.3) items.push({ depth: Infinity, k: 0.5, draw: (c) => this.drawNightSky(c, w, h, dt, dark) });
+    // birds by day, flying at their distance in the scene's space
+    if (anim && scene?.birds && s.anim.birds && dark < 0.9) items.push({ depth: BIRD_DEPTH, k: 1000, draw: (c) => this.drawBirds(c, v, w, h, dt, 1 - dark) });
     if (s.kind === 'custom')
-      for (const l of s.layers) {
+      s.layers.forEach((l, n) => {
         const img = this.images.get(l.image);
-        if (!img) continue;
+        if (!img) return;
         items.push({
           depth: l.depth ?? Infinity,
-          draw: () => {
+          k: 2000 + (s.layers.length - 1 - n), // first in the editor's list: on top of the others at its distance
+          lit: turning, // in the same light as the scenery
+          draw: (c) => {
             const r = layerRect(l, v, w, h);
-            out.imageSmoothingQuality = 'high';
-            out.drawImage(img, r.x, r.y, r.w, r.h);
+            c.imageSmoothingQuality = 'high';
+            c.drawImage(img, r.x, r.y, r.w, r.h);
           },
         });
+      });
+    if (!items.length) return;
+
+    const out = this.composite(w, h); // the layers at full strength, then the whole at its strength
+    const lighting = warm > 0.01 || dark > 0.01;
+    items.sort((a, b) => b.depth - a.depth || a.k - b.k);
+    for (const it of items) {
+      if (it.lit && lighting) {
+        // lit on its own: drawn apart, tinted where it is, its windows over that, then put in its place
+        const sc = this.scratch(w, h);
+        it.draw(sc);
+        sc.save();
+        sc.globalCompositeOperation = 'source-atop';
+        if (warm > 0.01) (sc.fillStyle = `rgba(255,128,70,${0.2 * warm})`), sc.fillRect(0, 0, w, h);
+        if (dark > 0.01) (sc.fillStyle = `rgba(14,22,58,${0.62 * dark})`), sc.fillRect(0, 0, w, h);
+        sc.restore();
+        if (it.glow) {
+          sc.globalAlpha = dark;
+          it.glow(sc);
+          sc.globalAlpha = 1;
+        }
+        out.drawImage(sc.canvas, 0, 0, w, h);
+      } else {
+        it.draw(out);
+        if (it.glow) {
+          out.globalAlpha = dark;
+          it.glow(out);
+          out.globalAlpha = 1;
+        }
       }
-    if (!items.length && !turning) return;
-    // far to near, each over the ones behind at full strength (a near layer hides what is behind
-    // it); a scene's layers before the images at the same distance, the images in their order
-    items.map((it, k) => ({ ...it, k })).sort((a, b) => b.depth - a.depth || a.k - b.k).forEach((it) => it.draw());
-    if (turning) {
-      // the light: warm at dawn and dusk, dark at night, on the scenery only (what is drawn so far)
-      out.save();
-      out.globalCompositeOperation = 'source-atop';
-      const warm = warmth(hour);
-      if (warm > 0.01) (out.fillStyle = `rgba(255,128,70,${0.2 * warm})`), out.fillRect(0, 0, w, h);
-      if (dark > 0.01) (out.fillStyle = `rgba(14,22,58,${0.62 * dark})`), out.fillRect(0, 0, w, h);
-      out.restore();
-    }
-    for (const g of glows) g();
-    // birds by day, flying at their distance in the scene's space
-    if (anim && scene?.birds && s.anim.birds && dark < 0.9) this.drawBirds(out, v, w, h, dt, 1 - dark);
-    // shooting stars and twinkling at night
-    if (anim && dark > 0.3) this.drawNightSky(out, w, h, dt, dark, turning);
-    if (turning) {
-      // the sky, behind everything (each drawn behind the one before): the sun or moon, stars, then the sky itself
-      out.save();
-      out.globalCompositeOperation = 'destination-over';
-      this.drawSunMoon(out, w, h, hour);
-      if (dark > 0.02) {
-        out.globalAlpha = dark;
-        out.drawImage(this.starCanvas(w, h), 0, 0, w, h);
-        out.globalAlpha = 1;
-      }
-      const [top, mid, low] = skyAt(hour);
-      out.fillStyle = vertical(out, h, [[0, top], [0.55, mid], [1, low]]);
-      out.fillRect(0, 0, w, h);
-      out.restore();
     }
     ctx.save();
     ctx.globalAlpha = Math.min(1, Math.max(0, s.opacity));
     ctx.drawImage(out.canvas, 0, 0, w, h);
     ctx.restore();
+  }
+
+  /** A second canvas the screen's size, cleared: for lighting one layer on its own. */
+  private scratch(w: number, h: number): CanvasRenderingContext2D {
+    const dpr = window.devicePixelRatio || 1;
+    this.apart ??= document.createElement('canvas');
+    const cv = this.apart;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) [cv.width, cv.height] = [Math.round(w * dpr), Math.round(h * dpr)];
+    const c = cv.getContext('2d')!;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    return c;
   }
 
   /** The sun by day and the moon by night, each along its arc across the sky (with a glow). */
@@ -744,13 +787,11 @@ export class Backdrop {
   }
 
   /** Twinkling stars and, now and then, a shooting star (screen space, as the night sky). */
-  private drawNightSky(c: CanvasRenderingContext2D, w: number, h: number, dt: number, dark: number, turning: boolean) {
+  private drawNightSky(c: CanvasRenderingContext2D, w: number, h: number, dt: number, dark: number) {
     const t = performance.now() / 1000;
     const rnd = seeded(41);
     c.save();
-    // a few stars that twinkle (over the still ones), in front of the sky but behind the scenery's
-    // (drawn behind what is there when the sky turns, else on the night scene's own sky)
-    c.globalCompositeOperation = turning ? 'destination-over' : 'source-over';
+    // a few stars that twinkle (over the still ones): drawn as part of the sky, in its place in the order
     for (let i = 0; i < 40; i++) {
       const [x, y, f, ph] = [rnd() * w, rnd() * h * 0.6, 1 + rnd() * 3, rnd() * 6.28];
       const a = dark * (0.5 + 0.5 * Math.sin(t * f + ph)) ** 3;
