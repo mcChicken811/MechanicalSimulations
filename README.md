@@ -186,7 +186,9 @@ Other controls:
 - **Right-click** the drawing for a search list of everything in the side panel: tools, Play, Step and Reset, every setting and switch (beam colouring, deflection, breaking, friction, ground…), sliders and number boxes, and the examples.
   - **Opening:** the list opens at the mouse with its search box ready, so just type. Every word must appear in an entry, and entries that start with what you typed come first. A check mark shows what is on, and shortcuts and current values show on the right.
   - **Keys:** ↑ ↓ choose and Enter runs, or click an entry; Esc, or a click elsewhere, closes it.
-  - **Sliders and number boxes:** choosing one highlights it in the side panel and gives it the keyboard.
+  - **Actions** (a tool, Play, an example, Fit view) run and close the list.
+  - **Checkboxes and switch options** flip in place and the list stays open, so you can set several in a row. The list then shows things as they are now: ticking Friction & heating brings its sliders into it.
+  - **Sliders and number boxes** are worked right in their row, with a slider or number box of the list's own that moves the side panel's along with it. A number box can be typed into or dragged sideways like every number box. Enter on one of these rows gives its control the keyboard, and Enter again goes back to searching.
   - **Panning:** right-dragging, even when it starts on the list, closes the list and pans as usual.
 - **Fit view** re-centres the mechanism.
 

@@ -2157,7 +2157,7 @@ canvas.addEventListener('pointerup', (e) => {
   if (panning) {
     const click = panning.right && !panning.moved;
     panning = null;
-    if (click) palette.open(e.clientX, e.clientY, paletteCommands()); // right-click: the search list, here
+    if (click) palette.open(e.clientX, e.clientY, paletteCommands); // right-click: the search list, here
     return;
   }
   if (drawing && !drawing.clickMode) {
@@ -2277,15 +2277,6 @@ const textOf = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, '
 /** Whether a control can be used now: not disabled, not inside something hidden. */
 const usable = (el: HTMLElement) => !(el as HTMLInputElement).disabled && !el.closest('[hidden]');
 
-/** Show a control in the side panel and give it the keyboard (a slider or number box chosen from the list). */
-function focusControl(el: HTMLElement) {
-  const box = (el.closest('label, .break-row, #beam-legend') as HTMLElement | null) ?? el;
-  box.scrollIntoView({ block: 'nearest' });
-  box.classList.add('flash-control');
-  setTimeout(() => box.classList.remove('flash-control'), 1400);
-  el.focus();
-}
-
 /** The search list's entries, as the side panel is now (what is on, what can be used). */
 function paletteCommands(): Command[] {
   const out: Command[] = [];
@@ -2302,22 +2293,33 @@ function paletteCommands(): Command[] {
   sidePanel.querySelectorAll<HTMLLabelElement>('label.check').forEach((l) => {
     const box = l.querySelector<HTMLInputElement>('input[type="checkbox"]');
     if (!box || !usable(box)) return;
-    out.push({ label: textOf(l).replace(/[≥×]$/, '').trim(), group: l.closest('#beam-colour') ? 'Beam forces' : 'Setting', keywords: l.title || l.closest<HTMLElement>('[title]')?.title, on: box.checked, run: () => box.click() });
+    out.push({ label: textOf(l).replace(/[≥×]$/, '').trim(), group: l.closest('#beam-colour') ? 'Beam forces' : 'Setting', keywords: l.title || l.closest<HTMLElement>('[title]')?.title, on: box.checked, toggle: true, run: () => box.click() });
   });
   // the beam colour switches
   const segName: Record<string, string> = { 'beam-q': 'Beam colour', 'beam-mode': 'Beam colour mode', 'beam-scale-mode': 'Beam colour scale' };
   sidePanel.querySelectorAll<HTMLElement>('.seg').forEach((seg) => {
     if (!usable(seg)) return;
     seg.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
-      out.push({ label: `${segName[seg.id] ?? 'Option'}: ${textOf(b)}`, group: 'Beam forces', keywords: b.title, on: b.classList.contains('on'), run: () => b.click() }),
+      out.push({ label: `${segName[seg.id] ?? 'Option'}: ${textOf(b)}`, group: 'Beam forces', keywords: b.title, on: b.classList.contains('on'), toggle: true, run: () => b.click() }),
     );
   });
-  // sliders and number boxes: shown and given the keyboard
+  // sliders and number boxes: worked right in the list, driving the side panel's own (its handlers do the rest)
+  /** Set a side-panel control as if worked by hand: 'input' as it moves, 'change' when done. */
+  const drive = (input: HTMLInputElement, v: string, done: boolean, events: ('input' | 'change')[]) => {
+    input.value = v;
+    for (const ev of events) if (ev === 'input' || done) input.dispatchEvent(new Event(ev, { bubbles: true }));
+  };
   sidePanel.querySelectorAll<HTMLLabelElement>('label.slider').forEach((l) => {
     const input = l.querySelector<HTMLInputElement>('input');
     if (!input || !usable(input)) return;
     const label = [...l.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim();
-    out.push({ label, group: l.closest('#friction-settings') ? 'Friction' : l.closest('#ground-settings') ? 'Ground' : 'Setting', hint: textOf(l.querySelector('output')), run: () => focusControl(input) });
+    const output = l.querySelector('output');
+    out.push({
+      label,
+      group: l.closest('#friction-settings') ? 'Friction' : l.closest('#ground-settings') ? 'Ground' : 'Setting',
+      keywords: 'slider',
+      value: { type: 'range', min: input.min, max: input.max, step: input.step, get: () => input.value, set: (v, done) => drive(input, v, done, ['input', 'change']), shown: () => textOf(output) },
+    });
   });
   const numbers: [string, string, string][] = [
     ['#deflect-scale', 'Deflection drawn larger by', '×'],
@@ -2328,7 +2330,8 @@ function paletteCommands(): Command[] {
   ];
   for (const [id, label, unit] of numbers) {
     const input = $<HTMLInputElement>(id);
-    if (usable(input)) out.push({ label, group: 'Beam forces', hint: `${input.value} ${unit}`.trim(), run: () => focusControl(input) });
+    if (usable(input))
+      out.push({ label, group: 'Beam forces', value: { type: 'number', min: input.min, max: input.max, step: input.step, get: () => input.value, set: (v) => drive(input, v, true, ['change']), unit: id === '#beam-scale' ? textOf($('#beam-legend .bl-unit')) : unit } });
   }
   for (const [id, group, hint] of [['#undo', 'Edit', 'Ctrl Z'], ['#fit', 'View', ''], ['#clear', 'Edit', '']] as const) {
     const b = $<HTMLButtonElement>(id);
