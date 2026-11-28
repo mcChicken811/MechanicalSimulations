@@ -92,6 +92,21 @@
         <label class="slider" id="volume-row">Volume <output id="volume-out"></output><input type="range" id="volume" min="0" max="1" step="0.05" value="0.6" /></label>
       </div>
 
+      <div class="group settings" id="beam-colour">
+        <span class="seg-title" title="While it runs: colour every bar by an internal force, worked out from the joint forces (inverse dynamics) with each bar's weight, drag and inertia spread along it">Beam forces as colour</span>
+        <div class="seg" id="beam-q" role="radiogroup">
+          <button data-v="off" class="on" title="No colouring">Off</button>
+          <button data-v="V" title="Shear force V">Shear</button>
+          <button data-v="N" title="Axial force N: tension (and compression)">Tension</button>
+          <button data-v="M" title="Bending moment M">Bending</button>
+        </div>
+        <div class="seg" id="beam-mode" role="radiogroup" hidden>
+          <button data-v="max" class="on" title="Each bar one colour: its largest value, on one scale for all bars (red: the largest any bar has reached in this run)">Maximum</button>
+          <button data-v="dist" title="Each bar coloured along its length, scaled to its own largest value: where in each bar the load is">Distribution</button>
+        </div>
+        <div id="beam-legend" hidden><span class="bl-lo">0</span><span class="bl-bar"></span><span class="bl-hi"></span></div>
+      </div>
+
       <div class="group settings">
         <label class="check" title="Viscous friction in every pin joint, rail and gear mesh. Dissipated energy heats the joint, which glows and cools by Newton's law."><input type="checkbox" id="friction" /> Friction &amp; heating</label>
         <div id="friction-settings" hidden>

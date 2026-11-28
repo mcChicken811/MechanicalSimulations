@@ -3141,7 +3141,8 @@ let history: History = emptyHistory();
 function resetHistory() {
   history = emptyHistory();
   forceCache.clear();
-  beamCache = null;
+  beamCache.clear();
+  beamColourPeak = 0;
   if (graph?.beam) [graph.beam.lo, graph.beam.hi] = [0, 0];
   if (graph) for (const x of [graph, ...graph.extra]) x.vals = [];
 }
@@ -3366,15 +3367,16 @@ const BEAM_Q: Record<BeamQ, { sym: string; name: string; unit: string }> = {
   V: { sym: 'V', name: 'shear force', unit: 'N' },
   M: { sym: 'M', name: 'bending moment', unit: 'N·m' },
 };
-let beamCache: { t: number; link: number; d: BeamDiagram | null } | null = null;
+const beamCache = new Map<number, { t: number; d: BeamDiagram | null }>();
 
 /** Bar `link`'s internal forces now (the latest recorded frame), cached for the frame. */
 function beamNow(link: number): BeamDiagram | null {
   const t = history.t.length ? history.t[history.t.length - 1] : NaN;
-  if (beamCache && beamCache.t === t && beamCache.link === link) return beamCache.d;
+  const c = beamCache.get(link);
+  if (c && c.t === t) return c.d;
   const r = forcesNow();
   const d = r && sim ? barDiagram(r, link, { gravity: forceGravity(), damping: sim.damping }) : null;
-  beamCache = { t, link, d };
+  beamCache.set(link, { t, d });
   return d;
 }
 
@@ -3407,13 +3409,83 @@ function beamScale(): number {
 }
 
 /** The bar shown in the graph panel coloured by the size of its diagram, green (none) through yellow to red. */
-function beamShadeNow(): Scene['beamShade'] {
+function beamShadeNow(): NonNullable<Scene['beamShades']>[number] | null {
   const bm = graph?.beam;
   if (!sim || !bm) return null;
   const d = beamNow(bm.link);
   if (!d) return null;
   const scale = beamScale();
   return { link: bm.link, s: d.s.map((x) => x / d.L), f: d[bm.q].map((v) => (Number.isFinite(v) ? Math.min(1, Math.abs(v) / scale) : 0)), marker: bm.hoverS === null ? null : bm.hoverS / d.L };
+}
+
+// ---- every bar coloured by an internal force (the side panel's Beam forces as colour) ----
+/**
+ * Which force colours the bars (off, or V, N, M), and how: 'max', each bar one colour for its
+ * largest size, on one scale for all bars; 'dist', along each bar, scaled to its own largest.
+ */
+const BEAM_COLOUR_KEY = 'linkage-lab:beam-colour';
+const beamColour: { q: 'off' | BeamQ; mode: 'max' | 'dist' } = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(BEAM_COLOUR_KEY) ?? '');
+    if (['off', 'N', 'V', 'M'].includes(v.q) && ['max', 'dist'].includes(v.mode)) return v;
+  } catch {
+    /* the default */
+  }
+  return { q: 'off', mode: 'max' };
+})();
+/** The largest size any bar has reached in this run: red in 'max' mode. */
+let beamColourPeak = 0;
+const beamQBox = $<HTMLElement>('#beam-q');
+const beamModeBox = $<HTMLElement>('#beam-mode');
+const beamLegend = $<HTMLElement>('#beam-legend');
+
+function showBeamColour() {
+  beamQBox.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === beamColour.q));
+  beamModeBox.querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.v === beamColour.mode));
+  beamModeBox.hidden = beamColour.q === 'off';
+  beamLegend.hidden = beamColour.q === 'off';
+}
+for (const [box, field] of [[beamQBox, 'q'], [beamModeBox, 'mode']] as const)
+  box.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-v]');
+    if (!b) return;
+    (beamColour as Record<string, string>)[field] = b.dataset.v!;
+    if (field === 'q') beamColourPeak = 0; // another force: its own scale
+    localStorage.setItem(BEAM_COLOUR_KEY, JSON.stringify(beamColour));
+    showBeamColour();
+    sfx('select');
+  });
+showBeamColour();
+
+/**
+ * The bars' colours: every bar by the chosen force while it runs, and the bar whose diagram is in
+ * the graph panel by that diagram (on its scale). Updates the side panel's scale as well.
+ */
+function beamShadesNow(): Scene['beamShades'] {
+  const out: NonNullable<Scene['beamShades']> = [];
+  const shown = beamShadeNow();
+  const q = beamColour.q;
+  const unit = q === 'M' ? 'N·m' : 'N';
+  if (q !== 'off' && sim && history.t.length) {
+    const ds = design.links.filter((l) => l.id !== shown?.link).map((l) => ({ link: l.id, d: beamNow(l.id) }));
+    const peaks = ds.map(({ d }) => (d ? Math.abs(peak(d[q]).v) : 0)).map((v) => (Number.isFinite(v) ? v : 0));
+    const frameMax = Math.max(0, ...peaks);
+    beamColourPeak = Math.max(beamColourPeak, frameMax);
+    ds.forEach(({ link, d }, k) => {
+      if (!d) return;
+      if (beamColour.mode === 'max') {
+        const f = beamColourPeak > 0 ? peaks[k] / beamColourPeak : 0;
+        out.push({ link, s: [0, 1], f: [f, f], marker: null });
+      } else {
+        // scaled to the bar's own largest (round-off on an unloaded bar stays green)
+        const scale = Math.max(peaks[k], frameMax * 1e-6, 1e-9);
+        out.push({ link, s: d.s.map((x) => x / d.L), f: d[q].map((v) => (Number.isFinite(v) ? Math.min(1, Math.abs(v) / scale) : 0)), marker: null });
+      }
+    });
+    beamLegend.querySelector('.bl-hi')!.textContent = beamColour.mode === 'max' ? `${beamColourPeak.toPrecision(3)} ${unit}` : 'each bar\'s largest';
+  } else if (q !== 'off') beamLegend.querySelector('.bl-hi')!.textContent = 'while running';
+  if (shown) out.push(shown);
+  return out;
 }
 
 const partTitle = (kind: string, id: number) =>
@@ -4921,7 +4993,7 @@ function frame(now: number) {
         : null,
     trail: trail.n > 1 ? trail : null,
     forceArrows: forceArrowsNow(),
-    beamShade: beamShadeNow(),
+    beamShades: beamShadesNow(),
   });
   renderStatus();
   requestAnimationFrame(frame);

@@ -261,6 +261,12 @@ Click one to see its diagram along the bar in the graph panel, from end A (`l.a`
 - **Axes:** the value axis zooms and slides as in other graphs, and double-clicking starts its range, and the colour scale, again from now. The length axis is fixed.
 - **No phase plots:** these diagrams don't join phase plots. Shift-clicking another quantity while one is shown just graphs that quantity instead.
 
+**Beam forces as colour.** The side panel's *Beam forces as colour* switch colours every bar by one internal force while the mechanism runs: **Off**, **Shear** (V), **Tension** (N, the colour shows its size, so compression counts too) or **Bending** (M). A second switch picks how:
+- **Maximum:** each bar is one colour for its largest value. All bars share one scale in newtons (or N·m), so they compare with each other. Red is the largest any bar has reached in this run, and the side panel shows that value. The scale starts again when you choose another force or reset.
+- **Distribution:** each bar is coloured along its length, scaled to its own largest value. This shows where in each bar the load is, not which bar carries most.
+
+The bar whose diagram is open in the graph panel keeps that diagram's colouring. The choice is remembered between visits.
+
 *How it works.* Cut the bar at distance s from A. The piece [0, s] is held in balance, d'Alembert style, by what the rest of the bar does on it across the cut:
 - **The piece's loads:** every point force on [0, s] where it acts (joint forces, a slider on it, teeth, welds, contact, friction, the pull), plus its share of the distributed load w(x) = μ (g − c v(x) − a(x)), with μ = m / L.
 - **The distributed load** is the bar's own weight, air drag and inertia, spread along it rather than lumped at the centre. Since the bar is rigid, v and a are linear along it.

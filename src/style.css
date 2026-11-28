@@ -856,3 +856,59 @@ body.scrubbing * {
   font-size: 12px;
   font-weight: 600;
 }
+
+/* ---- beam forces as colour: a segmented switch and its scale ---- */
+.settings .seg-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.seg {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.seg[hidden] {
+  display: none;
+}
+
+.seg button {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  padding: 4px 2px;
+  font-size: 11.5px;
+  background: #fff;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--line);
+}
+
+.seg button.on,
+.seg button.on:hover {
+  background: var(--primary);
+  color: #fff;
+}
+
+#beam-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#beam-legend[hidden] {
+  display: none;
+}
+
+#beam-legend .bl-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, hsl(120, 78%, 44%), hsl(60, 78%, 50%), hsl(0, 78%, 44%));
+}
