@@ -53,6 +53,8 @@ export interface Scene {
    * (red); `marker` marks the place under the mouse in the diagram.
    */
   beamShades?: { link: number; s: number[]; f: number[]; marker: number | null }[] | null;
+  /** Bars drawn bent: at fractions `s` of the way from joint a to b, offsets `w` (m, already enlarged) to the left of a → b. */
+  bends?: { link: number; s: number[]; w: number[] }[] | null;
   /** Arrows in the world (initial velocities): from, to, colour. */
   arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
   /** Dimensions to show, to this many decimals (null: hidden). */
@@ -142,6 +144,7 @@ function joinColors(d: Design): Map<string, string> {
 export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, s: Scene) {
   showLabels = s.labels !== false;
   groupColors = joinColors(s.design);
+  bendOf = new Map((s.bends ?? []).map((b) => [b.link, b]));
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
   drawGrid(ctx, w, h, v, !!s.grid);
@@ -530,9 +533,29 @@ function drawRailPreview(ctx: CanvasRenderingContext2D, w: number, h: number, v:
   ctx.restore();
 }
 
+/** Bars drawn bent this frame, by id (set from the scene). */
+let bendOf = new Map<number, NonNullable<Scene['bends']>[number]>();
+
+/** A bar's line on screen: straight between its joints, or through its bent shape. */
+function barPath(v: View, s: Scene, l: DLink): Vec[] {
+  const [A, B] = [s.pos(l.a), s.pos(l.b)];
+  const bend = bendOf.get(l.id);
+  if (!bend || bend.s.length < 2) return [toScreen(v, A), toScreen(v, B)];
+  const len = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1e-12;
+  const n: Vec = [-(B[1] - A[1]) / len, (B[0] - A[0]) / len]; // left of a → b
+  return bend.s.map((u, k) => toScreen(v, [A[0] + u * (B[0] - A[0]) + bend.w[k] * n[0], A[1] + u * (B[1] - A[1]) + bend.w[k] * n[1]]));
+}
+
+function strokePath(ctx: CanvasRenderingContext2D, pts: Vec[]) {
+  ctx.beginPath();
+  pts.forEach((p, k) => (k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+  ctx.stroke();
+}
+
 function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
   const a = toScreen(v, s.pos(l.a));
   const b = toScreen(v, s.pos(l.b));
+  const path = barPath(v, s, l);
   const selected = isSelected(s, 'link', l.id);
   const hovered = s.hover?.kind === 'link' && s.hover.id === l.id;
   ctx.save();
@@ -541,17 +564,18 @@ function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
     ctx.strokeStyle = C.accent;
     ctx.globalAlpha = selected ? 0.45 : 0.25;
     ctx.lineWidth = 22;
-    line(ctx, a, b);
+    strokePath(ctx, path);
     ctx.globalAlpha = 1;
   }
   // very light bars (under 5 g: ligaments, tendon anchors) are drawn thin
   const thin = l.mass < 0.005;
+  ctx.lineJoin = 'round';
   ctx.strokeStyle = '#1f2125';
   ctx.lineWidth = thin ? 5.5 : 13;
-  line(ctx, a, b);
+  strokePath(ctx, path);
   ctx.strokeStyle = linkColor(l.id);
   ctx.lineWidth = thin ? 3.5 : 10;
-  line(ctx, a, b);
+  strokePath(ctx, path);
   // label
   const mx = (a[0] + b[0]) / 2;
   const my = (a[1] + b[1]) / 2;
@@ -580,16 +604,25 @@ function drawBeamShade(ctx: CanvasRenderingContext2D, v: View, s: Scene, bs: Non
   const b = toScreen(v, s.pos(l.b));
   const grad = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
   bs.s.forEach((x, k) => grad.addColorStop(Math.min(1, Math.max(0, x)), stressColor(bs.f[k])));
+  const path = barPath(v, s, l);
   ctx.save();
   ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.strokeStyle = '#1f2125';
   ctx.lineWidth = 13;
-  line(ctx, a, b);
+  strokePath(ctx, path);
   ctx.strokeStyle = grad;
   ctx.lineWidth = 10;
-  line(ctx, a, b);
+  strokePath(ctx, path);
   if (bs.marker !== null) {
-    const m: Vec = [a[0] + (b[0] - a[0]) * bs.marker, a[1] + (b[1] - a[1]) * bs.marker];
+    // on the bent line where it is bent: the point at that fraction along it
+    const bend = bendOf.get(l.id);
+    let m: Vec = [a[0] + (b[0] - a[0]) * bs.marker, a[1] + (b[1] - a[1]) * bs.marker];
+    if (bend && path.length === bend.s.length) {
+      const k = Math.max(1, bend.s.findIndex((u) => u >= bs.marker!));
+      const t = (bs.marker - bend.s[k - 1]) / (bend.s[k] - bend.s[k - 1] || 1);
+      m = [path[k - 1][0] + t * (path[k][0] - path[k - 1][0]), path[k - 1][1] + t * (path[k][1] - path[k - 1][1])];
+    }
     dot(ctx, m, 5, '#fff', C.accent, 2);
   }
   ctx.restore();

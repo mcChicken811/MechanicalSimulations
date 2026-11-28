@@ -272,6 +272,13 @@ Both modes use one scale for all bars, so bars compare with each other, and a th
 
 The bar whose diagram is open in the graph panel keeps that diagram's colouring. The choice is remembered between visits.
 
+**Deflection.** Tick *Draw deflection ×* in the side panel to draw every bar bent by its bending moment while the mechanism runs. Racks stay straight.
+- **Formula:** Euler–Bernoulli, EI w″ = M, with w measured square to the bar (positive to the left of A → B) and w = 0 at both joints. The bar bends between its joints and stays connected to them. The motion is still that of rigid bars, so the deflection is drawn, not simulated.
+- **Integration:** w is integrated twice along the bar from the bending-moment diagram. Between stations M is taken as the cubic that matches its value and slope (dM/ds = V) at each end. That is exact here, because a bar's distributed load is linear along it, so the textbook PL³/48EI and 5wL⁴/384EI come out to round-off.
+- **E and I:** the side panel sets default values for E (GPa) and I (cm⁴). A bar's own inspector can override them; leave its fields empty to use the defaults. They only change the drawing, so they can be edited while it runs.
+- **Exaggeration:** real deflections are small, so they are drawn the side panel's factor times larger (100 by default).
+- **True values:** the largest true deflection (mm) is listed among a measured bar's internal forces, and its diagram along the bar opens like the others.
+
 **Bars that break.** Tick *Bars break at |M| ≥* in the side panel and set a bending moment in N·m. While the mechanism runs, any bar whose bending moment reaches that value snaps:
 - **Where:** at the largest |M| in each stretch of the bar where |M| reaches the threshold, so a bar can break in several places at once. A break is kept at least 4% of the bar's length from its ends, leaving a short stub at the joint rather than cutting through it.
 - **The pieces** are rigid bars with the bar's mass shared by length. The first piece keeps the bar's number. Each cut makes two free joints, one at the end of each piece. Joints pinned onto the bar and rails on it go with the piece they sit on. A weld goes with the piece at the joint the two bodies share, otherwise with the longest piece. Racks don't break.

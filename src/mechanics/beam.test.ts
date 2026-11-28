@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { barDiagram, beamDiagram, peak, valueAt } from './beam';
+import { barDiagram, beamDiagram, deflection, peak, valueAt } from './beam';
 import { deriveEquations } from './derive';
 import { jointForces } from './forces';
 import type { Design } from './model';
@@ -40,6 +40,23 @@ describe('internal forces along a bar', () => {
     const cant = beamDiagram(still([0, 0], [1, 0], 0), [{ at: [0, 0], F: [0, 2], M: 2 }, { at: [1, 0], F: [0, -2] }], { gravity: 0 });
     expect(valueAt(cant, cant.M, 0.25)).toBeCloseTo(-1.5, 9);
     expect(cant.closure.map(Math.abs).every((x) => x < 1e-9)).toBe(true);
+  });
+
+  it('deflection: P L³ / 48 EI under a centre load, 5 w L⁴ / 384 EI under its own weight (EI w″ = M)', () => {
+    const EI = 2000;
+    const P = 10;
+    const pt = beamDiagram(still([0, 0], [2, 0], 0), [{ at: [0, 0], F: [0, P / 2] }, { at: [2, 0], F: [0, P / 2] }, { at: [1, 0], F: [0, -P] }], { gravity: G });
+    const w1 = deflection(pt, EI);
+    expect(valueAt(pt, w1, 1)).toBeCloseTo((-P * 8) / (48 * EI), 7); // downward (−n), sagging
+    expect(w1[0]).toBe(0);
+    expect(Math.abs(w1[w1.length - 1])).toBeLessThan(1e-15);
+    const m = 2;
+    const own = beamDiagram(still([0, 0], [2, 0], m), [{ at: [0, 0], F: [0, (m * G) / 2] }, { at: [2, 0], F: [0, (m * G) / 2] }], { gravity: G });
+    const w2 = deflection(own, EI);
+    expect(valueAt(own, w2, 1) / ((-5 * ((m * G) / 2) * 16) / (384 * EI))).toBeCloseTo(1, 9);
+    // a bar drawn the other way round bends the same way in the world: −n is still down
+    const flipped = beamDiagram(still([2, 0], [0, 0], m), [{ at: [0, 0], F: [0, (m * G) / 2] }, { at: [2, 0], F: [0, (m * G) / 2] }], { gravity: G });
+    expect(valueAt(flipped, deflection(flipped, EI), 1)).toBeCloseTo(-valueAt(own, w2, 1), 9);
   });
 
   const rod = (): Design => ({

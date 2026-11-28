@@ -10,7 +10,7 @@ import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
-import { barDiagram, peak, valueAt, type BeamDiagram } from './mechanics/beam';
+import { barDiagram, deflection, peak, valueAt, type BeamDiagram } from './mechanics/beam';
 import { breakBars, breakPoints, transferState } from './mechanics/fracture';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { dimensionAt, dimNormal, drawScene, gridStep, stressColor, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
@@ -3386,28 +3386,91 @@ function forceArrowsNow(): Scene['forceArrows'] {
 }
 
 // ---- a bar's internal forces: axial force, shear and bending moment along it (mechanics/beam.ts) ----
-type BeamQ = 'N' | 'V' | 'M';
+/** The internal forces, and the deflection w (mm) they bend it by. */
+type BeamQ = 'N' | 'V' | 'M' | 'w';
 const BEAM_Q: Record<BeamQ, { sym: string; name: string; unit: string }> = {
   N: { sym: 'N', name: 'axial force (+ tension)', unit: 'N' },
   V: { sym: 'V', name: 'shear force', unit: 'N' },
   M: { sym: 'M', name: 'bending moment', unit: 'N·m' },
+  w: { sym: 'w', name: 'deflection (+ to the left of A→B)', unit: 'mm' },
 };
-const beamCache = new Map<number, { t: number; d: BeamDiagram | null }>();
+/** A bar's diagram with its deflection (mm, EI w″ = M, zero at its joints). */
+type BeamView = BeamDiagram & { w: number[] };
+const beamCache = new Map<number, { t: number; d: BeamView | null }>();
 
-/** Bar `link`'s internal forces now (the latest recorded frame), cached for the frame. */
-function beamNow(link: number): BeamDiagram | null {
+/** Bar `link`'s internal forces and deflection now (the latest recorded frame), cached for the frame. */
+function beamNow(link: number): BeamView | null {
   const t = history.t.length ? history.t[history.t.length - 1] : NaN;
   const c = beamCache.get(link);
   if (c && c.t === t) return c.d;
   const r = forcesNow();
-  const d = r && sim ? barDiagram(r, link, { gravity: forceGravity(), damping: sim.damping }) : null;
+  const l = design.links.find((x) => x.id === link);
+  const d0 = r && sim && l ? barDiagram(r, link, { gravity: forceGravity(), damping: sim.damping }) : null;
+  const d = d0 && l ? { ...d0, w: deflection(d0, stiffnessOf(l)).map((v) => v * 1000) } : null;
   beamCache.set(link, { t, d });
   return d;
 }
 
+// ---- bars drawn bent: Euler–Bernoulli deflection, with E and I set by the user ----
+const DEFLECT_KEY = 'linkage-lab:deflection';
+/** Drawing deflection: on, how many times larger, and the default E (Pa) and I (m⁴) of bars without their own. */
+const deflect: { on: boolean; scale: number; E: number; I: number } = (() => {
+  const out = { on: false, scale: 100, E: 200e9, I: 1e-8 };
+  try {
+    const v = JSON.parse(localStorage.getItem(DEFLECT_KEY) ?? '');
+    if (typeof v.on === 'boolean') out.on = v.on;
+    for (const k of ['scale', 'E', 'I'] as const) if (Number.isFinite(v[k]) && v[k] > 0) out[k] = v[k];
+  } catch {
+    /* the defaults */
+  }
+  return out;
+})();
+/** A bar's bending stiffness EI (N·m²): its own E and I, or the defaults. */
+const stiffnessOf = (l: DLink) => (l.E ?? deflect.E) * (l.I ?? deflect.I);
+{
+  const box = $<HTMLInputElement>('#deflect');
+  const scale = $<HTMLInputElement>('#deflect-scale');
+  const E = $<HTMLInputElement>('#beam-E');
+  const I = $<HTMLInputElement>('#beam-I');
+  box.checked = deflect.on;
+  scale.value = String(deflect.scale);
+  E.value = String(+(deflect.E / 1e9).toPrecision(6));
+  I.value = String(+(deflect.I * 1e8).toPrecision(6));
+  const save = () => {
+    localStorage.setItem(DEFLECT_KEY, JSON.stringify(deflect));
+    beamCache.clear(); // the deflections change (the forces do not)
+  };
+  box.addEventListener('change', () => {
+    deflect.on = box.checked;
+    save();
+  });
+  const num = (el: HTMLInputElement, apply: (v: number) => void) =>
+    el.addEventListener('change', () => {
+      const v = parseFloat(el.value);
+      if (Number.isFinite(v) && v > 0) apply(v);
+      save();
+      if (measureView) inspectorMeasure(measureView.kind, measureView.id);
+    });
+  num(scale, (v) => (deflect.scale = v));
+  num(E, (v) => (deflect.E = v * 1e9)); // GPa
+  num(I, (v) => (deflect.I = v * 1e-8)); // cm⁴
+}
+
+/** Every bar bent by its deflection (drawn `scale` times larger) while it runs; racks stay straight. */
+function bendsNow(): Scene['bends'] {
+  if (!deflect.on || !sim || !history.t.length) return null;
+  const out: NonNullable<Scene['bends']> = [];
+  for (const l of design.links) {
+    if (l.rack) continue;
+    const d = beamNow(l.id);
+    if (d) out.push({ link: l.id, s: d.s.map((x) => x / d.L), w: d.w.map((v) => (v / 1000) * deflect.scale) });
+  }
+  return out;
+}
+
 /** The internal forces as rows of the inspector: each one's largest value along the bar (with its sign). */
 function beamMeasures(link: number): Measure[] {
-  return (['N', 'V', 'M'] as BeamQ[]).map((q) => ({
+  return (['N', 'V', 'M', 'w'] as BeamQ[]).map((q) => ({
     key: `B:${q}`,
     sym: BEAM_Q[q].sym,
     name: `${BEAM_Q[q].name}: largest along it`,
@@ -3681,7 +3744,7 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
       beams.length && link
         ? `<h5 class="m-head">Internal forces along it</h5>
     <div class="m-list">${beams.map((m) => row(m, true)).join('')}</div>
-    <p class="muted m-note">Click one for its diagram along the bar, from ${esc(pointLabel(link.a))} to ${esc(pointLabel(link.b))}, with the bar coloured by its size (green, yellow, red at the largest so far). N &gt; 0 pulls the bar apart; V and M by the beam convention with ${esc(pointLabel(link.a))} on the left (M &gt; 0 sags). Its weight, drag and inertia are spread along it.</p>`
+    <p class="muted m-note">Click one for its diagram along the bar, from ${esc(pointLabel(link.a))} to ${esc(pointLabel(link.b))}, with the bar coloured by its size (green, yellow, red at the largest so far). N &gt; 0 pulls the bar apart; V and M by the beam convention with ${esc(pointLabel(link.a))} on the left (M &gt; 0 sags). Its weight, drag and inertia are spread along it. Its deflection w is from EI w″ = M, zero at its joints, with E = ${+((link.E ?? deflect.E) / 1e9).toPrecision(4)} GPa and I = ${+((link.I ?? deflect.I) * 1e8).toPrecision(4)} cm⁴ (set in its settings or the side panel).</p>`
         : ''
     }
     ${
@@ -4757,6 +4820,12 @@ function renderInspectorPanel() {
         <h4>${l.rack ? 'Rack' : 'Bar'} ${linkLabel(l.id)} <span class="muted">(${pointLabel(l.a)}–${pointLabel(l.b)})</span></h4>
         <label class="field">Mass (kg)<input id="i-mass" type="number" min="0.01" step="0.1" value="${l.mass}" ${disabled}></label>
         <div class="field"><span>Length</span><span>${linkLength(design, l).toFixed(3)} m</span></div>
+        ${
+          l.rack
+            ? ''
+            : `<label class="field" title="Young's modulus, for drawing how it bends (Draw deflection); empty: the side panel's ${+(deflect.E / 1e9).toPrecision(6)} GPa">E (GPa)<input id="i-E" type="number" min="0" step="1" placeholder="${+(deflect.E / 1e9).toPrecision(6)}" value="${l.E !== undefined ? +(l.E / 1e9).toPrecision(6) : ''}"></label>
+        <label class="field" title="Second moment of area of its section, for drawing how it bends; empty: the side panel's ${+(deflect.I * 1e8).toPrecision(6)} cm⁴">I (cm⁴)<input id="i-I" type="number" min="0" step="0.01" placeholder="${+(deflect.I * 1e8).toPrecision(6)}" value="${l.I !== undefined ? +(l.I * 1e8).toPrecision(6) : ''}"></label>`
+        }
         ${joinsHtml({ kind: 'link', id: l.id }, disabled)}
         <label class="field">Toothed<span><input id="i-rack" type="checkbox" ${l.rack ? 'checked' : ''} ${disabled}> rack</span></label>
         ${
@@ -4770,6 +4839,16 @@ function renderInspectorPanel() {
             : '<p class="muted">Uniform rigid bar, I = mL²/12 about its centre.</p>'
         }`;
       bindField('#i-mass', (v) => (l.mass = Math.max(0.01, Number(v) || 0.01)));
+      // E and I only change how it is drawn bent: editable while it runs, no new equations
+      for (const [sel, key, unit] of [['#i-E', 'E', 1e9], ['#i-I', 'I', 1e-8]] as const)
+        inspectorEl.querySelector<HTMLInputElement>(sel)?.addEventListener('change', (e) => {
+          const v = parseFloat((e.target as HTMLInputElement).value);
+          pushUndo();
+          if (Number.isFinite(v) && v > 0) l[key] = v * unit;
+          else delete l[key];
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable()));
+          beamCache.clear();
+        });
       inspectorEl.querySelector<HTMLInputElement>('#i-rack')!.addEventListener('change', (e) => {
         pushUndo();
         if ((e.target as HTMLInputElement).checked) l.rack = 1;
@@ -5166,6 +5245,7 @@ function frame(now: number) {
     trail: trail.n > 1 ? trail : null,
     forceArrows: forceArrowsNow(),
     beamShades: beamShadesNow(),
+    bends: bendsNow(),
   });
   renderStatus();
   requestAnimationFrame(frame);

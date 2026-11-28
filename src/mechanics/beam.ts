@@ -143,3 +143,26 @@ export function barDiagram(r: ForceResult, linkId: number, settings: BeamSetting
   const loads: BeamLoad[] = [...r.items.filter(on), ...r.loads.filter((x) => on(x) && x.type !== 'weight' && x.type !== 'drag')];
   return beamDiagram(bar, loads, settings);
 }
+
+/**
+ * The bar's deflection w (m) along it, square to it (+ towards n, the left of A → B), from
+ * Euler–Bernoulli beam theory: EI w″ = M (with M > 0 sagging, w″ > 0), integrated twice along the
+ * stations (exactly: M is a cubic between them, with slope V), with w = 0 at both ends: drawn between its joints, it bends
+ * between them as a beam held at its ends (any slope there; its rigid motion is the simulation's).
+ */
+export function deflection(d: BeamDiagram, EI: number): number[] {
+  const n = d.s.length;
+  const th = new Array<number>(n).fill(0);
+  const w = new Array<number>(n).fill(0);
+  if (!(EI > 0)) return w;
+  for (let k = 1; k < n; k++) {
+    const ds = d.s[k] - d.s[k - 1];
+    // M between stations as the cubic with its values and slopes dM/ds = V there (exact: the
+    // distributed load is linear along a bar, so M is a cubic between point loads)
+    const [M0, M1, V0, V1] = [d.M[k - 1], d.M[k], d.V[k - 1], d.V[k]];
+    th[k] = th[k - 1] + (ds * ((M0 + M1) / 2 + (ds * (V0 - V1)) / 12)) / EI;
+    w[k] = w[k - 1] + ds * th[k - 1] + (ds * ds * ((7 * M0 + 3 * M1) / 20 + ds * (V0 / 20 - V1 / 30))) / EI;
+  }
+  const wL = w[n - 1];
+  return w.map((v, k) => v - (d.s[k] / d.L) * wL);
+}

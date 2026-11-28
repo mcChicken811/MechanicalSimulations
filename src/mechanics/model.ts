@@ -76,6 +76,12 @@ export interface DLink {
    * joints. The teeth are on its left (+1) or right (−1), looking from joint a to joint b.
    */
   rack?: 1 | -1;
+  /**
+   * Its Young's modulus E (Pa) and second moment of area I (m⁴), for drawing how it bends (EI w″ =
+   * M); unset, the side panel's defaults. They do not change the motion (the bars are rigid).
+   */
+  E?: number;
+  I?: number;
 }
 
 /**
