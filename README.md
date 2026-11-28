@@ -189,7 +189,7 @@ Other controls:
 
 - **Play** / **Pause** (Space) start and stop the simulation. **Step** advances one frame. **Reset** (R) goes back to editing.
 - While it runs, **drag any bar, joint or gear** to pull it with a spring force. A red arrow shows the spring's pull, which points at the cursor and grows with the stretch. The status bar shows the same value as |F|. The grab also damps the point's motion, like a steady hand, and that damping isn't part of the arrow. You can click a spring to change its stiffness without stopping.
-- **Select a joint** to draw the path it moves along, as an orange trail. Select it before pressing Play, or click it while the simulation runs. The trail keeps about the last 24 000 points (a point is added each time the joint moves about a pixel), and its oldest end fades out. Selecting another joint, or pressing Reset, starts a new trail.
+- **Select a joint** to draw the path it moves along, as an orange trail. Select it before pressing Play, or click it while the simulation runs. The trail goes back the last 20 seconds (a point is added each time the joint moves about a pixel), and its oldest end fades out. Selecting another joint, or pressing Reset, starts a new trail.
 - The settings let you turn gravity on or off, add air drag, change how strongly a drag pulls, and change the playback speed. Untick **Show labels** to hide the names of joints, bars, springs and gears, which helps with big mechanisms like the 30-link ring chain. Tick **Follow the mechanism** to keep moving parts in view.
 - The status bar shows the time, the total energy E = T + V, and the constraint error max|Φ|. With no air drag and no friction, E should stay constant.
 
@@ -214,6 +214,12 @@ While the simulation runs or is paused, the inspector measures the selected part
 - **Scrolling back:** drag the plot or the time axis sideways to move through time. Over the plot, the mouse wheel or a sideways trackpad swipe also scrolls. Scrolling back stops the graph following, and it says "scrolled back" at the top; scroll to the end again, or double-click, and it follows the current time once more.
 - **Scales:** hover the time axis (its labels) and turn the wheel to zoom the time scale, from 0.05 s to 10 minutes, about the time under the mouse. Hover the value axis and turn the wheel to zoom the value scale about the value under the mouse, or drag it to slide the range. The value range fits what is visible until you set it.
 - **Resetting:** double-click the time axis to come back to the current time, keeping the zoom, or the value axis to fit the values again. Double-clicking the plot does both.
+
+**Phase plots.** With a graph open, **Shift-click** another quantity, on the same part, another part or the status bar.
+- **Two quantities:** the graph becomes a phase plot, the first quantity across (x) and the second up (y).
+- **Three quantities:** a 3D phase plot, the third along z. Drag it to turn it, and double-click to turn it back. Each axis is scaled to the path shown and labelled with its quantity and largest value.
+- **The path:** it shows the path the quantities have traced over the last 20 seconds, the same as a selected joint's trail, fading with age, and a dot at the state now. Hover the path for the time and the values at that point.
+- **Changing it:** shift-click a quantity already in the plot to take it out (the first out makes the next one first), and a fourth replaces the third. A plain click goes back to a single quantity against time.
 - **Cursor line:** move the mouse over the graph for a vertical line at that time, a dot where it crosses the curve, and the time and value there.
 - **⤢ Enlarge:** moves the graph to the middle of the screen, much bigger; **⤡** shrinks it back, and **×** closes it.
 - **History length:** about the last 5 minutes are kept (20,000 frames). Reset clears the record.

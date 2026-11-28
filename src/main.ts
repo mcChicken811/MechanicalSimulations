@@ -410,7 +410,9 @@ function advance(seconds: number) {
 // ---- path of the selected joint ---------------------------------------------------
 /** Points kept in the path; the oldest are dropped first. */
 const TRAIL_MAX = 24000;
-const trail = { id: -1, xs: new Float64Array(TRAIL_MAX), ys: new Float64Array(TRAIL_MAX), start: 0, n: 0 };
+/** How far back a path is traced (s): a selected joint's trail, and a phase plot's path. */
+const TRAIL_SECONDS = 20;
+const trail = { id: -1, xs: new Float64Array(TRAIL_MAX), ys: new Float64Array(TRAIL_MAX), ts: new Float64Array(TRAIL_MAX), start: 0, n: 0 };
 
 /** The joint whose path is drawn: the selected joint, while a simulation exists. */
 function trailTarget(): number {
@@ -435,8 +437,14 @@ function recordTrail(s: Simulator) {
   const k = (trail.start + trail.n) % TRAIL_MAX;
   trail.xs[k] = p[0];
   trail.ys[k] = p[1];
+  trail.ts[k] = s.t;
   if (trail.n < TRAIL_MAX) trail.n++;
   else trail.start = (trail.start + 1) % TRAIL_MAX;
+  // the last TRAIL_SECONDS only
+  while (trail.n > 1 && trail.ts[trail.start] < s.t - TRAIL_SECONDS) {
+    trail.start = (trail.start + 1) % TRAIL_MAX;
+    trail.n--;
+  }
 }
 
 // ---- geometry helpers ----------------------------------------------------------
@@ -3127,7 +3135,7 @@ let history: History = emptyHistory();
 
 function resetHistory() {
   history = emptyHistory();
-  if (graph) graph.vals = [];
+  if (graph) for (const x of [graph, ...graph.extra]) x.vals = [];
 }
 
 function recordState() {
@@ -3146,7 +3154,7 @@ function recordState() {
   if (h.t.length > HISTORY_MAX) {
     const drop = 2000;
     for (const a of [h.t, h.q, h.qd, h.e, h.w, h.wm, h.wa, h.phi]) a.splice(0, drop);
-    if (graph) graph.vals.splice(0, Math.min(drop, graph.vals.length));
+    if (graph) for (const x of [graph, ...graph.extra]) x.vals.splice(0, Math.min(drop, x.vals.length));
   }
 }
 
@@ -3164,15 +3172,15 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
     <div class="m-list">${measures
       .map(
         (m) =>
-          `<button class="m-row${graph && graph.kind === kind && graph.id === id && graph.key === m.key ? ' on' : ''}" data-key="${m.key}" title="${esc(m.name)}: click to graph it over time"><span class="m-sym">${m.sym}</span><span class="m-name">${esc(m.name)}</span><span class="m-val" id="m-${m.key}">–</span><span class="m-unit">${m.unit}</span></button>`,
+          `<button class="m-row${isGraphed(kind, id, m.key) ? ' on' : ''}" data-key="${m.key}" title="${esc(m.name)}: click to graph it over time; shift-click to add it to a phase plot"><span class="m-sym">${m.sym}</span><span class="m-name">${esc(m.name)}</span><span class="m-val" id="m-${m.key}">–</span><span class="m-unit">${m.unit}</span></button>`,
       )
       .join('')}</div>
-    <p class="muted">Click a quantity to graph it over time. ${running ? 'Pause to pick another part.' : 'Click another part to measure it, or empty space to let go.'} <button id="m-settings">Settings…</button></p>`;
+    <p class="muted">Click a quantity to graph it over time; shift-click others (here, or on other parts) for a phase plot. ${running ? 'Pause to pick another part.' : 'Click another part to measure it, or empty space to let go.'} <button id="m-settings">Settings…</button></p>`;
   inspectorEl.querySelectorAll<HTMLButtonElement>('.m-row').forEach((b) =>
-    b.addEventListener('click', () => {
+    b.addEventListener('click', (e) => {
       const m = measures.find((x) => x.key === b.dataset.key)!;
-      openGraph(kind, id, m);
-      inspectorEl.querySelectorAll('.m-row').forEach((x) => x.classList.toggle('on', x === b));
+      if (e.shiftKey) addSeries(kind, id, m);
+      else openGraph(kind, id, m);
     }),
   );
   inspectorEl.querySelector('#m-settings')!.addEventListener('click', () => {
@@ -3229,7 +3237,21 @@ interface GraphLayout {
   H: number;
 }
 type GraphKind = 'point' | 'link' | 'gear' | 'spring' | 'system';
+/** A quantity in the graph: where it is from, what it is, its value at history index i, and its values so far. */
+interface Series {
+  kind: GraphKind;
+  id: number;
+  key: string;
+  m: Measure;
+  at: (i: number) => number;
+  vals: number[];
+}
 let graph: {
+  /** The second and third quantities (shift-clicked): a phase plot of the first against them. */
+  extra: Series[];
+  /** A 3D phase plot's view: turn about the vertical and tilt (rad). */
+  rot: { yaw: number; pitch: number };
+  hoverY: number | null;
   kind: GraphKind;
   id: number;
   key: string;
@@ -3274,18 +3296,73 @@ function energySeries(key: string): { m: Measure; at: (i: number) => number } | 
 
 function openGraph(kind: GraphKind, id: number, m: Measure, at?: (i: number) => number) {
   const value = at ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
-  graph = { kind, id, key: m.key, m, at: value, vals: [], big: graph?.big ?? false, hoverX: null, view: { span: GRAPH_SPAN, end: null, yAuto: true, lo: 0, hi: 1 }, layout: null, drag: null };
+  graph = { kind, id, key: m.key, m, at: value, vals: [], extra: [], rot: { ...PHASE_ROT }, hoverY: null, big: graph?.big ?? false, hoverX: null, view: { span: GRAPH_SPAN, end: null, yAuto: true, lo: 0, hi: 1 }, layout: null, drag: null };
   graphEl.hidden = false;
   graphEl.classList.toggle('big', graph.big);
   graphEl.querySelector('.g-big')!.textContent = graph.big ? '⤡' : '⤢';
-  graphEl.querySelector('.g-title')!.innerHTML = `<b>${m.sym}</b> ${esc(m.name)} <span class="muted">· ${esc(partTitle(kind, id))}</span>`;
+  setGraphTitle();
+  sfx('select');
+  markGraphed();
+}
+
+const PHASE_ROT = { yaw: -0.6, pitch: 0.42 };
+
+/** Whether a quantity is in the graph. */
+const isGraphed = (kind: GraphKind, id: number, key: string) => !!graph && [graph, ...graph.extra].some((x) => x.kind === kind && x.id === id && x.key === key);
+
+/** Highlight the graphed quantities in the inspector. */
+function markGraphed() {
+  const mv = measureView;
+  inspectorEl.querySelectorAll<HTMLElement>('.m-row').forEach((b) => b.classList.toggle('on', !!mv && isGraphed(mv.kind, mv.id, b.dataset.key!)));
+}
+
+/** The graph's title: the quantity, or for a phase plot each quantity in order (x, y, z). */
+function setGraphTitle() {
+  if (!graph) return;
+  const parts = [graph, ...graph.extra];
+  const where = (x: Series) => esc(partTitle(x.kind, x.id));
+  graphEl.querySelector('.g-title')!.innerHTML =
+    parts.length === 1
+      ? `<b>${graph.m.sym}</b> ${esc(graph.m.name)} <span class="muted">· ${where(graph)}</span>`
+      : `${parts.length}D phase: ${parts.map((x, i) => `<b>${x.m.sym}</b><span class="muted"> (${['x', 'y', 'z'][i]}, ${where(x)})</span>`).join(' · ')}`;
+}
+
+/**
+ * Shift-click a quantity: add it to the graph, making a phase plot of the first quantity
+ * against it (x, y, then z); shift-click one already there to take it out. A fourth replaces
+ * the third.
+ */
+function addSeries(kind: GraphKind, id: number, m: Measure, at?: (i: number) => number) {
+  if (!graph) {
+    openGraph(kind, id, m, at);
+    return;
+  }
+  const value = at ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
+  const same = (x: { kind: GraphKind; id: number; key: string }) => x.kind === kind && x.id === id && x.key === m.key;
+  if (same(graph)) {
+    // the first one out: the next becomes the first
+    const next = graph.extra.shift();
+    if (!next) {
+      closeGraph();
+      return;
+    }
+    Object.assign(graph, { kind: next.kind, id: next.id, key: next.key, m: next.m, at: next.at, vals: next.vals });
+  } else if (graph.extra.some(same)) graph.extra = graph.extra.filter((x) => !same(x));
+  else {
+    const sr: Series = { kind, id, key: m.key, m, at: value, vals: [] };
+    if (graph.extra.length < 2) graph.extra.push(sr);
+    else graph.extra[1] = sr;
+  }
+  graph.rot = { ...PHASE_ROT };
+  setGraphTitle();
+  markGraphed();
   sfx('select');
 }
 
 function closeGraph() {
   graph = null;
   graphEl.hidden = true;
-  inspectorEl.querySelectorAll('.m-row.on').forEach((x) => x.classList.remove('on'));
+  markGraphed();
 }
 
 graphEl.querySelector('.g-close')!.addEventListener('click', closeGraph);
@@ -3323,6 +3400,7 @@ graphCanvas.addEventListener(
     const l = g?.layout;
     if (!g || !l) return;
     e.preventDefault();
+    if (g.extra.length) return; // a phase plot has no time axis to scroll
     const zone = graphZone(e.offsetX, e.offsetY);
     const f = Math.exp((e.deltaY || e.deltaX) * 0.0025);
     if (zone === 'y') {
@@ -3350,7 +3428,16 @@ graphCanvas.addEventListener(
 graphCanvas.addEventListener('pointerdown', (e) => {
   const g = graph;
   const l = g?.layout;
-  if (!g || !l || e.button !== 0) return;
+  if (!g || e.button !== 0) return;
+  if (g.extra.length) {
+    // a 3D phase plot: drag to turn it
+    if (g.extra.length === 2) {
+      graphCanvas.setPointerCapture(e.pointerId);
+      phaseDrag = { x: e.offsetX, y: e.offsetY, yaw: g.rot.yaw, pitch: g.rot.pitch };
+    }
+    return;
+  }
+  if (!l) return;
   const zone = graphZone(e.offsetX, e.offsetY);
   if (!zone) return;
   graphCanvas.setPointerCapture(e.pointerId);
@@ -3361,6 +3448,14 @@ graphCanvas.addEventListener('pointermove', (e) => {
   const g = graph;
   if (!g) return;
   g.hoverX = e.offsetX;
+  g.hoverY = e.offsetY;
+  if (g.extra.length) {
+    graphCanvas.style.cursor = g.extra.length === 2 ? (phaseDrag ? 'grabbing' : 'grab') : 'crosshair';
+    if (phaseDrag) {
+      g.rot = { yaw: phaseDrag.yaw + (e.offsetX - phaseDrag.x) * 0.01, pitch: Math.max(-1.5, Math.min(1.5, phaseDrag.pitch + (e.offsetY - phaseDrag.y) * 0.01)) };
+    }
+    return;
+  }
   const l = g.layout;
   const zone = graphZone(e.offsetX, e.offsetY);
   graphCanvas.style.cursor = g.drag ? (g.drag.mode === 'y' ? 'ns-resize' : 'grabbing') : zone === 'y' ? 'ns-resize' : zone === 'x' ? 'ew-resize' : 'crosshair';
@@ -3373,17 +3468,23 @@ graphCanvas.addEventListener('pointermove', (e) => {
     g.view = { ...g.view, yAuto: false, lo: g.drag.lo + dv, hi: g.drag.hi + dv };
   }
 });
+let phaseDrag: { x: number; y: number; yaw: number; pitch: number } | null = null;
 const endGraphDrag = () => {
   if (graph) graph.drag = null;
+  phaseDrag = null;
 };
 graphCanvas.addEventListener('pointerup', endGraphDrag);
 graphCanvas.addEventListener('pointercancel', endGraphDrag);
 graphCanvas.addEventListener('pointerleave', () => {
-  if (graph) graph.hoverX = null;
+  if (graph) [graph.hoverX, graph.hoverY] = [null, null];
 });
 graphCanvas.addEventListener('dblclick', (e) => {
   const g = graph;
   if (!g) return;
+  if (g.extra.length) {
+    g.rot = { ...PHASE_ROT }; // a 3D phase plot: back to its first view
+    return;
+  }
   const zone = graphZone(e.offsetX, e.offsetY);
   // double-click: the value axis fits the values again; the time axis (or the plot) comes back to the current time
   if (zone === 'y' || zone === 'plot') g.view.yAuto = true;
@@ -3395,9 +3496,12 @@ function updateGraph() {
   if (!graph || !sim) return;
   const { m } = graph;
   const h = history;
-  for (let i = graph.vals.length; i < h.t.length; i++) graph.vals.push(graph.at(i));
+  for (const x of [graph, ...graph.extra]) for (let i = x.vals.length; i < h.t.length; i++) x.vals.push(x.at(i));
   const vals = m.angle ? unwrapDegrees(graph.vals) : graph.vals;
-  graphEl.querySelector('.g-now')!.textContent = vals.length ? `${(m.fmt ?? fmt3)(vals[vals.length - 1])} ${m.unit}` : '';
+  const all = [graph, ...graph.extra].map((x) => ({ m: x.m, vals: x.m.angle ? unwrapDegrees(x.vals) : x.vals }));
+  graphEl.querySelector('.g-now')!.textContent = all
+    .map((x) => (x.vals.length ? `${(x.m.fmt ?? fmt3)(x.vals[x.vals.length - 1])}${x.m.unit ? ` ${x.m.unit}` : ''}` : ''))
+    .join(', ');
   // where it sits: above the inspector, or beside it if the inspector is too tall
   if (!graph.big) {
     const top = inspectorEl.getBoundingClientRect().top;
@@ -3412,7 +3516,213 @@ function updateGraph() {
     graphEl.style.right = '';
     graphEl.style.bottom = '';
   }
-  graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX);
+  if (graph.extra.length) {
+    graph.layout = null;
+    drawPhase(graphCanvas, h.t, all, graph.rot, graph.hoverX, graph.hoverY);
+  } else graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX);
+}
+
+/** Axis label for a phase plot: the quantity's symbol (plain text) and unit. */
+const phaseLabel = (m: Measure) => `${m.sym.replace(/<sub>(.*?)<\/sub>/g, '$1').replace(/<[^>]+>/g, '')}${m.unit ? ` (${m.unit})` : ''}`;
+
+/**
+ * A phase plot: the path the quantities have traced over the last TRAIL_SECONDS (as long as a
+ * joint's trail), fading with age, and a dot at the state now. Two quantities: x against y, on
+ * axes with gridlines. Three: a turnable 3D box (drag to turn), each axis scaled to the path.
+ * Hovering shows the time and the values at the nearest point of the path.
+ */
+function drawPhase(cv: HTMLCanvasElement, t: number[], series: { m: Measure; vals: number[] }[], rot: { yaw: number; pitch: number }, hx: number | null, hy: number | null) {
+  const dpr = window.devicePixelRatio || 1;
+  const [W, H] = [cv.clientWidth, cv.clientHeight];
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) [cv.width, cv.height] = [Math.round(W * dpr), Math.round(H * dpr)];
+  const c = cv.getContext('2d')!;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+  const n = Math.min(t.length, ...series.map((x) => x.vals.length));
+  if (n < 1) return;
+  const tNow = t[n - 1];
+  let i0 = n - 1;
+  while (i0 > 0 && t[i0 - 1] >= tNow - TRAIL_SECONDS) i0--;
+  // each axis's range over the path shown
+  const ranges = series.map((x) => {
+    let [lo, hi] = [Infinity, -Infinity];
+    for (let i = i0; i < n; i++) if (Number.isFinite(x.vals[i])) [lo, hi] = [Math.min(lo, x.vals[i]), Math.max(hi, x.vals[i])];
+    if (!Number.isFinite(lo)) [lo, hi] = [-1, 1];
+    const mag = Math.max(Math.abs(lo), Math.abs(hi));
+    if (hi - lo <= mag * 1e-6) {
+      const d = mag > 0 ? mag * 0.05 : 1e-3;
+      [lo, hi] = [lo - d, hi + d];
+    }
+    const pad = (hi - lo) * 0.06;
+    return [lo - pad, hi + pad] as const;
+  });
+  const three = series.length === 3;
+  let project: (i: number) => [number, number];
+  c.font = '10px system-ui, sans-serif';
+  if (!three) {
+    const [L, R, T, B] = [58, 12, 10, 34];
+    const [[xl, xh], [yl, yh]] = ranges;
+    const X = (v: number) => L + ((v - xl) / (xh - xl)) * (W - L - R);
+    const Y = (v: number) => T + ((yh - v) / (yh - yl)) * (H - T - B);
+    project = (i) => [X(series[0].vals[i]), Y(series[1].vals[i])];
+    // gridlines and labels
+    c.strokeStyle = '#e8e8e2';
+    c.fillStyle = '#7b7e86';
+    c.lineWidth = 1;
+    const ys = niceStep(yh - yl, 4);
+    c.textAlign = 'right';
+    c.textBaseline = 'middle';
+    for (let v = Math.ceil(yl / ys) * ys; v <= yh; v += ys) {
+      const y = Math.round(Y(v)) + 0.5;
+      c.beginPath();
+      c.moveTo(L, y);
+      c.lineTo(W - R, y);
+      c.stroke();
+      c.fillText(Math.abs(v) < ys * 1e-6 ? '0' : `${+v.toPrecision(4)}`, L - 5, y);
+    }
+    const xs = niceStep(xh - xl, Math.max(2, Math.floor((W - L - R) / 70)));
+    c.textAlign = 'center';
+    c.textBaseline = 'top';
+    for (let v = Math.ceil(xl / xs) * xs; v <= xh; v += xs) {
+      const x = Math.round(X(v)) + 0.5;
+      c.beginPath();
+      c.moveTo(x, T);
+      c.lineTo(x, H - B);
+      c.stroke();
+      c.fillText(Math.abs(v) < xs * 1e-6 ? '0' : `${+v.toPrecision(4)}`, x, H - B + 3);
+    }
+    c.fillStyle = '#2b2d31';
+    c.font = 'italic 600 10.5px system-ui, sans-serif';
+    c.fillText(phaseLabel(series[0].m), (L + W - R) / 2, H - 13);
+    c.save();
+    c.translate(10, (T + H - B) / 2);
+    c.rotate(-Math.PI / 2);
+    c.textBaseline = 'middle';
+    c.fillText(phaseLabel(series[1].m), 0, 0);
+    c.restore();
+  } else {
+    // a unit cube, each axis scaled to its range, turned by yaw and pitch, seen straight on
+    const norm = (k: number, v: number) => (2 * (v - ranges[k][0])) / (ranges[k][1] - ranges[k][0]) - 1;
+    const [cy, sy, cp, sp] = [Math.cos(rot.yaw), Math.sin(rot.yaw), Math.cos(rot.pitch), Math.sin(rot.pitch)];
+    const size = Math.min(W, H) * 0.3;
+    const [ox, oy] = [W / 2, H / 2 + 4];
+    // the world's z is up on screen: turn about it (yaw), then tilt towards the viewer (pitch)
+    const P = (x: number, y: number, z: number): [number, number] => {
+      const [x1, y1] = [x * cy - y * sy, x * sy + y * cy];
+      const [y2, z2] = [y1 * cp - z * sp, y1 * sp + z * cp];
+      void y2;
+      return [ox + x1 * size, oy - z2 * size];
+    };
+    project = (i) => P(norm(0, series[0].vals[i]), norm(1, series[1].vals[i]), norm(2, series[2].vals[i]));
+    c.strokeStyle = '#e2e2dc';
+    c.lineWidth = 1;
+    const corners = [-1, 1];
+    for (const a of corners)
+      for (const b of corners) {
+        for (const [p, q] of [
+          [P(-1, a, b), P(1, a, b)],
+          [P(a, -1, b), P(a, 1, b)],
+          [P(a, b, -1), P(a, b, 1)],
+        ])
+          seg(c, p, q);
+      }
+    // the three axes from the low corner, labelled at their ends with their ranges
+    const axes: [string, [number, number, number], number][] = [
+      [phaseLabel(series[0].m), [1, -1, -1], 0],
+      [phaseLabel(series[1].m), [-1, 1, -1], 1],
+      [phaseLabel(series[2].m), [-1, -1, 1], 2],
+    ];
+    const o = P(-1, -1, -1);
+    c.strokeStyle = '#9a9ca3';
+    c.lineWidth = 1.4;
+    for (const [label, end, k] of axes) {
+      const e = P(...end);
+      seg(c, o, e);
+      c.fillStyle = '#2b2d31';
+      c.font = 'italic 600 10.5px system-ui, sans-serif';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      const [dx, dy] = [e[0] - o[0], e[1] - o[1]];
+      const d = Math.hypot(dx, dy) || 1;
+      c.fillText(label, e[0] + (dx / d) * 16, e[1] + (dy / d) * 12);
+      c.fillStyle = '#7b7e86';
+      c.font = '9.5px system-ui, sans-serif';
+      c.fillText(`${+ranges[k][1].toPrecision(3)}`, e[0] - (dy / d) * 10, e[1] + (dx / d) * 10);
+    }
+    c.fillStyle = '#7b7e86';
+    c.font = '9.5px system-ui, sans-serif';
+    c.textAlign = 'right';
+    c.fillText('drag to turn · double-click to reset', W - 6, H - 8);
+  }
+  // the path, fading with age, at most a few thousand points
+  const step = Math.max(1, Math.floor((n - i0) / 3000));
+  const chunks = 24;
+  const len = n - i0;
+  c.lineWidth = 1.6;
+  c.lineJoin = 'round';
+  for (let k = 0; k < chunks; k++) {
+    const a = i0 + Math.floor((len * k) / chunks);
+    const b = Math.min(n - 1, i0 + Math.floor((len * (k + 1)) / chunks));
+    if (b <= a) continue;
+    c.strokeStyle = `rgba(59,110,168,${0.12 + 0.88 * ((k + 1) / chunks) ** 1.4})`;
+    c.beginPath();
+    let first = true;
+    for (let i = a; i <= b; i = i + step > b && i < b ? b : i + step) {
+      const [x, y] = project(i);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (first) c.moveTo(x, y);
+      else c.lineTo(x, y);
+      first = false;
+    }
+    c.stroke();
+  }
+  // now
+  const [nx, ny] = project(n - 1);
+  if (Number.isFinite(nx) && Number.isFinite(ny)) {
+    c.fillStyle = '#e07b39';
+    c.beginPath();
+    c.arc(nx, ny, 4, 0, Math.PI * 2);
+    c.fill();
+  }
+  // hover: the nearest point of the path, its time and values
+  if (hx !== null && hy !== null) {
+    let [best, bd] = [-1, 14];
+    for (let i = i0; i < n; i += step) {
+      const [x, y] = project(i);
+      const d = Math.hypot(x - hx, y - hy);
+      if (d < bd) [best, bd] = [i, d];
+    }
+    if (best >= 0) {
+      const [x, y] = project(best);
+      c.strokeStyle = '#e07b39';
+      c.lineWidth = 1.5;
+      c.beginPath();
+      c.arc(x, y, 5, 0, Math.PI * 2);
+      c.stroke();
+      const text = `t = ${t[best].toFixed(3)} s   ${series.map((sr) => `${(sr.m.fmt ?? fmt3)(sr.vals[best])}`).join(', ')}`;
+      c.font = '600 11px system-ui, sans-serif';
+      const w = c.measureText(text).width + 12;
+      const bx = Math.min(Math.max(x + 10, 4), W - w - 4);
+      const by = Math.max(4, Math.min(y - 28, H - 26));
+      c.fillStyle = 'rgba(255,255,255,0.94)';
+      c.beginPath();
+      c.roundRect(bx, by, w, 20, 5);
+      c.fill();
+      c.stroke();
+      c.fillStyle = '#2b2d31';
+      c.textAlign = 'left';
+      c.textBaseline = 'middle';
+      c.fillText(text, bx + 6, by + 10);
+    }
+  }
+}
+
+/** A straight line on a canvas. */
+function seg(c: CanvasRenderingContext2D, p: [number, number], q: [number, number]) {
+  c.beginPath();
+  c.moveTo(p[0], p[1]);
+  c.lineTo(q[0], q[1]);
+  c.stroke();
 }
 
 /** A round step for about `n` ticks across `span`. */
@@ -3997,18 +4307,16 @@ function heatStatus(s: Simulator): string {
 }
 
 /** An energy figure on the status bar, a button for its graph (highlighted while graphed). */
-const statQ = (key: string, html: string) => `<button class="st-q${graph?.kind === 'system' && graph.key === key ? ' on' : ''}" data-q="${key}" title="Graph it over time">${html}</button>`;
+const statQ = (key: string, html: string) => `<button class="st-q${isGraphed('system', 0, key) ? ' on' : ''}" data-q="${key}" title="Graph it over time (shift-click: add it to a phase plot)">${html}</button>`;
 // the status bar is redrawn every frame, so its buttons are caught as they are pressed
 statusEl.addEventListener('pointerdown', (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>('[data-q]');
   const sr = b && energySeries(b.dataset.q!);
   if (!sr || !sim) return;
   e.preventDefault();
-  if (graph?.kind === 'system' && graph.key === sr.m.key) closeGraph();
-  else {
-    openGraph('system', 0, sr.m, sr.at);
-    inspectorEl.querySelectorAll('.m-row.on').forEach((x) => x.classList.remove('on'));
-  }
+  if (e.shiftKey) addSeries('system', 0, sr.m, sr.at);
+  else if (graph && !graph.extra.length && graph.kind === 'system' && graph.key === sr.m.key) closeGraph();
+  else openGraph('system', 0, sr.m, sr.at);
 });
 
 function renderStatus() {
