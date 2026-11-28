@@ -146,6 +146,14 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
   - Changing an image's distance keeps it where it looks now. Right-drag pans as ever, to see the depths at work.
   - **Done** or Esc leaves the editor. **Edit background…** in the block opens it again.
   - **Large pictures** are scaled down to at most 2048 px across, so they fit in the browser and in project files; SVGs are kept as they are. If the images are still too big for the browser to keep between visits, it says so; they stay for now and are saved in projects.
+- **Drawing styles:** on the **Blueprint** the machine can be drawn as a blueprint, and on **Graph paper** or **None (plain)** by hand in pencil. **Draw the machine as a blueprint** / **Draw the machine by hand (pencil)** turns it on or off. It's on by default for the blueprint and graph paper and off for plain paper, and the choice is saved with the background.
+  - **Everything:** every part, the dimensions, the labels, the force arrows and the selection take the style. The background, grid and scale bar stay as they are.
+  - **Blueprint:** dark lines and text become white lines and lettering, and light fills and the white halos behind labels become the blueprint's blue (as it shows at the background's strength). Bodies are a faint white wash, so a bar is a white outline around a pale body. The lettering is a condensed draughting face.
+  - **Pencil:** lines become graphite, light fills the paper, and bodies are lightly washed and hatched. Every line wobbles a little and is gone over twice, and circles don't quite close. The lettering is handwriting.
+  - **Hue:** strongly coloured parts keep a hint of their hue, like a coloured pencil, so joined bodies, selections and force arrows still tell apart. See-through highlights (the selection) keep their colour, like a highlighter.
+  - **Steady wobble:** the pencil's wobble follows each shape's own size and shape rather than where it is, so a moving part keeps its wobble and lines don't shimmer.
+  - **Internal forces:** bars coloured by internal force go from blue to white on the blueprint and from light grey to black in pencil. The key under *Beam forces* shows the same colours. The inspector's diagram keeps its usual colours.
+  - **How:** the drawing code is unchanged; it draws through a stand-in canvas (`ui/inkstyle.ts`) that re-inks colours by how dark they are, swaps the lettering, and in pencil redraws each path wobbling.
 - **Strength** sets how strongly the background shows behind the mechanism. Each scene starts at a strength that keeps the mechanism easy to read.
 - **Animate** (on by default) brings the scenes to life:
   - **The time of day:** in the sky, city and mountain scenes it turns.

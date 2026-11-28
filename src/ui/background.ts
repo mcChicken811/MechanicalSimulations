@@ -22,6 +22,7 @@
 import { toWorld, type View } from './render';
 import { Weather, type WeatherMode } from './weather';
 import type { Soundscape } from './sound';
+import type { InkStyle, InkStyleName } from './inkstyle';
 
 /** An image layer of a custom background. */
 export interface ImageLayer {
@@ -66,9 +67,44 @@ export interface BackgroundState {
   /** How strongly it shows, 0–1. */
   opacity: number;
   anim: BackgroundAnim;
+  /**
+   * Whether the machine is drawn in the paper's style (ui/inkstyle.ts), by paper: 'blueprint'
+   * (as a blueprint), 'paper' and 'none' (in pencil). Unset: on for the blueprint and graph paper,
+   * off for plain paper.
+   */
+  style?: Record<string, boolean>;
 }
 
 export const NO_BACKGROUND: BackgroundState = { kind: 'none', base: 'none', layers: [], opacity: 0.7, anim: { ...DEFAULT_ANIM } };
+
+/** The papers the machine can be drawn in the style of: the style, its colour (the page's own for plain paper), and whether it is on unless set. */
+const PAPERS: Record<string, { style: InkStyleName; color: string | null; on: boolean }> = {
+  blueprint: { style: 'blueprint', color: '#2a5d9c', on: true },
+  paper: { style: 'sketch', color: '#fbf8ef', on: true },
+  none: { style: 'sketch', color: null, on: false },
+};
+/** The paper a background is (a custom one's base): the key of its machine style, or null if it has none. */
+export const paperOf = (b: BackgroundState): string | null => {
+  const id = b.kind === 'custom' ? b.base : b.kind;
+  return id in PAPERS ? id : null;
+};
+/** The style the machine could be drawn in over a background (null: none for it). */
+export const inkStyleOf = (b: BackgroundState): InkStyleName | null => PAPERS[paperOf(b) ?? '']?.style ?? null;
+/** Whether the machine is drawn in the background's style. */
+export const inkOn = (b: BackgroundState): boolean => {
+  const k = paperOf(b);
+  return !!k && (b.style?.[k] ?? PAPERS[k].on);
+};
+/**
+ * How the machine is drawn over a background: its style and the paper's colour as it shows
+ * (the background at its strength over the page, `page`), or null to draw it as it is.
+ */
+export function inkFor(b: BackgroundState, page: string): InkStyle | null {
+  const k = paperOf(b);
+  if (!k || !inkOn(b)) return null;
+  const p = PAPERS[k];
+  return { style: p.style, paper: p.color ? mix(page, p.color, Math.min(1, Math.max(0, b.opacity))) : page };
+}
 
 // ---- the time of day: the sky's colours, the sun and moon, how dark and how warm it is ----
 /** The sky through the day: hour → colours at the top, the middle and the horizon. */

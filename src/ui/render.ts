@@ -1,3 +1,4 @@
+import { inkedContext, inkStressColor, type InkStyle, type InkStyleName } from './inkstyle';
 import { gearLabel, GEAR_MODULE, leverOf, type DDimension, type DPid, linkLabel, motorHousingRadius, pointLabel, rackPitch, railOf, springLabel, type DBodyRef, type Design, type DLink, type DPoint, type DSpring } from '../mechanics/model';
 import type { PartSet } from '../mechanics/fragment';
 import type { Heat } from '../mechanics/simulate';
@@ -79,6 +80,11 @@ export interface Scene {
   scaleBar?: 'right' | 'left' | 'none';
   /** Recent path of the selected joint, a ring buffer of world positions (oldest at `start`). */
   trail?: { xs: Float64Array; ys: Float64Array; start: number; n: number } | null;
+  /**
+   * The machine drawn in the style of its paper (ui/inkstyle.ts): as a blueprint or in pencil,
+   * every part, dimension and label (the background, grid and scale bar as they are).
+   */
+  ink?: InkStyle | null;
 }
 
 const partsKey = { point: 'points', link: 'links', spring: 'springs', gear: 'gears', lever: 'gears', pid: 'gears' } as const;
@@ -89,9 +95,14 @@ function isSelected(s: Scene, kind: Selection['kind'], id: number): boolean {
 
 /** Set from the scene at the start of every frame. */
 let showLabels = true;
+/** The style the machine is drawn in this frame (null: as it is). */
+let inkName: InkStyleName | null = null;
+
+/** The page the drawing is on, under any background. */
+export const PAGE_COLOR = '#f6f6f3';
 
 const C = {
-  bg: '#f6f6f3',
+  bg: PAGE_COLOR,
   gridMinor: '#ebebe6',
   gridMajor: '#dcdcd5',
   axis: '#c9c9c0',
@@ -155,6 +166,10 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   ctx.fillRect(0, 0, w, h);
   s.backdrop?.(ctx, w, h, v);
   drawGrid(ctx, w, h, v, !!s.grid, s.scaleBar ?? 'right');
+  // the machine, its dimensions and labels: in the paper's style, if it has one
+  const paper = ctx;
+  inkName = s.ink?.style ?? null;
+  if (s.ink) ctx = inkedContext(ctx, s.ink);
   if (s.ground) drawGroundLine(ctx, w, h, v, s.ground, s.groundSelected ?? null);
 
   for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
@@ -235,7 +250,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     ctx.fillText(s.cursorLabel.text, x + 20, y + 20);
     ctx.restore();
   }
-  s.overlay?.(ctx, w, h, v);
+  s.overlay?.(paper, w, h, v);
 }
 
 /** The outline of parts about to be placed: dashed bars, springs, gears and joints in the accent colour. */
@@ -600,8 +615,9 @@ function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
   ctx.restore();
 }
 
-/** The colour of a size from 0 to 1: green, through yellow, to red. */
-export function stressColor(f: number): string {
+/** The colour of a size from 0 to 1: green, through yellow, to red (in a drawing style: blue to white, or grey to black). */
+export function stressColor(f: number, style: InkStyleName | null = null): string {
+  if (style) return inkStressColor(f, style);
   const x = Math.min(1, Math.max(0, f));
   return `hsl(${Math.round(120 * (1 - x))}, 78%, ${Math.round(44 + 6 * Math.sin(Math.PI * x))}%)`;
 }
@@ -613,7 +629,7 @@ function drawBeamShade(ctx: CanvasRenderingContext2D, v: View, s: Scene, bs: Non
   const a = toScreen(v, s.pos(l.a));
   const b = toScreen(v, s.pos(l.b));
   const grad = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
-  bs.s.forEach((x, k) => grad.addColorStop(Math.min(1, Math.max(0, x)), stressColor(bs.f[k])));
+  bs.s.forEach((x, k) => grad.addColorStop(Math.min(1, Math.max(0, x)), stressColor(bs.f[k], inkName)));
   const path = barPath(v, s, l);
   ctx.save();
   ctx.lineCap = 'round';

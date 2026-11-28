@@ -12,7 +12,7 @@ import { Palette, type Command } from './ui/palette';
 import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
 import { Gallery, MY_PROJECTS, type GalleryItem } from './ui/gallery';
-import { Backdrop, clockText, DEFAULT_ANIM, NO_BACKGROUND, SCENES, type BackgroundState, type ImageLayer } from './ui/background';
+import { Backdrop, clockText, DEFAULT_ANIM, inkFor, inkOn, inkStyleOf, NO_BACKGROUND, paperOf, SCENES, type BackgroundState, type ImageLayer } from './ui/background';
 import { isWeatherMode, WEATHER_MODES, WEATHERS, type WeatherKind } from './ui/weather';
 import { BackgroundEditor } from './ui/bgeditor';
 import { askDialog } from './ui/dialog';
@@ -22,7 +22,7 @@ import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './
 import { barDiagram, deflection, peak, valueAt, type BeamDiagram } from './mechanics/beam';
 import { breakBars, breakPoints, transferState } from './mechanics/fracture';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
-import { dimensionAt, dimNormal, drawScene, gridStep, stressColor, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
+import { dimensionAt, dimNormal, drawScene, PAGE_COLOR, gridStep, stressColor, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
 
 type Tool = 'select' | 'initial' | 'dimension' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
@@ -2350,7 +2350,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
 /** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
-const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-sound', 'bg-trigger-kind', 'bg-trigger-for']);
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-sound', 'bg-style', 'bg-trigger-kind', 'bg-trigger-for']);
 
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
@@ -2554,7 +2554,9 @@ function validBackground(raw: unknown): BackgroundState | null {
     return { kind: 'custom', base: 'none', opacity, anim, layers: [{ id: 'img', name: 'image', image: b.image, aspect: 0, depth: 1, ref: { cx: 0, cy: 0, s: 100 }, rect: { ...b.rect } }] }; // its shape: from the image, once loaded
   const layers = Array.isArray(b.layers) ? b.layers.filter(okLayer).map((l) => ({ ...l, name: String(l.name ?? 'image'), id: String(l.id ?? Math.random()) })) : [];
   const kind = b.kind === 'custom' ? 'custom' : scene(b.kind);
-  return { kind, base: scene(b.base), layers, opacity, anim };
+  // the machine drawn in the paper's style, by paper (only those set)
+  const style = b.style && typeof b.style === 'object' ? Object.fromEntries(Object.entries(b.style).filter(([k, on]) => ['blueprint', 'paper', 'none'].includes(k) && typeof on === 'boolean')) : undefined;
+  return { kind, base: scene(b.base), layers, opacity, anim, ...(style && Object.keys(style).length ? { style } : {}) };
 }
 
 /** Show the background and its controls, and keep it in the browser unless `passing` (an image too big for that stays for now, and in saved projects). */
@@ -2573,6 +2575,14 @@ function setBackground(b: BackgroundState, passing = false) {
   $<HTMLElement>('#bg-weather-row').hidden = !sc?.weather || !b.anim.on;
   $<HTMLElement>('#bg-trigger-row').hidden = !sc?.weather || !b.anim.on;
   $<HTMLElement>('#bg-sound-row').hidden = !sc?.sounds || !b.anim.on; // (blueprint, graph paper and plain have none)
+  // the machine in the paper's style: a blueprint, or pencil on graph paper or plain paper
+  const ink = inkStyleOf(b);
+  $<HTMLElement>('#bg-style-row').hidden = !ink;
+  $<HTMLElement>('#bg-style-text').textContent = ink === 'blueprint' ? 'Draw the machine as a blueprint' : 'Draw the machine by hand (pencil)';
+  $<HTMLInputElement>('#bg-style').checked = inkOn(b);
+  // the beam colours' key, in the same colours as the bars
+  const on = ink && inkOn(b) ? ink : null;
+  $<HTMLElement>('#beam-legend .bl-bar').style.background = on === 'blueprint' ? 'linear-gradient(90deg, rgb(38,88,168), #fff)' : on === 'sketch' ? 'linear-gradient(90deg, rgb(205,205,205), rgb(18,18,18))' : '';
   $<HTMLSelectElement>('#bg-weather').value = b.anim.weather;
   $<HTMLInputElement>('#bg-sound').checked = b.anim.sound;
   const day = $<HTMLSelectElement>('#bg-day');
@@ -2611,6 +2621,11 @@ $<HTMLInputElement>('#bg-animate').addEventListener('change', (e) => setBackgrou
 $<HTMLInputElement>('#bg-birds').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, birds: (e.target as HTMLInputElement).checked } }));
 for (const m of WEATHER_MODES) $<HTMLSelectElement>('#bg-weather').append(new Option(m.name, m.id));
 $<HTMLSelectElement>('#bg-weather').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, weather: (e.target as HTMLSelectElement).value as BackgroundState['anim']['weather'] } }));
+$<HTMLInputElement>('#bg-style').addEventListener('change', (e) => {
+  const b = backgroundNow();
+  const k = paperOf(b);
+  if (k) setBackground({ ...b, style: { ...b.style, [k]: (e.target as HTMLInputElement).checked } });
+});
 $<HTMLInputElement>('#bg-sound').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, sound: (e.target as HTMLInputElement).checked } }));
 /** The scene the background shows (a custom one's base). */
 const backgroundScene = () => SCENES.find((x) => x.id === (backdrop.state.kind === 'custom' ? backdrop.state.base : backdrop.state.kind));
@@ -6398,6 +6413,7 @@ function drawFrame(now: number) {
     trail: trail.n > 1 ? trail : null,
     forceArrows: fbd,
     backdrop: (c, w, h, v) => backdrop.draw(c, w, h, v),
+    ink: inkFor(backdrop.state, PAGE_COLOR),
     overlay: bgEditor.active ? (c, w, h, v) => bgEditor.drawOverlay(c, w, h, v) : null,
     beamShades: beamShadesNow(),
     bends: bendsNow(),
