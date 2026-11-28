@@ -419,29 +419,42 @@ function buildings(c: CanvasRenderingContext2D, w: number, h: number, seed: numb
 function range(c: CanvasRenderingContext2D, w: number, h: number, seed: number, color: string, top: number, low: number, k: number) {
   const rnd = seeded(seed);
   const peaks: [number, number][] = [];
-  for (let x = 0; x < w; x += 90 + rnd() * 140) peaks.push([x, h * (top + (low - top) * rnd() * 0.6)]);
+  // (the last at least a normal gap before the next tile's first, at w: no needle-thin peak at the seam)
+  for (let x = 0; x < w - 90; x += 90 + rnd() * 140) peaks.push([x, h * (top + (low - top) * rnd() * 0.6)]);
   const all = [...peaks.map(([x, y]) => [x - w, y] as [number, number]), ...peaks, ...peaks.map(([x, y]) => [x + w, y] as [number, number])]; // across the seam
+  const valley = h * (low - 0.05 * k);
+  // each peak's two flanks run down to the valleys halfway to its neighbours
+  const flanks = all.map(([x, y], i) => ({ x, y, left: ((all[i - 1]?.[0] ?? x - 200) + x) / 2, right: (x + (all[i + 1]?.[0] ?? x + 200)) / 2 }));
   c.fillStyle = color;
   c.beginPath();
   c.moveTo(-w, h);
-  all.forEach(([x, y], i) => {
-    const nx = all[i + 1]?.[0] ?? 2 * w;
-    c.lineTo(x, y);
-    c.lineTo((x + nx) / 2, h * (low - 0.05 * k));
-  });
+  for (const f of flanks) {
+    c.lineTo(f.x, f.y);
+    c.lineTo(f.right, valley);
+  }
   c.lineTo(2 * w, h);
   c.closePath();
   c.fill();
   if (k < 2) {
+    // snow on the far ranges: a cap down each peak's own flanks (so it fits however steep the
+    // peak is), its lower edge jagged and dipping into the mountain, never past its sides
     c.fillStyle = 'rgba(255,255,255,0.85)';
-    for (const [x, y] of all) {
-      const s = (h * 0.045) / (1 + k);
+    const capRnd = seeded(seed + 7);
+    for (const f of flanks) {
+      const tall = valley - f.y;
+      if (tall < 8) continue;
+      const depth = Math.min(tall * 0.32, (h * 0.07) / (1 + k)); // how far down the snow reaches
+      const t = depth / tall;
+      const [lx, ly] = [f.x + (f.left - f.x) * t, f.y + tall * t]; // on the left flank
+      const [rx, ry] = [f.x + (f.right - f.x) * t, f.y + tall * t]; // on the right flank
+      // the snow line's teeth, all downwards: below the line between the flanks the mountain is
+      // only wider, so they stay inside it (the middle one shallower: a notch between two teeth)
+      const dip = (u: number) => depth * (u === 0.5 ? 0.06 + 0.08 * capRnd() : 0.2 + 0.3 * capRnd());
       c.beginPath();
-      c.moveTo(x, y);
-      c.lineTo(x - s * 1.2, y + s * 1.4);
-      c.lineTo(x - s * 0.3, y + s);
-      c.lineTo(x + s * 0.4, y + s * 1.5);
-      c.lineTo(x + s * 1.2, y + s * 1.3);
+      c.moveTo(f.x, f.y);
+      c.lineTo(lx, ly);
+      for (const u of [0.25, 0.5, 0.75]) c.lineTo(lx + (rx - lx) * u, ly + (ry - ly) * u + dip(u));
+      c.lineTo(rx, ry);
       c.closePath();
       c.fill();
     }
