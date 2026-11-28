@@ -576,7 +576,7 @@ function overcast(c: CanvasRenderingContext2D, w: number, h: number, seed: numbe
   c.fill();
 }
 
-/** Where the weather goes among the layers (distances): its clouds, the bolt, and the rain and hail far and near. */
+/** Where the weather goes among the layers (distances): its clouds, the bolt, and the rain, hail and snow far and near. */
 const WEATHER_DEPTH = { highCloud: 18, lowCloud: 8, bolt: 13, farFall: 7, nearFall: 1.6 };
 
 /** The background as drawn: its state, its images once loaded, and each scene's layers drawn once per window size. */
@@ -734,8 +734,8 @@ export class Backdrop {
     // the night scene's sky: twinkling and shooting stars, just in front of it
     if (anim && !turning && dark > 0.3) items.push({ depth: Infinity, k: 0.5, draw: (c) => this.drawNightSky(c, w, h, dt, dark) });
     // birds by day, flying at their distance in the scene's space
-    // (sheltering from the rain and hail)
-    const shelter = wet ? Math.min(1, 1.6 * (wx.now.rain + wx.now.hail)) : 0;
+    // (sheltering from the rain, hail and snow)
+    const shelter = wet ? Math.min(1, 1.6 * (wx.now.rain + wx.now.hail) + 1.1 * wx.now.snow) : 0;
     if (anim && scene?.birds && s.anim.birds && dark < 0.9 && shelter < 0.98) items.push({ depth: BIRD_DEPTH, k: 1000, draw: (c) => this.drawBirds(c, v, w, h, dt, (1 - dark) * (1 - shelter)) });
     if (wet) this.weatherItems(items, v, w, h, dt, dark);
     if (s.kind === 'custom')
@@ -768,6 +768,8 @@ export class Backdrop {
         if (warm > 0.01) (sc.fillStyle = `rgba(255,128,70,${0.2 * warm})`), sc.fillRect(0, 0, w, h);
         if (gloom > 0.01) (sc.fillStyle = `rgba(58,66,80,${0.5 * gloom})`), sc.fillRect(0, 0, w, h);
         if (it.cloud && wet) (sc.fillStyle = `rgba(112,120,134,${0.7 * wx.now.cover})`), sc.fillRect(0, 0, w, h);
+        // snow lying on the land: whiter as it settles (before the night darkens it too)
+        if (!it.cloud && wet && wx.settled > 0.01) (sc.fillStyle = `rgba(238,242,248,${0.55 * wx.settled})`), sc.fillRect(0, 0, w, h);
         if (dark > 0.01) (sc.fillStyle = `rgba(14,22,58,${0.62 * dark})`), sc.fillRect(0, 0, w, h);
         sc.restore();
         if (it.glow) {
@@ -796,7 +798,7 @@ export class Backdrop {
   /**
    * The weather's layers, each at its distance: the overcast sky (in front of the sky, hiding the
    * sun and stars) and the sky lit by lightning behind the scenery, the clouds high and low
-   * (drifting with the wind, lit like the scenery), the bolt, and the rain and hail far and near.
+   * (drifting with the wind, lit like the scenery), the bolt, and the rain, hail and snow far and near.
    */
   private weatherItems(items: Item[], v: View, w: number, h: number, dt: number, dark: number) {
     const wx = this.weather;
@@ -849,7 +851,7 @@ export class Backdrop {
       const { r, unit } = place(WEATHER_DEPTH.bolt);
       items.push({ depth: WEATHER_DEPTH.bolt, k: 900, draw: (c) => wx.drawBolt(c, r.x, r.y, unit, -r.x / unit, (w - r.x) / unit) });
     }
-    if (n.rain > 0.01 || n.hail > 0.01)
+    if (n.rain > 0.01 || n.hail > 0.01 || n.snow > 0.01)
       for (const near of [false, true]) {
         const z = near ? WEATHER_DEPTH.nearFall : WEATHER_DEPTH.farFall;
         const { r, unit } = place(z);

@@ -43,7 +43,7 @@ describe('weather', () => {
       }
     }, 0.05);
     const kinds = new Set(spells.map((s) => s.kind));
-    for (const k of ['clear', 'cloudy', 'rain', 'storm', 'thunder', 'hail'] as WeatherKind[]) expect(kinds.has(k)).toBe(true);
+    for (const k of ['clear', 'cloudy', 'rain', 'storm', 'thunder', 'hail', 'snow'] as WeatherKind[]) expect(kinds.has(k)).toBe(true);
     // every spell lasts its while (no flicker), and none for ever
     for (const s of spells.slice(1)) {
       expect(s.secs).toBeGreaterThan(19);
@@ -128,10 +128,32 @@ describe('weather', () => {
     expect(n).toBeGreaterThan(1);
   });
 
+  it('snow settles while it snows and melts after, faster in the rain', () => {
+    const w = new Weather();
+    run(w, 200, 'snow');
+    expect(w.now.snow).toBeGreaterThan(0.99);
+    expect(w.settled).toBeGreaterThan(0.9);
+    const lying = w.settled;
+    run(w, 30, 'clear');
+    expect(w.settled).toBeLessThan(lying);
+    expect(w.settled).toBeGreaterThan(0.5);
+    const a = new Weather();
+    const b = new Weather();
+    run(a, 200, 'snow');
+    run(b, 200, 'snow');
+    run(a, 40, 'clear');
+    run(b, 40, 'rain');
+    expect(b.settled).toBeLessThan(a.settled);
+    run(a, 400, 'clear');
+    expect(a.settled).toBe(0);
+    expect(a.active).toBe(false);
+  });
+
   it('knows its modes', () => {
     expect(isWeatherMode('random')).toBe(true);
     expect(isWeatherMode('hail')).toBe(true);
-    expect(isWeatherMode('snow')).toBe(false);
+    expect(isWeatherMode('snow')).toBe(true);
+    expect(isWeatherMode('fog')).toBe(false);
     expect(isWeatherMode(3)).toBe(false);
   });
 });

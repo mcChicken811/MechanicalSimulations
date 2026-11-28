@@ -2808,11 +2808,11 @@ function paletteCommands(): Command[] {
   if (!$<HTMLElement>('#bg-weather-row').hidden) {
     const wsel = $<HTMLSelectElement>('#bg-weather');
     for (const m of WEATHER_MODES)
-      out.push({ label: `Weather: ${m.name}`, group: 'Background', keywords: 'rain storm thunder lightning hail cloudy clouds sky', on: wsel.value === m.id, toggle: true, run: () => {
+      out.push({ label: `Weather: ${m.name}`, group: 'Background', keywords: 'rain storm thunder lightning hail snow cloudy clouds sky', on: wsel.value === m.id, toggle: true, run: () => {
         wsel.value = m.id;
         wsel.dispatchEvent(new Event('change'));
       } });
-    for (const k of WEATHERS) out.push({ label: `Start weather now: ${k.name}`, group: 'Background', keywords: 'trigger manual rain storm thunder lightning hail cloudy clouds sky', run: () => triggerWeather(k.id) });
+    for (const k of WEATHERS) out.push({ label: `Start weather now: ${k.name}`, group: 'Background', keywords: 'trigger manual rain storm thunder lightning hail snow cloudy clouds sky', run: () => triggerWeather(k.id) });
     if (backdrop.weather.triggered) out.push({ label: 'Stop the weather started by hand', group: 'Background', keywords: 'trigger manual end weather', run: () => $<HTMLButtonElement>('#bg-trigger-stop').click() });
     out.push({ label: 'Lightning strike', group: 'Background', keywords: 'thunder bolt flash weather trigger', run: () => backdrop.weather.strikeNow() });
   }

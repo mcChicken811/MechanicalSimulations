@@ -1,5 +1,5 @@
 /**
- * The weather over a background scene: clear, cloudy, rain, storm, thunderstorm or hail, held
+ * The weather over a background scene: clear, cloudy, rain, storm, thunderstorm, hail or snow, held
  * fixed or changing by itself (spells of clear sky of random length, broken by weather of a random
  * kind lasting a random time, which now and then turns into another before it clears). Any
  * weather can also be started by hand, for a random while, a set time or until stopped, after
@@ -7,15 +7,16 @@
  *
  * The weather is a handful of levels, each easing towards what the weather of the moment wants
  * (so a storm rolls in and clears away rather than switching): how much of the sky is overcast,
- * how gloomy the light is, how hard it rains and hails, how windy it is, and whether lightning
+ * how gloomy the light is, how hard it rains, hails and snows, how windy it is, and whether lightning
  * strikes. ui/background.ts draws them in their places among the scene's layers: the overcast
- * sky and its clouds, the scenery greyed, rain and hail falling at two distances (slanted by the
+ * sky and its clouds, the scenery greyed (and whitened as snow settles on it, melting after),
+ * rain, hail and snow falling at two distances (slanted by the
  * wind, the nearer faster and longer), and lightning: a forked bolt at a distance, the sky lit
  * up behind the scenery and a flash over all, the thunder following it after the time its sound
  * takes to arrive.
  */
 
-export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'storm' | 'thunder' | 'hail';
+export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'storm' | 'thunder' | 'hail' | 'snow';
 /** 'random': changing by itself; otherwise that weather all the time. */
 export type WeatherMode = 'random' | WeatherKind;
 
@@ -26,6 +27,7 @@ export const WEATHERS: { id: WeatherKind; name: string }[] = [
   { id: 'storm', name: 'Storm' },
   { id: 'thunder', name: 'Thunderstorm' },
   { id: 'hail', name: 'Hail' },
+  { id: 'snow', name: 'Snow' },
 ];
 export const WEATHER_MODES: { id: WeatherMode; name: string }[] = [{ id: 'random', name: 'Changing (random)' }, ...WEATHERS];
 export const isWeatherMode = (m: unknown): m is WeatherMode => WEATHER_MODES.some((x) => x.id === m);
@@ -38,19 +40,24 @@ export interface WeatherLevels {
   gloom: number;
   rain: number;
   hail: number;
+  snow: number;
   wind: number;
 }
 
 const TARGETS: Record<WeatherKind, WeatherLevels> = {
-  clear: { cover: 0, gloom: 0, rain: 0, hail: 0, wind: 0.1 },
-  cloudy: { cover: 0.75, gloom: 0.3, rain: 0, hail: 0, wind: 0.3 },
-  rain: { cover: 0.9, gloom: 0.45, rain: 0.55, hail: 0, wind: 0.25 },
-  storm: { cover: 1, gloom: 0.65, rain: 1, hail: 0, wind: 1 },
-  thunder: { cover: 1, gloom: 0.75, rain: 0.9, hail: 0, wind: 0.75 },
-  hail: { cover: 0.95, gloom: 0.55, rain: 0.25, hail: 1, wind: 0.5 },
+  clear: { cover: 0, gloom: 0, rain: 0, hail: 0, snow: 0, wind: 0.1 },
+  cloudy: { cover: 0.75, gloom: 0.3, rain: 0, hail: 0, snow: 0, wind: 0.3 },
+  rain: { cover: 0.9, gloom: 0.45, rain: 0.55, hail: 0, snow: 0, wind: 0.25 },
+  storm: { cover: 1, gloom: 0.65, rain: 1, hail: 0, snow: 0, wind: 1 },
+  thunder: { cover: 1, gloom: 0.75, rain: 0.9, hail: 0, snow: 0, wind: 0.75 },
+  hail: { cover: 0.95, gloom: 0.55, rain: 0.25, hail: 1, snow: 0, wind: 0.5 },
+  snow: { cover: 1, gloom: 0.3, rain: 0, hail: 0, snow: 1, wind: 0.2 },
 };
 /** How quickly each level follows (s): the sky clouds over slowly, the rain starts sooner. */
-const EASE: Record<keyof WeatherLevels, number> = { cover: 7, gloom: 7, rain: 4, hail: 3, wind: 5 };
+const EASE: Record<keyof WeatherLevels, number> = { cover: 7, gloom: 7, rain: 4, hail: 3, snow: 6, wind: 5 };
+/** How long snow takes to settle fully, and to melt away (s). */
+const SETTLE = 90;
+const MELT = 120;
 
 const between = (a: number, b: number) => a + Math.random() * (b - a);
 function pick<T extends string>(weights: Partial<Record<T, number>>): T {
@@ -66,7 +73,8 @@ const NEXT: Partial<Record<WeatherKind, Partial<Record<WeatherKind, number>>>> =
   rain: { thunder: 0.15, storm: 0.1, cloudy: 0.25, clear: 0.5 },
   storm: { thunder: 0.25, rain: 0.25, clear: 0.5 },
   thunder: { rain: 0.3, hail: 0.1, clear: 0.6 },
-  hail: { rain: 0.3, clear: 0.7 },
+  hail: { rain: 0.3, snow: 0.15, clear: 0.55 },
+  snow: { cloudy: 0.3, clear: 0.7 },
 };
 
 /** A lightning bolt: its path (scene units, from where it strikes), how old it is (s) and how far (for the thunder). */
@@ -79,7 +87,7 @@ interface Bolt {
   far: number;
 }
 
-/** Rain or hail at one distance: how far it has fallen and drifted (px, kept as the speed changes). */
+/** Rain, hail or snow at one distance: how far it has fallen and drifted (px, kept as the speed changes). */
 interface Fall {
   y: number;
   x: number;
@@ -110,7 +118,9 @@ export class Weather {
   /** The lightning's brightness now, 0–1 (a flash, a flicker, then gone). */
   flash = 0;
   private nextStrike = between(2, 6);
-  private falls: Fall[] = [0, 1, 2, 3].map(() => ({ x: 0, y: 0 }));
+  private falls: Fall[] = [0, 1, 2, 3, 4, 5].map(() => ({ x: 0, y: 0 }));
+  /** How much snow lies on the scenery, 0–1: settling while it snows, melting after. */
+  settled = 0;
   /** Thunder, when lightning strikes: after `delay` s, `loud` 0–1. */
   onThunder: ((delay: number, loud: number) => void) | null = null;
   private mode: WeatherMode = 'random';
@@ -120,7 +130,7 @@ export class Weather {
   /** Whether there is any weather to draw (anything but a clear sky, or still clearing). */
   get active(): boolean {
     const n = this.now;
-    return n.cover > 0.005 || n.rain > 0.005 || n.hail > 0.005 || !!this.bolt;
+    return n.cover > 0.005 || n.rain > 0.005 || n.hail > 0.005 || n.snow > 0.005 || this.settled > 0.005 || !!this.bolt;
   }
 
   get name(): string {
@@ -140,13 +150,16 @@ export class Weather {
       this.kind = this.triggered.kind;
       if ((this.triggered.left -= dt) <= 0) this.endTrigger();
     } else if (mode === 'random' && (this.left -= dt) <= 0) {
-      this.kind = this.kind === 'clear' ? pick<WeatherKind>({ cloudy: 0.32, rain: 0.26, storm: 0.12, thunder: 0.16, hail: 0.14 }) : pick<WeatherKind>(NEXT[this.kind]!);
+      this.kind = this.kind === 'clear' ? pick<WeatherKind>({ cloudy: 0.3, rain: 0.24, storm: 0.1, thunder: 0.14, hail: 0.1, snow: 0.12 }) : pick<WeatherKind>(NEXT[this.kind]!);
       // clear spells last longer than the weather between them
-      this.left = this.kind === 'clear' ? between(40, 180) : this.kind === 'cloudy' ? between(30, 100) : between(25, 90);
+      this.left = spell(this.kind);
     }
     const target = TARGETS[this.kind];
     for (const k of Object.keys(EASE) as (keyof WeatherLevels)[]) this.now[k] += (target[k] - this.now[k]) * (1 - Math.exp(-dt / EASE[k]));
     this.drift += (6 + 40 * this.now.wind) * dt;
+    // snow settles while it snows hard enough, and melts away (rain melts it faster)
+    const n = this.now;
+    this.settled = Math.min(1, Math.max(0, this.settled + (n.snow > 0.3 ? (n.snow * dt) / SETTLE : -((1 + 3 * n.rain) * dt) / MELT)));
     // lightning: in a thunderstorm once the sky has clouded over, every few seconds
     if (this.bolt) {
       this.bolt.age += dt;
@@ -165,7 +178,7 @@ export class Weather {
    * its mode (changing weather: a clear spell; a set one: that weather).
    */
   trigger(kind: WeatherKind, secs?: number) {
-    this.triggered = { kind, left: secs && secs > 0 ? secs : kind === 'clear' ? between(40, 180) : kind === 'cloudy' ? between(30, 100) : between(25, 90) };
+    this.triggered = { kind, left: secs && secs > 0 ? secs : spell(kind) };
     this.kind = kind;
     if (kind === 'thunder') this.nextStrike = Math.min(this.nextStrike, between(1, 3)); // (the first strike soon after it has clouded over)
   }
@@ -262,6 +275,32 @@ export class Weather {
       c.fill();
       c.restore();
     }
+    if (n.snow > 0.01) {
+      // flakes drifting down slowly, swaying side to side, carried by the wind
+      const f = this.falls[near ? 5 : 4];
+      const speed = Math.max(near ? 55 : 32, (near ? 120 : 65) * unit);
+      const r = Math.min(4.5, Math.max(near ? 1.5 : 0.9, (near ? 3 : 1.6) * unit));
+      f.y += speed * dt;
+      f.x += speed * (0.3 + 2.5 * n.wind) * dt;
+      const count = Math.round(n.snow * (near ? 0.00016 : 0.00035) * w * h);
+      const sway = (near ? 18 : 9) * Math.max(0.5, unit);
+      const [W, H] = [w + 2 * sway + 20, h + 20];
+      const rnd = seeded(near ? 401 : 397);
+      const t = performance.now() / 1000;
+      c.save();
+      c.fillStyle = `rgba(${dark > 0.5 ? '200,208,224' : '255,255,255'},${near ? 0.92 : 0.7})`;
+      c.beginPath();
+      for (let i = 0; i < count; i++) {
+        const [x0, y0, k, ph, fr] = [rnd() * W, rnd() * H, 0.7 + 0.6 * rnd(), rnd() * 6.28, 0.5 + rnd()];
+        const x = mod(x0 + f.x * k + ox + Math.sin(t * fr + ph) * sway, W) - sway - 10;
+        const y = mod(y0 + f.y * k + oy, H) - 10;
+        const rr = r * (0.6 + 0.4 * k);
+        c.moveTo(x + rr, y);
+        c.arc(x, y, rr, 0, Math.PI * 2);
+      }
+      c.fill();
+      c.restore();
+    }
   }
 
   /** The bolt at its distance: (ox, oy, unit) as for drawFall, u0…u1 the scene units in view across. */
@@ -296,6 +335,7 @@ export class Weather {
   /** Back to a clear sky at once (a new background). */
   clear() {
     this.now = { ...TARGETS.clear };
+    this.settled = 0;
     this.bolt = null;
     this.flash = 0;
     this.triggered = null;
@@ -304,6 +344,11 @@ export class Weather {
       this.left = between(20, 60);
     }
   }
+}
+
+/** How long a spell of a weather lasts by itself (s): clear spells longest, snow longer than showers. */
+function spell(kind: WeatherKind): number {
+  return kind === 'clear' ? between(40, 180) : kind === 'cloudy' ? between(30, 100) : kind === 'snow' ? between(40, 120) : between(25, 90);
 }
 
 /** The lightning's brightness over its life: a flash, a dimmer second one, gone in a second. */
