@@ -1447,8 +1447,8 @@ export class Simulator {
     }
     // The spring pulls the point towards the cursor; the damper steadies it like a firm hand,
     // resisting its motion in every direction (damping only along the line to the cursor
-    // leaves held mechanisms swinging for seconds). The app's arrow shows the pull alone,
-    // since the damper opposes the point's velocity, which is rarely along that line.
+    // leaves held mechanisms swinging for seconds). The app's arrow and the free-body diagram
+    // both show this whole force (so off the line to the cursor while the point moves).
     const c = 2 * 0.5 * Math.sqrt(g.stiffness * Math.max(sys.totalMass, 1e-3));
     const Fx = g.stiffness * (g.target[0] - rx) - c * vx;
     const Fy = g.stiffness * (g.target[1] - ry) - c * vy;

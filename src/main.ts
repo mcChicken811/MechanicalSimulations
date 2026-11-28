@@ -4167,7 +4167,11 @@ function forceSignature(kind: string, id: number): string {
 }
 
 /** Arrows for the joint forces on the part being measured, scaled so the largest is about 70 px. */
+/** Whether the free-body diagram drawn this frame has the mouse pull in it (then the pull's own arrow is left out). */
+let fbdHasPull = false;
+
 function forceArrowsNow(): Scene['forceArrows'] {
+  fbdHasPull = false;
   if (!sim || !measureView || inspectSettings) return null;
   const { kind, id } = measureView;
   if (kind === 'spring') return null;
@@ -4184,6 +4188,7 @@ function forceArrowsNow(): Scene['forceArrows'] {
   // and every other load on it, where it acts, in its own colour
   for (const it of loadsOn(now, kind, id)) {
     const st = LOAD_STYLE[it.type];
+    if (it.type === 'pull') fbdHasPull = true;
     const short = st.sym.replace(/<sub>(.*?)<\/sub>/g, '$1').replace(/<[^>]+>/g, '');
     items.push({ at: it.at, F: it.F, M: it.M, label: `${short} ${Math.hypot(...it.F).toFixed(2)} N`, color: st.color });
   }
@@ -6124,15 +6129,18 @@ function drawFrame(now: number) {
 
   let grabScene = null;
   grabPull = [0, 0];
+  const fbd = forceArrowsNow();
   if (sim && grab) {
     const a = pos(grab.a);
     const b = pos(grab.b);
     const gr = grab.gear && design.gears.find((x) => x.id === grab!.gear!.id);
-    const at: Vec = gr ? gearPoint(gr, grab.gear!.u, grab.gear!.v) : [a[0] + (b[0] - a[0]) * grab.s, a[1] + (b[1] - a[1]) * grab.s];
-    // the arrow is the spring's pull, k (cursor − point): it lies along the dashed line by construction
-    const k = settings.stiffness;
-    grabPull = running ? [k * (mouseWorld[0] - at[0]), k * (mouseWorld[1] - at[1])] : [0, 0];
-    grabScene = { at, to: mouseWorld, force: grabPull };
+    let at: Vec = gr ? gearPoint(gr, grab.gear!.u, grab.gear!.v) : [a[0] + (b[0] - a[0]) * grab.s, a[1] + (b[1] - a[1]) * grab.s];
+    // the arrow is the force the pull applies, as recorded for this frame (spring and damper: the
+    // free-body diagram's "your pull" is the very same); the dashed line runs to the cursor
+    const pull = running ? history.loads[history.loads.length - 1]?.points.find((p) => p.type === 'pull') : undefined;
+    if (pull) [grabPull, at] = [[pull.F[0], pull.F[1]], [pull.at[0], pull.at[1]]];
+    // the measured part's free-body diagram draws it already, to its own scale: not twice
+    grabScene = { at, to: mouseWorld, force: fbdHasPull ? ([0, 0] as Vec) : grabPull };
   }
   drawScene(ctx, W, H, view, {
     design,
@@ -6168,7 +6176,7 @@ function drawFrame(now: number) {
           })()
         : null,
     trail: trail.n > 1 ? trail : null,
-    forceArrows: forceArrowsNow(),
+    forceArrows: fbd,
     beamShades: beamShadesNow(),
     bends: bendsNow(),
   });
