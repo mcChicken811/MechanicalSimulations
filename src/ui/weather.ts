@@ -326,12 +326,6 @@ export class Weather {
     c.restore();
   }
 
-  /** What it sounds like: the rain, the hail and the wind, 0–1 (none while the sky is clear). */
-  get sound(): { rain: number; hail: number; wind: number } {
-    const n = this.now;
-    return { rain: n.rain, hail: n.hail, wind: Math.max(0, n.wind - 0.15) * n.cover };
-  }
-
   /** Back to a clear sky at once (a new background). */
   clear() {
     this.now = { ...TARGETS.clear };

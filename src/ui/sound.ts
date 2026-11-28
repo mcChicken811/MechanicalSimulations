@@ -2,6 +2,8 @@
  * Sound effects, all synthesised with the Web Audio API (nothing is loaded):
  *  - cues: short one-shot sounds for editing actions (placing parts, joining, deleting, …);
  *  - impacts: thuds when something lands on the ground, clacks when a slider hits a stop;
+ *  - the background: its scene's sounds (birdsong, crickets, a breeze, a stream, traffic…) and its
+ *    weather (rain, hail, wind, thunder), playing while editing too;
  *  - machine voices: continuous sounds that follow the running mechanism: motors whine with
  *    their speed and strain with their torque, propellers whoosh and chop at their blade-pass
  *    rate, gear teeth tick and whir at their tooth rate, wheels rumble and skid, joints scrape
@@ -67,6 +69,22 @@ interface Voice {
   out: GainNode;
   sources: AudioScheduledSourceNode[];
   set: (s: Record<string, number>, now: number) => void;
+}
+
+/**
+ * What the background sounds like now, each 0–1: its weather (rain, hail, wind) and its scene
+ * (a breeze, birdsong, crickets, an owl, a stream, traffic), as ui/background.ts works it out.
+ */
+export interface Soundscape {
+  rain: number;
+  hail: number;
+  wind: number;
+  breeze: number;
+  birds: number;
+  crickets: number;
+  owls: number;
+  stream: number;
+  traffic: number;
 }
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
@@ -565,7 +583,7 @@ export class SoundEngine {
     }
   }
 
-  // ---- the weather ---------------------------------------------------------------------
+  // ---- the background: its scene's sounds and its weather ----------------------------------
 
   /**
    * Thunder after `delay` s, `loud` 0–1: near, a sharp crack and then the rumble; far, only a
@@ -584,20 +602,32 @@ export class SoundEngine {
   }
 
   private ambientVoices = new Map<string, Voice>();
+  /** When each of the scene's occasional sounds comes next (the audio clock, s). */
+  private next = { bird: 0, owl: 0, car: 0, horn: 0, siren: 0 };
+  /** The crickets: each with its pitch, its place left to right, its pace, and when it chirps next. */
+  private crickets = Array.from({ length: 4 }, (_, i) => ({ f: 4300 + 180 * i + 60 * Math.random(), pan: -0.8 + 0.53 * i, period: 0.55 + 0.35 * Math.random(), at: 0 }));
+
   /**
-   * The weather heard (call every frame): rain hissing and pattering, hail clattering, wind
-   * blowing in gusts; or quiet with null. Apart from the machine's sounds, so it plays while editing too.
+   * The background heard (call every frame), or quiet with null. Apart from the machine's sounds,
+   * so it plays while editing too:
+   *  - steady: rain hissing and pattering, hail clattering, wind (the weather's, and the scene's
+   *    breeze) in gusts, a stream babbling, the hum of traffic;
+   *  - now and then, each from its own place left to right: birdsong (a few kinds of song), crickets
+   *    chirping each at its own pace, an owl hooting, cars passing, a horn, a siren far off.
    */
-  ambient(levels: { rain: number; hail: number; wind: number } | null) {
+  ambient(s: Soundscape | null) {
     if (!this.ready) return;
     const now = this.ctx!.currentTime;
     const v = this.ambientVoices;
-    const want: [string, BiquadFilterType, number, number, number][] = levels
+    const want: [string, BiquadFilterType, number, number, number][] = s
       ? [
-          ['rain-hiss', 'highpass', 0.5, 3500, 0.05 * levels.rain],
-          ['rain-body', 'bandpass', 0.6, 900, 0.07 * levels.rain],
-          ['hail', 'bandpass', 2.5, 3000 + 600 * Math.random(), 0.06 * levels.hail * (0.6 + 0.4 * Math.random())], // (a clatter, never steady)
-          ['wind', 'bandpass', 0.8, 260 + 180 * Math.sin(now * 0.7) + 120 * Math.sin(now * 1.9), 0.06 * levels.wind * (0.6 + 0.4 * Math.sin(now * 0.5))], // gusting
+          ['rain-hiss', 'highpass', 0.5, 3500, 0.05 * s.rain],
+          ['rain-body', 'bandpass', 0.6, 900, 0.07 * s.rain],
+          ['hail', 'bandpass', 2.5, 3000 + 600 * Math.random(), 0.06 * s.hail * (0.6 + 0.4 * Math.random())], // (a clatter, never steady)
+          ['wind', 'bandpass', 0.8, 260 + 180 * Math.sin(now * 0.7) + 120 * Math.sin(now * 1.9), (0.06 * s.wind + 0.022 * s.breeze) * (0.6 + 0.4 * Math.sin(now * 0.5))], // gusting
+          ['stream', 'bandpass', 0.35, 1700 + 250 * Math.sin(now * 3.1) * Math.sin(now * 1.3), 0.022 * s.stream],
+          ['traffic', 'lowpass', 0.7, 210, 0.05 * s.traffic],
+          ['traffic-hiss', 'bandpass', 0.5, 750, 0.012 * s.traffic * (0.8 + 0.2 * Math.sin(now * 0.3))],
         ]
       : [];
     const live = new Set<string>();
@@ -610,8 +640,141 @@ export class SoundEngine {
       if (live.has(key)) continue;
       voice.out.gain.setTargetAtTime(0, now, 0.3);
       v.delete(key);
-      for (const s of voice.sources) s.stop(now + 2);
+      for (const src of voice.sources) src.stop(now + 2);
     }
+    if (!s) return;
+    const r = Math.random;
+    const due = (k: keyof typeof this.next, level: number, lo: number, hi: number) => {
+      if (level < 0.03) return false;
+      if (this.next[k] === 0) this.next[k] = now + (lo + r() * (hi - lo)) / level; // (not all at once on starting)
+      if (now < this.next[k]) return false;
+      this.next[k] = now + (lo + r() * (hi - lo)) / level;
+      return true;
+    };
+    if (due('bird', s.birds, 0.8, 4)) this.birdSong(now + 0.02, s.birds);
+    for (const c of s.crickets > 0.03 ? this.crickets.slice(0, Math.ceil(s.crickets * this.crickets.length)) : []) {
+      if (c.at < now - 1) c.at = now + r() * c.period;
+      if (now < c.at) continue;
+      c.at += c.period * (0.9 + 0.2 * r());
+      for (let i = 0; i < 3; i++) this.blip(c.at + i * 0.045, c.f, c.f, 0.022, 0.012 * Math.min(1, s.crickets * 1.5), c.pan, 'sine', 0.003);
+    }
+    if (due('owl', s.owls, 8, 20)) {
+      const [t, pan] = [now + 0.02, r() * 1.4 - 0.7];
+      for (const [dt, len] of [[0, 0.35], [0.55, 0.18], [0.8, 0.45]]) this.blip(t + dt, 390, 350, len, 0.04 * s.owls, pan, 'sine', 0.06);
+    }
+    if (due('car', s.traffic, 1.5, 6)) this.carPass(now + 0.02, s.traffic);
+    if (due('horn', s.traffic, 25, 70)) {
+      const [t, pan, f] = [now + 0.02, r() * 1.6 - 0.8, 360 + r() * 120];
+      const twice = r() < 0.4;
+      for (const dt of twice ? [0, 0.32] : [0]) (this.blip(t + dt, f, f, 0.22, 0.012, pan, 'square', 0.01, 1400), this.blip(t + dt, f * 1.26, f * 1.26, 0.22, 0.009, pan, 'square', 0.01, 1400));
+    }
+    if (due('siren', s.traffic, 70, 160)) this.siren(now + 0.02);
+  }
+
+  /**
+   * A tone from one place left to right (pan −1…1): gliding f0 to f1 over dur, through an
+   * envelope (and a low-pass at `cutoff`, if given).
+   */
+  private blip(t: number, f0: number, f1: number, dur: number, peak: number, pan: number, type: OscillatorType = 'sine', attack = 0.005, cutoff = 0) {
+    const ctx = this.ctx!;
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + attack + dur);
+    const p = ctx.createStereoPanner();
+    p.pan.value = clamp(pan, -1, 1);
+    let chain: AudioNode = o;
+    if (cutoff > 0) {
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = cutoff;
+      chain = chain.connect(lp);
+    }
+    chain.connect(g).connect(p).connect(this.master!);
+    o.start(t);
+    o.stop(t + attack + dur + 0.05);
+  }
+
+  /** A bird singing, somewhere: a chirp, a trill, a whistle or a warble (the livelier, the longer). */
+  private birdSong(t: number, level: number) {
+    const r = Math.random;
+    const pan = r() * 1.8 - 0.9;
+    const loud = 0.018 + 0.012 * r();
+    const base = 2600 + r() * 2000;
+    switch (Math.floor(r() * 4)) {
+      case 0: // chirps: short notes leaping up
+        for (let i = 0, n = 2 + Math.floor(r() * 4 * level); i < n; i++) this.blip(t + i * (0.09 + 0.05 * r()), base, base * (1.2 + 0.3 * r()), 0.05, loud, pan);
+        break;
+      case 1: // a trill: one note, quickly repeated
+        for (let i = 0, n = 6 + Math.floor(r() * 8); i < n; i++) this.blip(t + i * 0.055, base * 1.1, base * 0.95, 0.035, loud * 0.8, pan);
+        break;
+      case 2: // a whistle: two long notes, the second falling
+        this.blip(t, base * 0.8, base * 0.85, 0.22, loud, pan, 'sine', 0.03);
+        this.blip(t + 0.3, base * 0.95, base * 0.65, 0.3, loud, pan, 'sine', 0.03);
+        break;
+      default: // a warble: notes wandering up and down
+        for (let i = 0, f = base; i < 5 + Math.floor(r() * 4); i++) {
+          const g = f * (0.85 + 0.35 * r());
+          this.blip(t + i * 0.08, f, g, 0.07, loud * 0.9, pan);
+          f = g;
+        }
+    }
+  }
+
+  /** A car going by, left to right or right to left: its tyres' roar swelling and fading, its pitch falling as it passes. */
+  private carPass(t: number, level: number) {
+    const ctx = this.ctx!;
+    const dur = 2.2 + Math.random() * 2;
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.Q.value = 0.9;
+    f.frequency.setValueAtTime(520, t);
+    f.frequency.linearRampToValueAtTime(700, t + dur * 0.45);
+    f.frequency.exponentialRampToValueAtTime(300, t + dur);
+    const g = ctx.createGain();
+    const peak = (0.03 + 0.03 * Math.random()) * Math.min(1, level);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + dur * 0.5);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const p = ctx.createStereoPanner();
+    p.pan.setValueAtTime(-0.9 * dir, t);
+    p.pan.linearRampToValueAtTime(0.9 * dir, t + dur);
+    src.connect(f).connect(g).connect(p).connect(this.master!);
+    src.start(t, Math.random() * 1.5);
+    src.stop(t + dur + 0.05);
+  }
+
+  /** A siren far off: its wail rising and falling, quiet and dulled by the distance. */
+  private siren(t: number) {
+    const ctx = this.ctx!;
+    const dur = 5 + Math.random() * 3;
+    const o = ctx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.value = 800;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 0.35 + Math.random() * 0.2;
+    const depth = ctx.createGain();
+    depth.gain.value = 220;
+    lfo.connect(depth).connect(o.frequency);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 1500;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.008, t + dur * 0.4);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const p = ctx.createStereoPanner();
+    p.pan.value = Math.random() * 1.4 - 0.7;
+    o.connect(lp).connect(g).connect(p).connect(this.master!);
+    for (const x of [o, lfo]) (x.start(t), x.stop(t + dur + 0.05));
   }
 
   /** Stop every continuous sound at once. */

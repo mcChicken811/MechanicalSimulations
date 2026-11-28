@@ -21,6 +21,7 @@
  */
 import { toWorld, type View } from './render';
 import { Weather, type WeatherMode } from './weather';
+import type { Soundscape } from './sound';
 
 /** An image layer of a custom background. */
 export interface ImageLayer {
@@ -49,12 +50,13 @@ export interface BackgroundAnim {
   /** The time of day (hours, 0–24) when it was set. */
   hour: number;
   birds: boolean;
-  /** The weather (ui/weather.ts): changing by itself, or one kind all the time; and whether it is heard. */
+  /** The weather (ui/weather.ts): changing by itself, or one kind all the time. */
   weather: WeatherMode;
-  weatherSound: boolean;
+  /** Whether the background is heard: its scene's sounds and its weather (with sound effects on). */
+  sound: boolean;
 }
 
-export const DEFAULT_ANIM: BackgroundAnim = { on: true, dayLength: 300, hour: 10, birds: true, weather: 'random', weatherSound: true };
+export const DEFAULT_ANIM: BackgroundAnim = { on: true, dayLength: 300, hour: 10, birds: true, weather: 'random', sound: true };
 
 export interface BackgroundState {
   /** 'none', a scene's id, or 'custom' (the scene `base` with the `layers` over it). */
@@ -265,11 +267,14 @@ interface SceneDef {
   cycle?: boolean;
   birds?: boolean;
   weather?: boolean;
+  /** What it sounds like, each 0–1 at its fullest (birds by day, crickets and owls by night, traffic busier by day). */
+  sounds?: { breeze?: number; birds?: number; crickets?: number; owls?: number; stream?: number; traffic?: number };
 }
 
 const SCENE_DEFS: Record<string, SceneDef> = {
   sky: {
     name: 'Blue sky with clouds',
+    sounds: { breeze: 0.6, birds: 1, crickets: 0.7, owls: 0.3 },
     weather: true,
     strength: 0.75,
     cycle: true,
@@ -282,6 +287,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   city: {
     name: 'City skyline',
+    sounds: { breeze: 0.2, birds: 0.3, crickets: 0.2, traffic: 1 },
     weather: true,
     strength: 0.7,
     cycle: true,
@@ -295,6 +301,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   night: {
     name: 'Night sky',
+    sounds: { breeze: 0.4, crickets: 1, owls: 1 },
     weather: true,
     strength: 0.55,
     layers: [
@@ -329,6 +336,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   sunset: {
     name: 'Sunset over hills',
+    sounds: { breeze: 0.5, birds: 0.6, crickets: 0.6, owls: 0.3 },
     weather: true,
     strength: 0.7,
     birds: true,
@@ -358,6 +366,7 @@ const SCENE_DEFS: Record<string, SceneDef> = {
   },
   mountains: {
     name: 'Mountains',
+    sounds: { breeze: 1, birds: 0.6, crickets: 0.4, owls: 0.4, stream: 0.6 },
     weather: true,
     strength: 0.7,
     cycle: true,
@@ -491,7 +500,7 @@ function sceneTile(z: number): ImageLayer {
 }
 
 /** The scenes: id, name, their usual strength, and how many layers deep. */
-export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length, cycle: !!s.cycle, birds: !!s.birds, weather: !!s.weather, alive: !!s.cycle || !!s.birds || !!s.weather || s.layers.some((l) => l.drift) || id === 'night' }));
+export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length, cycle: !!s.cycle, birds: !!s.birds, weather: !!s.weather, sounds: !!s.sounds, alive: !!s.cycle || !!s.birds || !!s.weather || s.layers.some((l) => l.drift) || id === 'night' }));
 
 /**
  * An image file for a layer, as a data URL: an SVG as it is; a picture scaled down to at most
@@ -993,6 +1002,38 @@ export class Backdrop {
       c.stroke();
     }
     c.restore();
+  }
+
+  /**
+   * What the background sounds like now: its scene's sounds by the time of day (birds singing by
+   * day and loudest at dawn, crickets and owls by night, traffic quieter at night), hushed by the
+   * weather (birds and crickets fall quiet in the rain, hail and snow), and the weather's own. Null
+   * if it has none (no scene, or one without sounds, or still).
+   */
+  get soundscape(): Soundscape | null {
+    const s = this.state;
+    const id = s.kind === 'custom' ? s.base : s.kind;
+    const scene = SCENE_DEFS[id];
+    if (!scene?.sounds || !s.anim.on) return null;
+    const turning = !!scene.cycle;
+    const hour = this.hour;
+    // how much it is day (the night scene: night; the sunset: dusk), and the dawn chorus
+    const day = turning ? 1 - darkness(hour) : id === 'night' ? 0 : id === 'sunset' ? 0.5 : 1;
+    const dawn = turning ? Math.exp(-(((hour - 6.6) / 1.1) ** 2)) : 0;
+    const wx = scene.weather ? this.weather.now : null;
+    const hush = wx ? Math.max(0, 1 - 1.6 * (wx.rain + wx.hail) - 1.2 * wx.snow) : 1;
+    const so = scene.sounds;
+    return {
+      rain: wx?.rain ?? 0,
+      hail: wx?.hail ?? 0,
+      wind: wx ? Math.max(0, wx.wind - 0.15) * wx.cover : 0,
+      breeze: so.breeze ?? 0,
+      birds: (so.birds ?? 0) * (s.anim.birds ? 1 : 0) * Math.min(1, day * (0.7 + 0.6 * dawn)) * hush,
+      crickets: (so.crickets ?? 0) * (1 - day) * hush * (wx ? 1 - Math.min(1, wx.snow * 2) : 1),
+      owls: (so.owls ?? 0) * (1 - day) * hush,
+      stream: so.stream ?? 0,
+      traffic: (so.traffic ?? 0) * (0.4 + 0.6 * day),
+    };
   }
 
   /** The time of day now (hours, 0–24). */

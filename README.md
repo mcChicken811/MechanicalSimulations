@@ -167,7 +167,15 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
     - **Rain, hail and snow** fall at two distances, 7 and 1.6, so they pan with parallax. The nearer is faster, longer and sparser, and the wind slants them. Hailstones tumble a little as they fall. Snowflakes drift down slowly, each swaying side to side at its own pace, and the wind carries them along. Birds shelter while it rains, hails or snows.
     - **Settling snow:** while it snows the land and buildings whiten, fully in about 1½ minutes. Afterwards the snow melts over about 2 minutes, faster in the rain.
     - **Lightning** strikes every few seconds in a thunderstorm, sometimes twice in quick succession. It's a forked bolt at distance 13, the clouds lit from within behind the scenery, and a flicker over everything. Its thunder follows after the time the sound takes to arrive: near, a crack and a long rumble; far, a later, quieter rumble.
-    - **Weather sounds** (with sound effects on) plays the hiss and patter of rain, the clatter of hail, gusting wind and the thunder, all synthesised. They play while editing too; untick them to keep the weather silent.
+  - **Background sounds** (with sound effects on) let you hear the scene and its weather, all synthesised. They play while editing too; untick them to keep the background silent. Blueprint, graph paper and plain have no sounds, so the checkbox is hidden for them.
+    - **Sky:** a breeze, birdsong by day, crickets and now and then an owl at night.
+    - **City:** the hum of traffic with cars passing left to right or right to left, the odd horn and a siren far off. It's quieter at night, with a few birds by day and crickets at night.
+    - **Night sky:** crickets, an owl and a breeze.
+    - **Sunset:** a breeze, evening birds and crickets together.
+    - **Mountains:** a stronger wind, a babbling stream, birds by day, crickets and an owl at night.
+    - **Time of day:** in the scenes whose sky turns, birdsong gives way to crickets as it gets dark, and the birds are loudest at dawn.
+    - **Birdsong:** each bird sings from its own place left to right, in one of several songs: chirps, a trill, a two-note whistle or a warble. Crickets chirp each at its own pitch, pace and place.
+    - **Weather:** the hiss and patter of rain, the clatter of hail, gusting wind and thunder. Birds and crickets fall quiet in rain, hail and snow, and crickets in the cold. Unticking **Birds** also silences the birdsong.
   - **Saved:** the animation's settings (including the weather chosen) and the time of day reached are saved with the background, in projects, the gallery and the browser.
 
 **Integrators.** The *Simulation* block chooses how the equations of motion are stepped in time, and the step. Each choice shows its order and cost, and the status bar names it.

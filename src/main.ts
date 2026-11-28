@@ -2350,7 +2350,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
 /** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
-const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-weather-sound', 'bg-trigger-kind', 'bg-trigger-for']);
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-sound', 'bg-trigger-kind', 'bg-trigger-for']);
 
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
@@ -2544,7 +2544,8 @@ function validBackground(raw: unknown): BackgroundState | null {
     hour: Number.isFinite(a.hour) ? ((a.hour! % 24) + 24) % 24 : DEFAULT_ANIM.hour,
     birds: typeof a.birds === 'boolean' ? a.birds : DEFAULT_ANIM.birds,
     weather: isWeatherMode(a.weather) ? a.weather : DEFAULT_ANIM.weather,
-    weatherSound: typeof a.weatherSound === 'boolean' ? a.weatherSound : DEFAULT_ANIM.weatherSound,
+    // (saved before the scenes had sounds of their own: as "weather sounds")
+    sound: typeof a.sound === 'boolean' ? a.sound : typeof (a as { weatherSound?: unknown }).weatherSound === 'boolean' ? (a as { weatherSound: boolean }).weatherSound : DEFAULT_ANIM.sound,
   };
   const okLayer = (l: ImageLayer) =>
     l && typeof l.image === 'string' && l.image.startsWith('data:image/') && Number.isFinite(l.aspect) && l.aspect >= 0 && (l.depth === null || (Number.isFinite(l.depth) && l.depth >= 1)) && l.ref && [l.ref.cx, l.ref.cy, l.ref.s].every(Number.isFinite) && l.ref.s > 0 && l.rect && [l.rect.x, l.rect.y, l.rect.w].every(Number.isFinite) && l.rect.w > 0;
@@ -2571,9 +2572,9 @@ function setBackground(b: BackgroundState, passing = false) {
   $<HTMLInputElement>('#bg-birds').checked = b.anim.birds;
   $<HTMLElement>('#bg-weather-row').hidden = !sc?.weather || !b.anim.on;
   $<HTMLElement>('#bg-trigger-row').hidden = !sc?.weather || !b.anim.on;
-  $<HTMLElement>('#bg-weather-sound-row').hidden = !sc?.weather || !b.anim.on || b.anim.weather === 'clear';
+  $<HTMLElement>('#bg-sound-row').hidden = !sc?.sounds || !b.anim.on; // (blueprint, graph paper and plain have none)
   $<HTMLSelectElement>('#bg-weather').value = b.anim.weather;
-  $<HTMLInputElement>('#bg-weather-sound').checked = b.anim.weatherSound;
+  $<HTMLInputElement>('#bg-sound').checked = b.anim.sound;
   const day = $<HTMLSelectElement>('#bg-day');
   if (![...day.options].some((o) => Number(o.value) === b.anim.dayLength)) day.append(new Option(`${b.anim.dayLength} s`, String(b.anim.dayLength)));
   day.value = [...day.options].find((o) => Number(o.value) === b.anim.dayLength)!.value;
@@ -2610,11 +2611,11 @@ $<HTMLInputElement>('#bg-animate').addEventListener('change', (e) => setBackgrou
 $<HTMLInputElement>('#bg-birds').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, birds: (e.target as HTMLInputElement).checked } }));
 for (const m of WEATHER_MODES) $<HTMLSelectElement>('#bg-weather').append(new Option(m.name, m.id));
 $<HTMLSelectElement>('#bg-weather').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, weather: (e.target as HTMLSelectElement).value as BackgroundState['anim']['weather'] } }));
-$<HTMLInputElement>('#bg-weather-sound').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, weatherSound: (e.target as HTMLInputElement).checked } }));
+$<HTMLInputElement>('#bg-sound').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, sound: (e.target as HTMLInputElement).checked } }));
 /** The scene the background shows (a custom one's base). */
 const backgroundScene = () => SCENES.find((x) => x.id === (backdrop.state.kind === 'custom' ? backdrop.state.base : backdrop.state.kind));
-/** Whether the weather is on show and to be heard: a scene with weather, animated, its sounds wanted. */
-const weatherHeard = () => backdrop.state.anim.on && backdrop.state.anim.weatherSound && !!backgroundScene()?.weather;
+/** Whether the background is to be heard: a scene with sounds, animated, its sounds wanted. */
+const backgroundHeard = () => backdrop.state.anim.on && backdrop.state.anim.sound && !!backgroundScene()?.sounds;
 // starting a weather by hand, and lightning
 const triggerKind = $<HTMLSelectElement>('#bg-trigger-kind');
 const triggerFor = $<HTMLSelectElement>('#bg-trigger-for');
@@ -2648,7 +2649,7 @@ function showWeatherTrigger() {
 }
 // lightning: its thunder, after the time the sound takes to arrive
 backdrop.weather.onThunder = (delay, loud) => {
-  if (weatherHeard()) sound.thunder(delay, loud);
+  if (backgroundHeard() && backgroundScene()?.weather) sound.thunder(delay, loud);
 };
 $<HTMLSelectElement>('#bg-day').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, dayLength: Number((e.target as HTMLSelectElement).value) } }));
 $<HTMLInputElement>('#bg-time').addEventListener('pointerdown', () => (timeHeld = true));
@@ -6334,7 +6335,7 @@ function drawFrame(now: number) {
     if (settings.follow) followMechanism();
   }
   sound.update(sim && running ? machineState(sim) : null);
-  sound.ambient(weatherHeard() ? backdrop.weather.sound : null);
+  sound.ambient(backgroundHeard() ? backdrop.soundscape : null);
   if (sim) {
     updateMeasures();
     updateGraph();
