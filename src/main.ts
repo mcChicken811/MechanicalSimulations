@@ -8,7 +8,7 @@ import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
-import { drawScene, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
+import { drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
 type Tool = 'select' | 'initial' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
@@ -38,7 +38,16 @@ let selection: Selection | null = null;
 let hover: Selection | null = null;
 let drawing: { kind: 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller'; mesh: MeshTarget | null; fromId: number | null; from: Vec; to: Vec; toId: number | null; downAt: Vec; clickMode: boolean } | null = null;
 /** A dragged joint, or (`group`) the parts chosen together, moved by the snapped mouse offset. */
-let dragging: { id: number; pushed: boolean; group?: { start: Vec; applied: Vec } } | null = null;
+/**
+ * A part being moved with the Select tool: a joint (id) or the parts chosen together (group).
+ * It only starts moving once the cursor is 0.3 cm (DRAG_START px) from where it was pressed
+ * (`live`), and then moves continuously by the cursor's travel since then (from `at` = where
+ * the joint was), or on the grid with Alt / Option.
+ */
+let dragging: { id: number; pushed: boolean; downSp: Vec; downW: Vec; at: Vec; live: boolean; group?: { start: Vec; applied: Vec } } | null = null;
+/** How far the cursor must go before a press becomes a move: 0.3 cm on screen (CSS px, 96 per inch). */
+const DRAG_START = (0.3 / 2.54) * 96;
+let lastPointer: { w: Vec; sp: Vec } | null = null;
 /** Parts chosen together by a selection box, Select all or a paste. */
 let multi: PartSet | null = null;
 /** The selection box being dragged in Select mode. */
@@ -59,7 +68,7 @@ let grab: { a: number; b: number; s: number; gear?: { id: number; u: number; v: 
 let mouseWorld: Vec = [0, 0];
 const undoStack: Design[] = [];
 const LABELS_KEY = 'linkage-lab-labels';
-const settings = { gravity: true, snap: true, labels: localStorage.getItem(LABELS_KEY) !== 'off', follow: false, damping: 0, stiffness: 80, speed: 1 };
+const settings = { gravity: true, labels: localStorage.getItem(LABELS_KEY) !== 'off', follow: false, damping: 0, stiffness: 80, speed: 1 };
 const friction = defaultFriction();
 let simHeat: Heat = { joints: new Map(), meshes: new Map(), racks: new Map() };
 
@@ -421,9 +430,23 @@ function pos(id: number): Vec {
   return [p.x, p.y];
 }
 
-const snapValue = (v: number) => Math.round(v / 0.1) * 0.1;
+// ---- grid mode: hold Alt (Option on a Mac) to snap to the grid, which shows only then ------
+let altHeld = false;
+/** Whether moves and drawing snap to the grid now (Alt / Option held, while editing). */
+const gridMode = () => altHeld && !sim;
+/** A coordinate on the grid as shown. */
+const snapValue = (v: number) => {
+  const st = gridStep(view);
+  return +(Math.round(v / st) * st).toFixed(6);
+};
+/** A length (radius, rail end) on the grid in grid mode: to half the grid's spacing, at least that. */
+const snapLength = (r: number) => {
+  if (!gridMode()) return r;
+  const half = gridStep(view) / 2;
+  return Math.max(half, Math.round(r / half) * half);
+};
 function snap(w: Vec): Vec {
-  return settings.snap ? [snapValue(w[0]), snapValue(w[1])] : w;
+  return gridMode() ? [snapValue(w[0]), snapValue(w[1])] : w;
 }
 
 function pointAt(w: Vec, exclude: number | null = null, onlyActive = false): number | null {
@@ -639,7 +662,7 @@ function gearRadiusAt(c: Vec, w: Vec, centerId: number | null): { r: number; mes
     if (xi > 0 && xi < f.L && Math.abs(h) > 0.03 && Math.abs(r - Math.abs(h)) < tol)
       return { r: Math.abs(h), mesh: { rack: l.id, at: [f.a[0] + f.e[0] * xi, f.a[1] + f.e[1] * xi], side: h > 0 ? 1 : -1 } };
   }
-  return { r: settings.snap ? Math.max(0.05, Math.round(r / 0.05) * 0.05) : r, mesh: null };
+  return { r: snapLength(r), mesh: null };
 }
 
 /** A rack's pitch line: start, unit direction and length. */
@@ -973,7 +996,7 @@ function defaultGround(): DGround {
 /** The ground is selected (with the waypoint chosen, if any), or null. */
 let groundSel: { waypoint: number | null } | null = null;
 /** A waypoint being dragged up or down. */
-let groundDrag: { index: number; pushed: boolean } | null = null;
+let groundDrag: { index: number; pushed: boolean; downSp: Vec; downW: Vec; at: number; live: boolean } | null = null;
 
 /** Distance in pixels from a screen point to the ground's terrain line (with its level ends). */
 function groundDistance(w: Vec): number {
@@ -1115,6 +1138,66 @@ function copyParts(): boolean {
   renderInspector();
   return true;
 }
+
+/**
+ * Move what is being dragged to follow the cursor at w: nothing until the cursor is DRAG_START
+ * px from where it was pressed, then continuously by the cursor's travel, or on the grid in grid
+ * mode (a joint lands on a grid point; a group moves by whole grid steps, keeping grid-aligned
+ * parts on the grid; a waypoint's height lands on a grid line).
+ */
+function applyDrags(w: Vec, sp: Vec) {
+  const started = (d: { downSp: Vec; live: boolean }) => d.live || (d.live = Math.hypot(sp[0] - d.downSp[0], sp[1] - d.downSp[1]) >= DRAG_START);
+  if (groundDrag && design.ground && started(groundDrag)) {
+    const y0 = groundDrag.at + (w[1] - groundDrag.downW[1]);
+    if (!groundDrag.pushed) {
+      pushUndo();
+      groundDrag.pushed = true;
+    }
+    setWaypointHeight(groundDrag.index, gridMode() ? snapValue(y0) : y0);
+  }
+  if (!dragging || !started(dragging)) return;
+  const [tx, ty] = [w[0] - dragging.downW[0], w[1] - dragging.downW[1]]; // the cursor's travel
+  if (dragging.group && multi) {
+    const g = dragging.group;
+    let off: Vec = [tx, ty];
+    if (gridMode()) off = [snapValue(off[0]), snapValue(off[1])];
+    const [dx, dy] = [off[0] - g.applied[0], off[1] - g.applied[1]];
+    if (dx || dy) {
+      if (!dragging.pushed) {
+        pushUndo();
+        dragging.pushed = true;
+      }
+      for (const p of design.points) if (multi.points.has(p.id)) [p.x, p.y] = [p.x + dx, p.y + dy];
+      g.applied = off;
+      designChanged({ keepInspector: true });
+    }
+  } else if (!dragging.group) {
+    const p = design.points.find((pt) => pt.id === dragging!.id);
+    if (!p) return;
+    const [x, y] = snap([dragging.at[0] + tx, dragging.at[1] + ty]);
+    if (x !== p.x || y !== p.y) {
+      if (!dragging.pushed) {
+        pushUndo();
+        dragging.pushed = true;
+      }
+      moveJoint(p.id, x - p.x, y - p.y); // joints pinned on a gear centred here move with it
+      designChanged({ keepInspector: true });
+    }
+  }
+}
+
+// Alt (Option) pressed or let go: grid mode on or off, at once, for whatever is being moved
+for (const ev of ['keydown', 'keyup'] as const)
+  window.addEventListener(ev, (e) => {
+    if (e.key !== 'Alt') return;
+    if (ev === 'keydown') e.preventDefault(); // not the browser's menu bar (Windows)
+    if (altHeld === (ev === 'keydown')) return;
+    altHeld = ev === 'keydown';
+    if (lastPointer && !sim) applyDrags(lastPointer.w, lastPointer.sp);
+  });
+window.addEventListener('blur', () => (altHeld = false));
+// a pointer event knows too (Alt pressed while the window was elsewhere)
+for (const ev of ['pointerdown', 'pointermove'] as const) window.addEventListener(ev, (e) => (altHeld = e.altKey), { capture: true });
 
 // ---- initial state: drive a coordinate with the mouse, the rest following ----------------
 /** A coordinate being set: the editor, the point that follows the mouse, which coordinate, and whether its rate. */
@@ -1415,7 +1498,7 @@ function startDuplicate(): boolean {
 function duplicateOffset(): Vec {
   const c = duplicating!.centre;
   let off: Vec = [mouseWorld[0] - c[0], mouseWorld[1] - c[1]];
-  if (settings.snap) off = [snapValue(off[0]), snapValue(off[1])];
+  if (gridMode()) off = [snapValue(off[0]), snapValue(off[1])];
   return off;
 }
 
@@ -1445,7 +1528,7 @@ function pasteClipboard() {
   pushUndo();
   const c = fragmentCentre(clipboard);
   let off: Vec = [mouseWorld[0] - c[0], mouseWorld[1] - c[1]];
-  if (settings.snap) off = [snapValue(off[0]), snapValue(off[1])];
+  if (gridMode()) off = [snapValue(off[0]), snapValue(off[1])];
   if (Math.hypot(off[0], off[1]) < 0.05) off = [0.2, -0.2]; // never exactly on top of the original
   setTool('select');
   selection = null;
@@ -1533,7 +1616,7 @@ function railTravel(w: Vec): number {
   const p = design.points.find((pt) => pt.id === c.joint)!;
   const a = (c.angle * Math.PI) / 180;
   const t = (w[0] - p.x) * Math.cos(a) + (w[1] - p.y) * Math.sin(a);
-  return +(settings.snap ? Math.round(t / 0.05) * 0.05 : t).toFixed(3);
+  return +(gridMode() ? Math.round(t / (gridStep(view) / 2)) * (gridStep(view) / 2) : t).toFixed(4);
 }
 
 /** Put the joint on the rail being placed, with stops at the ends chosen (none, one or two). */
@@ -1752,7 +1835,7 @@ canvas.addEventListener('pointerdown', (e) => {
       const wp = waypointAt(w);
       if (wp !== null) {
         groundSel = { waypoint: wp };
-        groundDrag = { index: wp, pushed: false };
+        groundDrag = { index: wp, pushed: false, downSp: sp, downW: w, at: design.ground!.points[wp][1], live: false };
         renderInspector();
         break;
       }
@@ -1778,13 +1861,13 @@ canvas.addEventListener('pointerdown', (e) => {
       const group = liveMulti();
       if (hit && group && inParts(group, hit) && !again) {
         // drag the whole group
-        dragging = { id: -1, pushed: false, group: { start: w, applied: [0, 0] } };
+        dragging = { id: -1, pushed: false, downSp: sp, downW: w, at: w, live: false, group: { start: w, applied: [0, 0] } };
         break;
       }
       multi = null;
       if (hit && (hit.kind !== selection?.kind || hit.id !== selection.id)) sfx('select');
       selection = hit;
-      if (hit?.kind === 'point') dragging = { id: hit.id, pushed: false };
+      if (hit?.kind === 'point') dragging = { id: hit.id, pushed: false, downSp: sp, downW: w, at: pos(hit.id), live: false };
       if (!hit) boxSel = { from: w, to: w, downAt: sp }; // empty space: start a selection box
       renderInspector();
       break;
@@ -1937,15 +2020,15 @@ canvas.addEventListener('pointermove', (e) => {
   if (drawing?.kind === 'propeller') {
     // the edge point: its distance is the radius, its direction the blade line (15° steps with snap on)
     const r0 = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]);
-    const r = settings.snap ? Math.max(0.05, Math.round(r0 / 0.05) * 0.05) : r0;
+    const r = snapLength(r0);
     let a = Math.atan2(w[1] - drawing.from[1], w[0] - drawing.from[0]);
-    if (settings.snap) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12);
+    if (gridMode()) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12);
     drawing.to = [drawing.from[0] + r * Math.cos(a), drawing.from[1] + r * Math.sin(a)];
     drawing.mesh = null;
     drawing.toId = null;
   } else if (drawing?.kind === 'gear' || drawing?.kind === 'wheel') {
     const free = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]);
-    const { r, mesh } = drawing.kind === 'gear' ? gearRadiusAt(drawing.from, w, drawing.fromId) : { r: settings.snap ? Math.max(0.05, Math.round(free / 0.05) * 0.05) : free, mesh: null };
+    const { r, mesh } = drawing.kind === 'gear' ? gearRadiusAt(drawing.from, w, drawing.fromId) : { r: snapLength(free), mesh: null };
     const len = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]) || 1;
     drawing.to = [drawing.from[0] + ((w[0] - drawing.from[0]) / len) * r, drawing.from[1] + ((w[1] - drawing.from[1]) / len) * r];
     drawing.mesh = mesh;
@@ -1961,43 +2044,9 @@ canvas.addEventListener('pointermove', (e) => {
     }
   }
   if (boxSel) boxSel.to = w;
-  if (groundDrag && design.ground) {
-    const y = settings.snap ? Math.round(w[1] / 0.01) * 0.01 : w[1];
-    if (!groundDrag.pushed) {
-      pushUndo();
-      groundDrag.pushed = true;
-    }
-    setWaypointHeight(groundDrag.index, y);
-  }
+  lastPointer = { w, sp };
+  applyDrags(w, sp);
   if (constrain && constrain.body !== undefined && !constrain.ends) constrain.angle = railAngle(constrain.joint, w, constrain.body);
-  if (dragging?.group && multi) {
-    const g = dragging.group;
-    let off: Vec = [w[0] - g.start[0], w[1] - g.start[1]];
-    if (settings.snap) off = [snapValue(off[0]), snapValue(off[1])]; // keeps grid-aligned parts on the grid
-    const [dx, dy] = [off[0] - g.applied[0], off[1] - g.applied[1]];
-    if (dx || dy) {
-      if (!dragging.pushed) {
-        pushUndo();
-        dragging.pushed = true;
-      }
-      for (const p of design.points) if (multi.points.has(p.id)) [p.x, p.y] = [p.x + dx, p.y + dy];
-      g.applied = off;
-      designChanged({ keepInspector: true });
-    }
-  } else if (dragging) {
-    const p = design.points.find((pt) => pt.id === dragging!.id);
-    if (p) {
-      const [x, y] = snap(w);
-      if (x !== p.x || y !== p.y) {
-        if (!dragging.pushed) {
-          pushUndo();
-          dragging.pushed = true;
-        }
-        moveJoint(p.id, x - p.x, y - p.y); // joints pinned on a gear centred here move with it
-        designChanged({ keepInspector: true });
-      }
-    }
-  }
   hover = dragging || grab ? hover : hitTest(w);
   canvas.style.cursor = duplicating ? 'copy' : sim ? (grab ? 'grabbing' : hover?.kind === 'spring' ? 'pointer' : hover ? 'grab' : 'default') : tool === 'bar' || tool === 'rack' || tool === 'spring' || tool === 'gear' || tool === 'wheel' || tool === 'propeller' ? 'crosshair' : hover ? 'pointer' : 'default';
 });
@@ -2237,7 +2286,6 @@ $<HTMLInputElement>('#gravity').addEventListener('change', (e) => {
   if (sim) rebuildSim();
   else derive();
 });
-$<HTMLInputElement>('#snap').addEventListener('change', (e) => (settings.snap = (e.target as HTMLInputElement).checked));
 const labelsBox = $<HTMLInputElement>('#labels');
 labelsBox.checked = settings.labels;
 labelsBox.addEventListener('change', () => {
@@ -2291,7 +2339,7 @@ $<HTMLButtonElement>('#eom-toggle').addEventListener('click', (e) => {
 });
 
 const hints: Record<Tool, string> = {
-  select: 'Drag joints to reshape, or drag on empty space to box-select. Ctrl/⌘+D duplicates; Ctrl/⌘+C and V copy and paste.',
+  select: 'Drag joints to reshape (hold Alt / Option to move on the grid), or drag on empty space to box-select. Ctrl/⌘+D duplicates; Ctrl/⌘+C and V copy and paste.',
   bar: 'Drag, or click twice, to draw a bar. Start or end on an existing joint to pin bars together.',
   rack: 'Drag to draw a rack (a toothed bar). Pass along a gear and it snaps tangent and meshes. Lock its joints on rails to make it slide.',
   spring: 'Drag, or click twice, to draw a spring between joints. An end in empty space is anchored to the ground.',
@@ -3415,6 +3463,7 @@ function frame(now: number) {
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
     arrows: sim ? null : initialArrows(),
     cursorLabel: ic && !sim ? { at: mouseScreen, text: ic.readout } : null,
+    grid: gridMode(),
     ghost: duplicating && !sim ? (([dx, dy]) => ({ design: duplicating!.frag, dx, dy }))(duplicateOffset()) : null,
     railPreview:
       !sim && constrain && constrain.body !== undefined

@@ -83,6 +83,11 @@ The first time you open the app, it shows one leg of Theo Jansen's Strandbeest. 
 
 Pick a tool in the left toolbar (or press its key) and click or drag on the canvas.
 
+**Moving and the grid.** Dragging a selected joint, a group of selected parts or a ground waypoint moves it continuously, following the cursor's travel. A press only becomes a move once the cursor has gone 0.3 cm from where it was pressed, so a click never nudges anything.
+- **Grid mode:** hold **Alt** (**Option** on a Mac) to move on the grid instead. A joint lands on a grid point, a group moves by whole grid steps, and a waypoint's height lands on a grid line.
+- **Showing the grid:** the grid shows only while Alt / Option is held. Its spacing follows the zoom, from 1 m down to 1 mm, and snapping uses the spacing you see.
+- **Drawing and pasting** work the same way: free by default, snapped to the grid while Alt / Option is held. That covers joints, radii (to half the spacing), a propeller's blade line (to 15° steps), rail ends, and paste and duplicate offsets.
+
 | Tool | Key | How to use it |
 |---|:-:|---|
 | Select | V | Click a part to edit it in the inspector (bottom right). Where parts overlap, clicking again in the same spot steps through everything there, from the top down, then wraps (the hint names what is picked, say "bar 1: 2 of 3 here"). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
@@ -112,7 +117,7 @@ Bars and springs that start or end on a gear are pinned to the gear and turn wit
 - **Ground rails** stay put and can be at any angle. A rail at 0° or 90° behaves as the old lock y / lock x.
 - **Rails on a body** turn and move with that body. That's how a crank pin slides along a slotted lever, as in the **Quick-return mechanism** example.
 - **In the equations:** a pin on a bar adds two equations, and a rail adds one. If the mechanism already holds the joint that way, the extra equations are dropped with a warning.
-- **Range:** after the direction, click where the rail ends on one side, then on the other. The ends snap to 5 cm when snap is on. Press Enter after one click for a stop on one side only, or straight away for a rail without ends. If both clicks fall on one side of the joint, the nearer end is set at the joint, so the joint always starts inside its range. You can also type the range and the stops' restitution in the joint's inspector.
+- **Range:** after the direction, click where the rail ends on one side, then on the other. In grid mode (Alt / Option held) the ends snap to half the grid's spacing. Press Enter after one click for a stop on one side only, or straight away for a rail without ends. If both clicks fall on one side of the joint, the nearer end is set at the joint, so the joint always starts inside its range. You can also type the range and the stops' restitution in the joint's inspector.
 - **End stops:** past an end, the joint hits a stop, with the same contact model as the ground. The stop is a spring-damper scaled by the effective mass along the rail, applied as a generalized force along ∂s/∂q, where s is the joint's travel along the rail. On a body's rail, the stop pushes the body back as well. The equations panel lists each slider's stops. The **Bead on a swinging rod, with end stops** example shows them working.
 
 A rack is a rigid body like a bar, with the same mass and inertia, and bars attach to its two end joints. A gear meshing with it rolls along its pitch line without slipping, which turns rotation into sliding: the gear centre's position ξ along the rack and its rotation φ satisfy ξ + R(φ − θ_rack) = const. Its centre also stays a distance R from the rack. You can tick **Toothed** in a bar's inspector to turn it into a rack, or untick it to turn a rack back into a bar.
@@ -143,7 +148,7 @@ Under the hood, the free coordinates F (the chosen one and those tied to it) fol
 - Drag any selected part to move the whole group.
 - Ctrl/⌘+C copies the group, Ctrl/⌘+X cuts it, and Delete removes it. Esc deselects.
 - Ctrl/⌘+V pastes a copy centred on the cursor. You can paste as many times as you like.
-- Ctrl/⌘+D (or **Duplicate** in the inspector) duplicates the selection. The copy follows the cursor as a dashed outline, snapped to the grid like a paste, until a left click places it there. Esc cancels, as do switching tools and pressing Play.
+- Ctrl/⌘+D (or **Duplicate** in the inspector) duplicates the selection. The copy follows the cursor as a dashed outline (on the grid while Alt / Option is held) until a left click places it there. Esc cancels, as do switching tools and pressing Play.
 
 A paste keeps every constraint among the copied parts: ground pins and rails, joints pinned on copied gears, gear and rack meshes and joined bodies. Constraints to parts that weren't copied are left out. For example, a joint pinned on a gear you didn't copy becomes a plain joint. The pasted parts stay selected, ready to drag into place. Copy and paste also work on a single selected part.
 
@@ -153,7 +158,7 @@ A **tension-only** spring pulls when it is stretched beyond its rest length and 
 
 Other controls:
 - Undo with Ctrl/Cmd+Z.
-- Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the grid and the scale bar follow.
+- Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the scale bar, and the grid when it shows, follow.
 - **Fit view** re-centres the mechanism.
 
 ### Running it

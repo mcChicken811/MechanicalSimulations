@@ -44,6 +44,8 @@ export interface Scene {
   box?: { from: Vec; to: Vec } | null;
   /** Arrows in the world (initial velocities): from, to, colour. */
   arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
+  /** Grid mode (Alt / Option held): the grid is drawn, and moves and drawing snap to it. */
+  grid?: boolean;
   /** A small label beside the cursor (screen position). */
   cursorLabel?: { at: Vec; text: string } | null;
   /** Parts being duplicated, drawn as an outline shifted by (dx, dy) to where a click will place them. */
@@ -129,7 +131,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   groupColors = joinColors(s.design);
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, w, h);
-  drawGrid(ctx, w, h, v);
+  drawGrid(ctx, w, h, v, !!s.grid);
   if (s.ground) drawGroundLine(ctx, w, h, v, s.ground, s.groundSelected ?? null);
 
   for (const p of s.design.points) if (railOf(p)) drawRail(ctx, w, h, v, s, p);
@@ -371,20 +373,25 @@ function dot(ctx: CanvasRenderingContext2D, [x, y]: Vec, r: number, fill: string
   ctx.stroke();
 }
 
-function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number, v: View) {
-  // finer grids as you zoom in (down to millimetres, for small parts such as a knee's ligaments)
-  const step = v.scale >= 12000 ? 0.001 : v.scale >= 1200 ? 0.01 : v.scale >= 120 ? 0.1 : v.scale >= 40 ? 0.5 : 1;
+/** The grid's spacing at this zoom (m): finer as you zoom in, down to millimetres for small parts such as a knee's ligaments. */
+export function gridStep(v: View): number {
+  return v.scale >= 12000 ? 0.001 : v.scale >= 1200 ? 0.01 : v.scale >= 120 ? 0.1 : v.scale >= 40 ? 0.5 : 1;
+}
+
+/** The grid (only in grid mode) and, always, the scale bar. */
+function drawGrid(ctx: CanvasRenderingContext2D, w: number, h: number, v: View, show: boolean) {
+  const step = gridStep(v);
   const major = (u: number) => Math.abs(u / (step * 10) - Math.round(u / (step * 10))) < 1e-6;
   const [x0, y1] = toWorld(v, [0, 0]);
   const [x1, y0] = toWorld(v, [w, h]);
   ctx.lineWidth = 1;
-  for (let i = Math.floor(x0 / step); i <= Math.ceil(x1 / step); i++) {
+  for (let i = Math.floor(x0 / step); show && i <= Math.ceil(x1 / step); i++) {
     const x = i * step;
     const sx = Math.round(v.ox + x * v.scale) + 0.5;
     ctx.strokeStyle = i === 0 ? C.axis : (step >= 0.5 ? Math.abs(x - Math.round(x)) < 1e-9 : major(x)) ? C.gridMajor : C.gridMinor;
     line(ctx, [sx, 0], [sx, h]);
   }
-  for (let j = Math.floor(y0 / step); j <= Math.ceil(y1 / step); j++) {
+  for (let j = Math.floor(y0 / step); show && j <= Math.ceil(y1 / step); j++) {
     const y = j * step;
     const sy = Math.round(v.oy - y * v.scale) + 0.5;
     ctx.strokeStyle = j === 0 ? C.axis : (step >= 0.5 ? Math.abs(y - Math.round(y)) < 1e-9 : major(y)) ? C.gridMajor : C.gridMinor;
