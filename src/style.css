@@ -41,13 +41,98 @@ body {
 }
 
 /* ---- toolbar ---------------------------------------------------------- */
+/* the side bar: a column of separate floating blocks, the canvas showing between them */
 #toolbar {
+  position: fixed;
   top: 12px;
   left: 12px;
   width: 212px;
   max-height: calc(100vh - 24px);
   overflow-y: auto;
-  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none; /* the gaps belong to the drawing */
+  scrollbar-width: none;
+  z-index: 10;
+}
+
+#toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+#toolbar .block {
+  position: relative;
+  flex: none;
+  padding: 8px 10px;
+  pointer-events: auto;
+}
+
+/* the first group of a block needs no rule above it */
+#toolbar .block > .group:first-of-type,
+#toolbar .block-body > .group:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
+#toolbar .collapsible {
+  padding: 0;
+}
+
+.block-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  font-weight: 600;
+  text-align: left;
+}
+
+.block-head:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.block-title {
+  flex: none;
+}
+
+.block-sum {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11.5px;
+  text-align: right;
+}
+
+.chev::before {
+  content: '▾';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 0.15s;
+}
+
+.collapsed .chev::before {
+  transform: rotate(-90deg);
+}
+
+.block-body {
+  padding: 0 10px 8px;
+}
+
+/* collapsed by a class, not [hidden]: its controls stay reachable from the right-click list */
+.collapsed .block-body {
+  display: none;
 }
 
 .brand {
@@ -71,6 +156,16 @@ body {
 
 .group.row > * {
   flex: 1;
+  min-width: 0; /* a select sizes itself to its longest option otherwise */
+  white-space: nowrap;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.group.row > select {
+  width: 100%;
+  text-overflow: ellipsis;
+  padding-left: 8px;
 }
 
 button,

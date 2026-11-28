@@ -2548,6 +2548,46 @@ function partCommands(s: Selection): Command[] {
 const toolButtons = [...document.querySelectorAll<HTMLButtonElement>('#tools button')];
 toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool as Tool)));
 
+// ---- the side bar's blocks: each one folds to its heading (folded at first; remembered) ----
+const BLOCKS_KEY = 'linkage-lab:blocks';
+const openBlocks: Record<string, boolean> = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(BLOCKS_KEY) ?? '{}');
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+})();
+document.querySelectorAll<HTMLElement>('#toolbar .collapsible').forEach((block) => {
+  const key = block.dataset.block!;
+  const head = block.querySelector<HTMLButtonElement>('.block-head')!;
+  const show = (open: boolean) => {
+    block.classList.toggle('collapsed', !open);
+    head.setAttribute('aria-expanded', String(open));
+  };
+  show(!!openBlocks[key]);
+  head.addEventListener('click', () => {
+    const open = block.classList.contains('collapsed');
+    show(open);
+    openBlocks[key] = open;
+    localStorage.setItem(BLOCKS_KEY, JSON.stringify(openBlocks));
+  });
+});
+
+/** What a folded block's heading says of it: the tool in use, the beam analysis that is on, friction and ground. */
+function blockSummaries() {
+  const put = (id: string, text: string) => {
+    const el = document.getElementById(id);
+    if (el && el.textContent !== text) el.textContent = text;
+  };
+  const b = toolButtons.find((x) => x.dataset.tool === tool);
+  const toolName = b ? [...b.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim() : '';
+  put('sum-tools', sim ? 'while running: pull parts' : toolName);
+  const colour = beamColour.q === 'off' ? '' : { N: 'tension', V: 'shear', M: 'bending', w: 'deflection' }[beamColour.q];
+  put('sum-beams', [colour, deflect.on && 'deflection drawn', breaking.on && `break ≥ ${breaking.at} N·m`].filter(Boolean).join(' · '));
+  put('sum-physics', [friction.enabled && 'friction', design.ground && 'ground'].filter(Boolean).join(' · '));
+}
+
 function setTool(t: Tool) {
   if (pidPick) cancelSensorPick();
   if (ic || !icMenu.hidden) cancelInitial();
@@ -5667,6 +5707,7 @@ function drawFrame(now: number) {
     bends: bendsNow(),
   });
   renderStatus();
+  blockSummaries();
 }
 
 window.addEventListener('resize', resize);

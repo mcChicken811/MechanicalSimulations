@@ -183,6 +183,11 @@ A **tension-only** spring pulls when it is stretched beyond its rest length and 
 Other controls:
 - Undo with Ctrl/Cmd+Z.
 - Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the scale bar, and the grid when it shows, follow.
+- **The side bar** is a column of separate floating blocks, with the drawing showing and clickable between them.
+  - **Always open:** the top block, with Play, Step, Reset, Undo, Fit view, Clear and the Examples menu.
+  - **Folded at first:** Tools, Simulation (gravity, air drag, pull stiffness, speed), View (labels, dimensions, follow), Beam forces, Friction & ground, and Sound. Click a heading to open or fold it; which are open is remembered.
+  - **Summaries:** a folded heading still says what matters: the tool in use, the beam colouring, deflection and breaking that are on, and whether friction or the ground is on.
+  - **Still reachable:** tool keys and the right-click list work whether or not their block is open.
 - **Right-click** the drawing for a search list of everything in the side panel: tools, Play, Step and Reset, every setting and switch (beam colouring, deflection, breaking, friction, ground…), sliders and number boxes, and the examples.
   - **Opening:** the list opens at the mouse with its search box ready, so just type. Every word must appear in an entry, and entries that start with what you typed come first. A check mark shows what is on, and shortcuts and current values show on the right.
   - **Keys:** ↑ ↓ choose and Enter runs, or click an entry; Esc, or a click elsewhere, closes it.
