@@ -1189,7 +1189,11 @@ function pickInitial(w: Vec, sp: Vec) {
       icMenu.hidden = true;
       ic = { ed, mp, k, rate, label: sym.replace(/<\/?sub>/g, ''), readout: '' };
       sfx('select');
-      chaseInitial(mouseWorld);
+      if (rate) chaseInitial(mouseWorld);
+      else {
+        ed.startDrag(k, mp);
+        showPose(ed);
+      }
       refreshControls();
     }),
   );
@@ -1203,14 +1207,30 @@ function pickInitial(w: Vec, sp: Vec) {
   icMenu.querySelector('.sm-cancel')!.addEventListener('click', () => (icMenu.hidden = true));
 }
 
-/** Follow the mouse: the chosen coordinate (or rate) moves, the others with it. */
+/** Setting a rate: it follows the mouse directly. */
 function chaseInitial(w: Vec) {
-  if (!ic) return;
-  const { ed, mp, k, rate } = ic;
-  const c = ed.sys.derivation.coords[k];
-  const v = rate ? ed.chaseRate(k, mp, w, ARROW_T) : ed.chasePosition(k, mp, w, c.kind === 'angle' ? 0.3 : 0.25);
-  ic.readout = `${ic.label}${rate ? '' : ''} = ${coordValue(c, v, rate)}`;
-  if (rate) return;
+  if (!ic?.rate) return;
+  const { ed, mp, k } = ic;
+  ic.readout = `${ic.label} = ${coordValue(ed.sys.derivation.coords[k], ed.chaseRate(k, mp, w, ARROW_T), true)}`;
+}
+
+/**
+ * Setting a position, every frame: the clicked point is pulled towards the cursor through the
+ * equations of motion (the chosen coordinate and those tied to it move, the rest held).
+ */
+function pullInitial(dt: number) {
+  if (!ic || ic.rate) return;
+  const { ed, k } = ic;
+  if (!ed.dragStep(mouseWorld, dt)) {
+    flash('The mechanism locked up there; settle it or press Esc.');
+    return;
+  }
+  ic.readout = `${ic.label} = ${coordValue(ed.sys.derivation.coords[k], ed.q[k], false)}`;
+  showPose(ed);
+}
+
+/** Show the editor's pose: joint positions, gear and housing turns. */
+function showPose(ed: PoseEditor) {
   const n = ed.sys.pointIndex.size;
   const p = new Float64Array(2 * n);
   ed.sys.positions(ed.q, p);
@@ -1256,6 +1276,7 @@ function settleInitial() {
       if (p) [p.x, p.y] = [+x.toFixed(6), +y.toFixed(6)];
     }
   }
+  if (!rate) ed.projectRates(-1); // the stored rates, consistent with the new pose
   const rates: Record<string, number> = {};
   ed.sys.derivation.coords.forEach((c, i) => {
     if (Math.abs(ed.qd[i]) > 1e-9) rates[c.sym] = +ed.qd[i].toPrecision(8);
@@ -1296,7 +1317,12 @@ function initialArrows(): { from: Vec; to: Vec; color: string; width?: number }[
     const own = p && v ? [{ from: p.r, to: [p.r[0] + v[0] * ARROW_T, p.r[1] + v[1] * ARROW_T] as Vec, color: '#e07b39', width: 2.6 }] : [];
     return [...jointArrows(ic.ed, 'rgba(47,158,143,0.9)'), ...own];
   }
-  if (ic || !hasInitialRates() || !derivation) return null;
+  if (ic) {
+    // the pull: from the clicked point to the cursor
+    const p = ic.ed.point(ic.mp);
+    return p ? [{ from: p.r, to: mouseWorld, color: '#d64545', width: 1.6 }] : null;
+  }
+  if (!hasInitialRates() || !derivation) return null;
   const key = `${derivation.coords.length}:${JSON.stringify(design.initialRates)}:${design.points.length}`;
   if (icArrowCache?.key !== key || icSys?.of !== derivation) {
     const sys = editSystem();
@@ -2229,7 +2255,9 @@ function refreshControls() {
   hintEl.textContent = sim
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
     : ic
-        ? `Setting ${ic.label}: move the mouse${ic.rate ? ' to set the speed (the arrow shows the motion over half a second)' : ''}; the rest follows. Click to settle, Esc to cancel.`
+        ? ic.rate
+          ? `Setting ${ic.label}: move the mouse to set the speed (the arrow shows the motion over half a second); the rest follows. Click to settle, Esc to cancel.`
+          : `Setting ${ic.label}: the part is pulled towards the mouse; ${ic.ed.dragFree.length > 1 ? `it and the ${ic.ed.dragFree.length - 1} coordinate${ic.ed.dragFree.length === 2 ? '' : 's'} tied to it move` : 'only it moves'}, the rest is held. Click to settle, Esc to cancel.`
         : duplicating
         ? `Duplicating ${duplicating.frag.points.length} joint${duplicating.frag.points.length === 1 ? '' : 's'} and what is on them: move to where the copy should go and click to place it (Esc to cancel).`
         : pidPick
@@ -3278,6 +3306,7 @@ function frame(now: number) {
     if (settings.follow) followMechanism();
   }
   sound.update(sim && running ? machineState(sim) : null);
+  if (ic && !sim) pullInitial(dt);
   if (selection?.kind === 'pid' && sim) {
     const live = inspectorEl.querySelector('#i-plive');
     const g = design.gears.find((x) => x.id === selection!.id);

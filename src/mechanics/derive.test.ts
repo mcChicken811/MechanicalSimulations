@@ -1430,7 +1430,7 @@ describe('setting the initial condition (PoseEditor)', () => {
     return new Map([...ed.sys.pointIndex].map(([id, i]) => [id, [out[2 * i], out[2 * i + 1]] as [number, number]]));
   };
 
-  it("drives a four-bar's crank angle towards the mouse, the coupler and rocker following, every bar keeping its length", () => {
+  it("pulls a four-bar's crank tip towards the mouse through the equations of motion, coupler and rocker following, every bar keeping its length", () => {
     const d = fourBar();
     const der = deriveEquations(d, { gravity: G });
     const ed = new PoseEditor(new NumericSystem(der), der.coords.map((c) => c.initial), der.coords.map(() => 0));
@@ -1439,13 +1439,43 @@ describe('setting the initial condition (PoseEditor)', () => {
     const L = [len(before, 0, 1), len(before, 1, 2), len(before, 2, 3)];
     // pull the crank tip (joint 1) round towards a point straight above its pivot
     const target: [number, number] = [before.get(0)![0], before.get(0)![1] + 1];
-    ed.chasePosition(crank, { kind: 'point', id: 1 }, target, 0.3);
+    ed.startDrag(crank, { kind: 'point', id: 1 });
+    expect(ed.dragFree.length).toBe(der.coords.length); // the loop ties every bar to the crank
+    for (let i = 0; i < 60; i++) expect(ed.dragStep(target, 1 / 60)).toBe(true); // a second of pulling
     const after = positions(ed);
     expect(after.get(1)![0]).toBeCloseTo(before.get(0)![0], 3); // the crank now points straight up (if the loop lets it)
     expect([len(after, 0, 1), len(after, 1, 2), len(after, 2, 3)].map((x, i) => x - L[i]).every((e) => Math.abs(e) < 1e-9)).toBe(true);
     const phi = new Float64Array(ed.sys.nc);
     ed.sys.phi(ed.q, phi);
     expect(Math.max(...phi.map(Math.abs))).toBeLessThan(1e-9);
+  });
+
+  it('holds the coordinates not tied to the chosen one: pulling a double pendulum by its lower bar, bar 1 stays put', () => {
+    const der = deriveEquations(doublePendulum(), { gravity: G });
+    const ed = new PoseEditor(new NumericSystem(der), der.coords.map((c) => c.initial), der.coords.map(() => 0));
+    const [k1, k2] = [der.coords.findIndex((c) => c.sym === 'th0'), der.coords.findIndex((c) => c.sym === 'th1')];
+    const th1 = ed.q[k1];
+    const tip = ed.point({ kind: 'point', id: 2 })!.r;
+    const pivot = ed.point({ kind: 'point', id: 1 })!.r;
+    ed.startDrag(k2, { kind: 'point', id: 2 });
+    expect(ed.dragFree).toEqual([k2]);
+    // pull the tip straight out to the side of its joint: bar 2 swings round to point at it
+    const L = Math.hypot(tip[0] - pivot[0], tip[1] - pivot[1]);
+    for (let i = 0; i < 90; i++) ed.dragStep([pivot[0] + 3 * L, pivot[1]], 1 / 60);
+    expect(ed.q[k1]).toBe(th1); // held exactly
+    expect(Math.cos(ed.q[k2])).toBeCloseTo(1, 3); // bar 2 now points along +x, towards the pull
+  });
+
+  it('leaves gravity, springs and motors out while pulling: let go at the target, it stays', () => {
+    const der = deriveEquations(doublePendulum(), { gravity: G });
+    const ed = new PoseEditor(new NumericSystem(der), der.coords.map((c) => c.initial), der.coords.map(() => 0));
+    const k = der.coords.findIndex((c) => c.sym === 'th0');
+    const mp = { kind: 'point' as const, id: 1 };
+    const r0 = ed.point(mp)!.r;
+    ed.startDrag(k, mp);
+    for (let i = 0; i < 120; i++) ed.dragStep(r0, 1 / 60); // pulled to where it already is
+    const r1 = ed.point(mp)!.r;
+    expect(Math.hypot(r1[0] - r0[0], r1[1] - r0[1])).toBeLessThan(1e-9); // gravity did not drag it down
   });
 
   it("sets the crank's rate, the other bars' rates following so the loop stays closed", () => {

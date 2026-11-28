@@ -1,13 +1,17 @@
 /**
- * Setting a mechanism's initial condition by hand: one coordinate is driven (its value, or its
- * rate) towards where the mouse is, and every other coordinate follows so that the constraints
- * still hold, changing as little as it can (minimal-norm corrections), so coordinates the
- * constraints do not tie to the driven one stay put.
+ * Setting a mechanism's initial condition by hand.
  *
- * Positions: the driven coordinate moves along the constraint manifold's tangent
- *   t = e_k − Φ_oᵀ (Φ_o Φ_oᵀ)⁻¹ Φ_k   (Φ_o: the constraint jacobian without column k),
- * each step a 1D Newton step bringing the chosen material point closest to the mouse, then a
- * Gauss–Newton projection back onto Φ(q) = 0 with q_k held.
+ * Positions are set by pulling: a spring-damper from the point the user clicked towards the
+ * cursor drives the equations of motion, integrated with RK4, for the chosen coordinate and the
+ * coordinates the constraints tie it to (directly or through others); every other coordinate is
+ * held, its rate 0. Only the pull acts (gravity, springs and motors are left out while setting),
+ * through the real mass matrix, velocity terms and constraints:
+ *   M_FF q̈_F = f_F + J_Fᵀ F − c M_FF q̇_F + Φ_Fᵀ λ,   Φ_F q̈_F = γ
+ * with F = m (ω² (r_cursor − r) − 2ω ṙ), m = 1 / λ_max(J A Jᵀ) the point's effective mass in
+ * the direction it moves most easily (A the constrained inverse inertia), so any part follows
+ * at about the same rate ω, critically damped that way and never faster.
+ * After each step the free coordinates are projected back onto Φ(q) = 0.
+ *
  * Rates: q̇_k is set so the material point's velocity matches the mouse's offset over a time T,
  * then the other rates are corrected minimally to satisfy Φ_q q̇ = 0.
  */
@@ -29,6 +33,7 @@ export class PoseEditor {
   private readonly Phi: Float64Array;
   private readonly PhiQ: Float64Array;
   private readonly gearBuf: Float64Array;
+  private readonly Mbuf: Float64Array;
 
   constructor(
     readonly sys: NumericSystem,
@@ -44,6 +49,7 @@ export class PoseEditor {
     this.Phi = new Float64Array(this.nc);
     this.PhiQ = new Float64Array(this.nc * this.n);
     this.gearBuf = new Float64Array(sys.gearIds.length);
+    this.Mbuf = new Float64Array(this.n * this.n);
     this.projectRates(-1);
   }
 
@@ -133,58 +139,203 @@ export class PoseEditor {
     return t;
   }
 
-  /** Bring q back onto Φ(q) = 0 with q_k held; false if it cannot (a limit of the motion). */
-  private project(k: number, q: Float64Array): boolean {
-    const { nc, sys, Phi, PhiQ } = this;
-    if (nc === 0) return true;
-    for (let iter = 0; iter < 25; iter++) {
-      sys.phi(q, Phi);
-      let err = 0;
-      for (let a = 0; a < nc; a++) err = Math.max(err, Math.abs(Phi[a]));
-      if (err < 1e-11) return true;
-      sys.phiQ(q, PhiQ);
-      const dx = this.minimal(k, Phi);
-      if (!dx) return false;
-      for (let j = 0; j < q.length; j++) q[j] -= dx[j];
+  /** The coordinates the constraints tie to k (directly or through others), k included, ascending. */
+  connected(k: number): number[] {
+    const cols = this.sys.derivation.phiQ.map((row) => row.flatMap((p, j) => (p.isZero() ? [] : [j])));
+    const seen = new Set([k]);
+    const stack = [k];
+    while (stack.length) {
+      const j = stack.pop()!;
+      for (const c of cols) if (c.includes(j)) for (const x of c) if (!seen.has(x)) seen.add(x) && stack.push(x);
     }
-    sys.phi(q, Phi);
-    return Phi.every((v) => Math.abs(v) < 1e-8);
+    return [...seen].sort((a, b) => a - b);
+  }
+
+  private drag: { mp: MaterialPoint; free: number[]; rows: number[]; v: Float64Array; off: number[]; lam: [number, number, number, number] } | null = null;
+
+  /** Start pulling material point `mp`, coordinate k and those tied to it free to move, the rest held. */
+  startDrag(k: number, mp: MaterialPoint) {
+    const d = this.sys.derivation;
+    const free = this.connected(k);
+    const rows = d.phiQ.flatMap((row, a) => (row.some((p, j) => !p.isZero() && free.includes(j)) ? [a] : []));
+    // the forces left out while setting: gravity, springs and motors
+    const offSyms = new Set(['g', ...d.springs.map((sp) => sp.k), ...d.motors.flatMap((m) => [m.tau, ...(m.b ? [m.b] : [])])]);
+    const off = d.params.flatMap((p, i) => (offSyms.has(p.sym) ? [i] : []));
+    this.drag = { mp, free, rows, v: new Float64Array(this.n), off, lam: [0, 0, 0, 0] };
+  }
+
+  /** The coordinates moving in the current drag. */
+  get dragFree(): number[] {
+    return this.drag?.free ?? [];
   }
 
   /**
-   * Drive coordinate k so the material point comes as close to `target` as the mechanism lets it,
-   * the others following. Returns the coordinate's new value.
+   * Solve the free coordinates' KKT system [M_FF Φ_Fᵀ; Φ_F −ε] [x; λ] = [rhs; c] (M filled);
+   * returns x over all coordinates (0 for the held ones).
    */
-  chasePosition(k: number, mp: MaterialPoint, target: Vec, maxStep: number): number {
-    for (let iter = 0; iter < 16; iter++) {
-      const p = this.point(mp);
-      const t = this.tangent(k);
-      if (!p || !t) break;
-      let [dx, dy] = [0, 0];
-      for (let m = 0; m < this.n; m++) {
-        dx += p.Jx[m] * t[m];
-        dy += p.Jy[m] * t[m];
-      }
-      const g2 = dx * dx + dy * dy;
-      if (g2 < 1e-14) break; // a dead point: moving q_k does not move the point
-      let delta = ((target[0] - p.r[0]) * dx + (target[1] - p.r[1]) * dy) / g2;
-      delta = Math.max(-maxStep, Math.min(maxStep, delta));
-      if (Math.abs(delta) < 1e-10) break;
-      // step along the tangent, then back onto the constraints; halve the step at a limit
-      let moved = false;
-      for (let tries = 0; tries < 6 && !moved; tries++, delta /= 2) {
-        const trial = Float64Array.from(this.q);
-        for (let m = 0; m < this.n; m++) trial[m] += delta * t[m];
-        trial[k] = this.q[k] + delta;
-        if (this.project(k, trial)) {
-          this.q.set(trial);
-          moved = true;
-        }
-      }
-      if (!moved) break;
+  private kkt(M: Float64Array, rhs: Float64Array, c: Float64Array): Float64Array | null {
+    const { n, PhiQ } = this;
+    const { free, rows } = this.drag!;
+    const m = free.length;
+    const N = m + rows.length;
+    for (const eps of [1e-10, 1e-6]) {
+      const K = new Float64Array(N * N);
+      const b = new Float64Array(N);
+      free.forEach((ia, a) => {
+        free.forEach((ib, bb) => (K[a * N + bb] = M[ia * n + ib]));
+        b[a] = rhs[ia];
+      });
+      rows.forEach((row, r) => {
+        free.forEach((ia, a) => (K[(m + r) * N + a] = K[a * N + m + r] = PhiQ[row * n + ia]));
+        K[(m + r) * N + m + r] = -eps;
+        b[m + r] = c[row];
+      });
+      if (!solveInPlace(K, b, N)) continue;
+      const x = new Float64Array(n);
+      free.forEach((ia, a) => (x[ia] = b[a]));
+      return x;
     }
-    this.projectRates(-1);
-    return this.q[k];
+    return null;
+  }
+
+  /** q̈ while pulling towards `target` (held coordinates 0), or null if the system is singular. */
+  private dragAccel(q: Float64Array, v: Float64Array, target: Vec, W: number): Float64Array | null {
+    const { n, sys } = this;
+    const dr = this.drag!;
+    const M = this.Mbuf;
+    sys.mass(q, M);
+    const f = new Float64Array(n);
+    const saved = dr.off.map((i) => sys.params[i]);
+    dr.off.forEach((i) => (sys.params[i] = 0));
+    sys.force(q, v, f);
+    dr.off.forEach((i, j) => (sys.params[i] = saved[j]));
+    const p = this.point(dr.mp, q);
+    if (!p) return null;
+    let [vx, vy] = [0, 0];
+    for (let m = 0; m < n; m++) {
+      vx += p.Jx[m] * v[m];
+      vy += p.Jy[m] * v[m];
+    }
+    // F = Λ (ω² e − 2ω ṙ): the pull, scaled by the point's effective mass
+    const [ex, ey] = [W * W * (target[0] - p.r[0]) - 2 * W * vx, W * W * (target[1] - p.r[1]) - 2 * W * vy];
+    const [a, b, c, d] = dr.lam;
+    const [Fx, Fy] = [a * ex + b * ey, c * ex + d * ey];
+    const cDamp = 0.4 * W; // a little drag on every free coordinate, so nothing keeps swinging
+    for (const i of dr.free) {
+      let Mv = 0;
+      for (let j = 0; j < n; j++) Mv += M[i * n + j] * v[j];
+      f[i] += p.Jx[i] * Fx + p.Jy[i] * Fy - cDamp * Mv;
+    }
+    if (this.nc) sys.phiQ(q, this.PhiQ);
+    const gam = new Float64Array(this.nc);
+    if (this.nc) sys.gamma(q, v, gam);
+    return this.kkt(M, f, gam);
+  }
+
+  /** The point's effective mass for the pull, from its mobility J A Jᵀ (2×2) at the current pose. */
+  private updateLambda() {
+    const { n, sys } = this;
+    const dr = this.drag!;
+    const p = this.point(dr.mp);
+    if (!p) return;
+    const M = this.Mbuf;
+    sys.mass(this.q, M);
+    if (this.nc) sys.phiQ(this.q, this.PhiQ);
+    const zero = new Float64Array(this.nc);
+    const ax = this.kkt(M, p.Jx, zero);
+    const ay = this.kkt(M, p.Jy, zero);
+    if (!ax || !ay) return;
+    let [wxx, wxy, wyy] = [0, 0, 0];
+    for (let m = 0; m < n; m++) {
+      wxx += p.Jx[m] * ax[m];
+      wxy += p.Jx[m] * ay[m];
+      wyy += p.Jy[m] * ay[m];
+    }
+    // the most mobile direction's effective mass: every direction then responds at ω or slower
+    // (a direction it can hardly move in follows more slowly, rather than being pushed without bound)
+    const top = (wxx + wyy) / 2 + Math.sqrt(((wxx - wyy) / 2) ** 2 + wxy * wxy);
+    const m = top > 1e-12 ? 1 / top : 0;
+    dr.lam = [m, 0, 0, m];
+  }
+
+  /** Bring the free coordinates back onto the constraints (positions, then rates), the held ones untouched. */
+  private projectFree(q: Float64Array, v: Float64Array) {
+    const { n, nc, sys, Phi, PhiQ } = this;
+    if (!nc) return;
+    const { free, rows } = this.drag!;
+    const solve = (rhs: Float64Array): Float64Array | null => {
+      // minimal-norm x over the free coordinates with Φ_F x = rhs (on the rows touching them)
+      const r = rows.length;
+      const A = new Float64Array(r * r);
+      rows.forEach((ra, a) =>
+        rows.forEach((rb, b) => {
+          let s = 0;
+          for (const j of free) s += PhiQ[ra * n + j] * PhiQ[rb * n + j];
+          A[a * r + b] = s + (a === b ? 1e-12 : 0);
+        }),
+      );
+      const mu = Float64Array.from(rows.map((row) => rhs[row]));
+      if (!solveInPlace(A, mu, r)) return null;
+      const x = new Float64Array(n);
+      for (const j of free) rows.forEach((row, a) => (x[j] += PhiQ[row * n + j] * mu[a]));
+      return x;
+    };
+    for (let iter = 0; iter < 4; iter++) {
+      sys.phi(q, Phi);
+      if (rows.every((row) => Math.abs(Phi[row]) < 1e-12)) break;
+      sys.phiQ(q, PhiQ);
+      const dx = solve(Phi);
+      if (!dx) break;
+      for (const j of free) q[j] -= dx[j];
+    }
+    sys.phiQ(q, PhiQ);
+    const c = new Float64Array(nc);
+    for (const row of rows) for (let j = 0; j < n; j++) c[row] += PhiQ[row * n + j] * v[j];
+    const dv = solve(c);
+    if (dv) for (const j of free) v[j] -= dv[j];
+  }
+
+  /**
+   * Advance the pull by dt seconds (in 1 ms RK4 steps): the clicked point is drawn towards
+   * `target`, critically damped at ω rad/s. Returns false if the equations became singular.
+   */
+  dragStep(target: Vec, dt: number, W = 18): boolean {
+    const dr = this.drag;
+    if (!dr) return false;
+    this.updateLambda();
+    const steps = Math.max(1, Math.min(80, Math.ceil(dt / 1e-3)));
+    const h = dt / steps;
+    const { q } = this;
+    const v = dr.v;
+    for (let s = 0; s < steps; s++) {
+      const a1 = this.dragAccel(q, v, target, W);
+      if (!a1) return false;
+      const stage = (k: Float64Array, kv: Float64Array, c: number) => {
+        const qs = Float64Array.from(q);
+        const vs = Float64Array.from(v);
+        for (const j of dr.free) {
+          qs[j] += c * h * kv[j];
+          vs[j] += c * h * k[j];
+        }
+        return [qs, vs] as const;
+      };
+      const [q2, v2] = stage(a1, v, 0.5);
+      const a2 = this.dragAccel(q2, v2, target, W);
+      if (!a2) return false;
+      const [q3, v3] = stage(a2, v2, 0.5);
+      const a3 = this.dragAccel(q3, v3, target, W);
+      if (!a3) return false;
+      const [q4, v4] = stage(a3, v3, 1);
+      const a4 = this.dragAccel(q4, v4, target, W);
+      if (!a4) return false;
+      for (const j of dr.free) {
+        q[j] += (h / 6) * (v[j] + 2 * v2[j] + 2 * v3[j] + v4[j]);
+        v[j] += (h / 6) * (a1[j] + 2 * a2[j] + 2 * a3[j] + a4[j]);
+      }
+      this.projectFree(q, v);
+      if (!q.every(Number.isFinite) || !v.every(Number.isFinite)) return false;
+    }
+    return true;
   }
 
   /**
