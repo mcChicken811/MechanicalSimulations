@@ -837,6 +837,8 @@ export interface Preset {
   follow?: boolean;
   /** The area to fit in view when loading it (world metres), when its motion reaches beyond its drawing. */
   view?: { x: [number, number]; y: [number, number] };
+  /** What it is and what to look for (the examples gallery shows it). */
+  description?: string;
   /**
    * Show the beam analysis when loading it: the bars coloured by an internal force (N, V or M; how,
    * and on what scale), and drawn bent this many times larger (if `deflect` is set).
@@ -1126,3 +1128,49 @@ export const presets: Preset[] = [
     build: () => ({ points: [pt(0, 0, 0.6, 'lockX', 1), pt(1, 0.6, 0.3)], links: bars([[0, 1]]), springs: [], gears: [], meshes: [], rackMeshes: [] }),
   },
 ];
+
+/** What each example is (the gallery's description), by name. */
+const DESCRIPTIONS: Record<string, string> = {
+  "Strandbeest leg (Jansen linkage)": "Theo Jansen's eleven-bar leg: one crank turning drives the foot along a flat-bottomed path, the walking motion of his wind-driven beach creatures. Unpowered here: give the crank a pull and watch the foot's path.",
+  "Strandbeest leg driven by a crank motor": "The Jansen leg with a motor on its crank, so it walks on its own. Select the foot joint to trace its path: long and flat at the bottom, where it would push on the ground.",
+  "Strandbeest with four legs, gear-coupled and motor-driven": "Four Jansen legs on cranks coupled by gears and driven by one motor, phased so some feet are always on the ground, as in Jansen's beach walkers.",
+  "Quick-return mechanism (crank and slotted lever)": "A crank pin slides in a slotted lever, so the lever's forward stroke is slow and its return quick: the motion of a shaping machine's ram. It uses a rail on a moving body.",
+  "Tower Bridge: bascules opening (beam forces, deflection)": "London's 1894 bascule bridge at about 1:25. Counterweighted leaves are raised by motors under PID control while the towers and walkways stand. Made to show the beam analysis: bending colours and deflection are switched on, and a leaf's cantilever moment turns into compression as it rises.",
+  "Watt's sun-and-planet gear": "James Watt's 1781 way round the crank patent: a planet gear fixed to the connecting rod orbits a sun gear on the flywheel shaft, turning it twice per stroke.",
+  "Oil-well pump jack": "A nodding donkey: a motor and reduction gear turn a counterweighted crank, the pitman arm rocks the walking beam on its Samson post, and the horsehead lifts the sucker-rod string, modelled as a spring with the rods' weight.",
+  "Four-stroke engine with 2:1 timing gears": "A slider-crank piston with its crankshaft driving a camshaft gear at half speed through 2:1 timing gears, as in a four-stroke engine.",
+  "Peaucellier–Lipkin straight-line linkage": "The first linkage to turn rotation into an exact straight line (1864). As the input bar swings, the far joint traces a perfectly straight path.",
+  "Rack-and-pinion steering (top view)": "A car's steering seen from above: the pinion on the steering column moves the rack sideways, and tie rods turn the wheels. Gravity is off, as it lies flat.",
+  "Trapezoid (Ackermann) steering linkage (top view)": "The trapezoid linkage that steers a car's inner wheel more than its outer one, so both roll round the same centre. Seen from above, gravity off.",
+  "Cog railway car on a rack incline": "A rack railway: a motor-driven pinion climbs a toothed rack up a steep slope, as on mountain railways where wheels alone would slip.",
+  "Human leg swing with a four-bar knee (O'Connor 1989)": "A swinging leg whose knee is the crossed four-bar of the cruciate ligaments (O'Connor's model), so the knee's centre of rotation moves as it bends. Light tissue damping.",
+  "Human hand, flattened (Cerruti et al. 2015 proportions)": "A hand laid flat with finger bones in measured proportions, tendons as springs. Pull a fingertip and the rest follow; good for joint forces.",
+  "Rimless wheel walking down a slope (McGeer 1990)": "A wheel of spokes without a rim rolls down a slope in steps, each spoke landing in an impact: the simplest model of passive walking.",
+  "Watt's linkage axle on coil springs": "An axle located sideways by a Watt's linkage, whose middle point moves in a nearly straight line, on coil springs: a classic rear suspension.",
+  "Watch balance wheel and hairspring": "A watch's timekeeper: a balance wheel oscillating on its hairspring at a steady rate.",
+  "Simple pendulum": "One bar on a pivot. Measure it and graph its angle, or its energy, which stays constant.",
+  "Double pendulum": "Two bars, one hanging from the other: simple to draw, chaotic in motion. A good one for the beam diagrams and for breaking bars.",
+  "Triple pendulum": "Three bars in a chain: even more chaotic than the double pendulum.",
+  "Cart-pole (y-locked cart)": "A pendulum on a cart that slides along a horizontal rail: the classic balancing problem of control theory.",
+  "Slider-crank": "A crank, a connecting rod and a piston on a rail: the mechanism of every piston engine and pump.",
+  "Four-bar linkage": "The basic four-bar: a crank, a coupler and a rocker between two fixed pivots. Trace a coupler point for its curve.",
+  "Box dropped onto the floor": "A rigid square frame, braced by a diagonal, falls corner first onto the ground and bounces and tumbles.",
+  "Chain dropped onto the floor": "A chain of links falls onto the ground and piles up, with friction and impacts.",
+  "Bead on a swinging rod, with end stops": "A bead slides along a swinging rod and hits stops at its ends: a rail on a moving body, with impacts.",
+  "Hanging chain (closed loop)": "A closed loop of links hung from two points, settling into its catenary-like shape.",
+  "Ring chain of 30 links": "Thirty links in a ring: a big mechanism with many coordinates and loop constraints, for watching the solver work.",
+  "Mass on a spring (horizontal rail)": "A mass on a horizontal rail held by a spring: a simple harmonic oscillator.",
+  "Elastic pendulum": "A pendulum whose rod is a spring, so swinging and bouncing trade energy.",
+  "Pendulum held by a spring": "A pendulum with a spring pulling it sideways, shifting where it rests.",
+  "Spring-loaded four-bar": "A four-bar linkage with a spring across it, oscillating about its balance point.",
+  "Geared five-bar linkage": "Two cranks linked by gears drive a five-bar linkage, which then moves with a single freedom.",
+  "Planetary gear with pendulum": "A planetary gear train with a pendulum: sun, planets and ring gear turning together.",
+  "Gear train with crank weight": "A gear train whose last gear carries a weight on a crank, swinging the whole train back and forth.",
+  "Rack and pinion on a spring": "A pinion meshed with a rack held by a spring, turning rotation into sliding.",
+  "Motor car on wheels over hills": "A small car with a motor on its rear wheel drives over hilly ground, its wheels rolling with friction. The view follows it.",
+  "Twin-rotor drone with a lever per motor": "A drone with two propellers, each motor worked by its own lever in the dock: fly it by hand. The view follows it.",
+  "Robot-arm joint held by a PID controller": "A motor on a fixed axle holds an arm at the angle its lever sets, through a PID controller, against gravity and a swinging forearm.",
+  "Motor car with cruise control (PID on its speed)": "The motor car with a PID controller holding its speed over the hills.",
+  "Pendulum on a vertical rail": "A pendulum hanging from a block that slides on a vertical rail."
+};
+for (const p of presets) p.description ??= DESCRIPTIONS[p.name];

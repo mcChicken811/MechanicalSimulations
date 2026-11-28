@@ -11,6 +11,8 @@ import { enableScrubbing } from './ui/scrub';
 import { Palette, type Command } from './ui/palette';
 import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
+import { Gallery } from './ui/gallery';
+import { askDialog } from './ui/dialog';
 import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
@@ -31,6 +33,14 @@ const inspectorEl = $<HTMLDivElement>('#inspector');
 const statusEl = $<HTMLDivElement>('#status');
 /** The message bar at the top: every instruction and notice goes through it (ui/messages.ts). */
 const messages = new Messages($<HTMLDivElement>('#hint'));
+/** Whether the drawing has changes not saved to a file (kept across reloads): opening an example asks first. */
+const UNSAVED_KEY = 'linkage-lab:unsaved';
+let unsaved = localStorage.getItem(UNSAVED_KEY) === '1';
+function setUnsaved(v: boolean) {
+  if (unsaved === v) return;
+  unsaved = v;
+  localStorage.setItem(UNSAVED_KEY, v ? '1' : '0');
+}
 /** The inspector's sliding away (set up below; it comes back when the part it shows changes). */
 let inspectorPanel: AutoHide | undefined;
 let inspectedFor = '';
@@ -211,6 +221,7 @@ function persistable(): Design {
 }
 
 function designChanged(opts: { keepInspector?: boolean } = {}) {
+  setUnsaved(true);
   keepGroundUnder(); // the ground gives way under anything moved below it
   localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable()));
   scheduleDerive();
@@ -1139,6 +1150,7 @@ function syncGroundUI() {
 
 /** The ground changed: save it, hand it to a running simulation, and redescribe it. */
 function groundChanged() {
+  setUnsaved(true);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable()));
   if (sim) sim.ground = groundSettings();
   syncGroundUI();
@@ -2223,6 +2235,7 @@ const toolKeys: Record<string, Tool> = { v: 'select', i: 'initial', u: 'dimensio
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
   if (target.closest('input, select, textarea')) return;
+  if (gallery.isOpen || document.querySelector('.dialog-backdrop')) return; // the gallery and dialogs have their own keys
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && k === 'z') {
     e.preventDefault();
@@ -2322,15 +2335,24 @@ function applyControls(c: Record<string, boolean | string>) {
 /** A title for files: the example it came from, else "linkage". */
 let designTitle = 'linkage';
 
-async function saveDesign() {
+/** Save the drawing as a design file; whether it was (false: cancelled). */
+async function saveDesign(): Promise<boolean> {
   const ok = await saveJson({ format: DESIGN_FORMAT, version: 1, design: persistable() }, fileName(designTitle, 'design'), 'Linkage Lab design');
-  if (ok) messages.notify('Design saved.');
+  if (ok) {
+    setUnsaved(false);
+    messages.notify('Design saved.');
+  }
+  return ok;
 }
 
-async function saveProject() {
+async function saveProject(): Promise<boolean> {
   const project: ProjectFile = { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: persistable(), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view } };
   const ok = await saveJson(project, fileName(designTitle, 'project'), 'Linkage Lab project');
-  if (ok) messages.notify('Project saved: the drawing, every setting and the view.');
+  if (ok) {
+    setUnsaved(false);
+    messages.notify('Project saved: the drawing, every setting and the view.');
+  }
+  return ok;
 }
 
 /** Ask for a file and read the design in it (a design, a project, or a bare design); null if cancelled or unreadable (said so). */
@@ -2376,6 +2398,7 @@ async function loadDesignFile() {
   const f = await openDesignFile('design');
   if (!f) return;
   replaceDesign(f.design, f.name);
+  setUnsaved(false); // as it is in the file
   fitView();
   sfx('preset');
   messages.notify(`Loaded ${f.name}${f.project ? ' (the drawing from that project; its settings are left as they are)' : ''}.`);
@@ -2385,6 +2408,7 @@ async function loadProjectFile() {
   const f = await openDesignFile('project');
   if (!f || !f.project) return;
   replaceDesign(f.design, f.name);
+  setUnsaved(false);
   applyControls(f.project.controls ?? {});
   const bc = f.project.beamColour as Partial<BeamColour> | undefined;
   if (bc && typeof bc === 'object') {
@@ -2509,15 +2533,13 @@ function paletteCommands(): Command[] {
   }
   const eom = $<HTMLButtonElement>('#eom-toggle');
   out.push({ label: `Equations panel: ${eom.textContent === '–' ? 'collapse' : 'expand'}`, group: 'View', run: () => eom.click() });
+  out.push({ label: 'Browse examples…', group: 'Example', keywords: 'gallery presets open', run: () => gallery.open() });
   presets.forEach((p, i) =>
     out.push({
       label: p.name,
       group: 'Example',
       keywords: p.group,
-      run: () => {
-        presetSel.value = String(i);
-        presetSel.dispatchEvent(new Event('change'));
-      },
+      run: () => void requestPreset(i),
     }),
   );
   return out;
@@ -2799,16 +2821,37 @@ clearBtn.addEventListener('click', () => {
 });
 $<HTMLButtonElement>('#fit').addEventListener('click', () => fitView());
 
-const presetSel = $<HTMLSelectElement>('#preset');
-for (const group of [...new Set(presets.map((p) => p.group))]) {
-  const og = document.createElement('optgroup');
-  og.label = group;
-  presets.forEach((p, i) => p.group === group && og.append(new Option(p.name, String(i))));
-  presetSel.append(og);
+// ---- the examples: browsed in the gallery (ui/gallery.ts), opened after asking about unsaved work ----
+const gallery = new Gallery(presets, (i) => void requestPreset(i));
+$<HTMLButtonElement>('#examples-btn').addEventListener('click', () => gallery.open());
+const NO_WARN_KEY = 'linkage-lab:no-unsaved-warning';
+
+/** Open example i, first asking (unless told not to) when the drawing has changes not saved to a file. */
+async function requestPreset(i: number) {
+  const p = presets[i];
+  if (!p) return;
+  const muted = localStorage.getItem(NO_WARN_KEY) === '1' || sessionStorage.getItem(NO_WARN_KEY) === '1';
+  if (unsaved && !muted) {
+    const a = await askDialog({
+      title: 'Your design has unsaved changes',
+      body: `Opening “${p.name}” replaces your drawing, which has changes not saved to a file. Undo can bring it back until you reload the page.`,
+      buttons: [
+        { id: 'save', label: 'Save design first…' },
+        { id: 'open', label: 'Open without saving', primary: true },
+        { id: 'cancel', label: 'Cancel' },
+      ],
+      remember: true,
+    });
+    if (a.remember === 'forever') localStorage.setItem(NO_WARN_KEY, '1');
+    else if (a.remember === 'session') sessionStorage.setItem(NO_WARN_KEY, '1');
+    if (a.choice === 'cancel') return;
+    if (a.choice === 'save' && !(await saveDesign())) return; // cancelled the save: stay
+  }
+  openPreset(i);
 }
-presetSel.addEventListener('change', () => {
-  const p = presets[Number(presetSel.value)];
-  presetSel.value = '';
+
+function openPreset(i: number) {
+  const p = presets[i];
   if (!p) return;
   stopSim();
   duplicating = null;
@@ -2829,9 +2872,10 @@ presetSel.addEventListener('change', () => {
   drag.value = String(p.drag ?? 0); // tissue damping for the presets that ask for it
   drag.dispatchEvent(new Event('input'));
   designChanged();
+  setUnsaved(false); // an example as it comes
   fitView(p.view);
   if (p.analysis) showAnalysis(p.analysis); // an example made to show the beam analysis
-});
+}
 
 function bindSlider(id: 'damping' | 'stiffness' | 'speed', fmt: (v: number) => string) {
   const input = $<HTMLInputElement>(`#${id}`);

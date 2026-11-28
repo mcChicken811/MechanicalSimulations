@@ -77,7 +77,14 @@ Open the address it prints (usually http://localhost:5173). The page reloads whe
 
 ## Using the simulation
 
-The first time you open the app, it shows one leg of Theo Jansen's Strandbeest. After that, it remembers your last design in the browser. Use **Examples…** to load other mechanisms, or **Clear** to start from scratch. Examples marked *top view* lie in the horizontal plane, such as the two car steering linkages, so loading one turns gravity off; loading any other example turns it back on.
+The first time you open the app, it shows one leg of Theo Jansen's Strandbeest. After that, it remembers your last design in the browser. Use **Examples…** to browse other mechanisms, or **Clear** to start from scratch.
+
+**The examples gallery.** **Examples…** opens a panel in the middle of the screen with every example as a card, its drawing above its name, grouped into famous mechanisms and basics. A box at the top filters them by name or description.
+- **Choosing a card** shows it on the right: a bigger drawing (drag to move it, scroll to zoom, double-click to fit), its name, what it is and what to look for, and what it is made of. **Open** loads it; so do double-clicking a card and Enter.
+- **Unsaved changes:** if your drawing has changes not saved to a file, opening an example asks first. You can save the design first, open without saving (Undo can still bring your drawing back until you reload), or cancel. Tick *Don't show this again* to stop the question for this session or for good.
+- **What counts as saved:** saving or loading a design or project, or opening an example, counts as saved; any edit after that counts as a change. This is remembered across reloads.
+
+ Examples marked *top view* lie in the horizontal plane, such as the two car steering linkages, so loading one turns gravity off; loading any other example turns it back on.
 
 ### Building a mechanism
 
@@ -197,7 +204,7 @@ Other controls:
 - Undo with Ctrl/Cmd+Z.
 - Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the scale bar, and the grid when it shows, follow.
 - **The side bar** is a column of separate floating blocks, with the drawing showing and clickable between them.
-  - **Always open:** the top block, with Play, Step, Reset, Undo, Fit view, Clear and the Examples menu.
+  - **Always open:** the top block, with Play, Step, Reset, Undo, Fit view, Clear and the Examples gallery.
   - **Folded at first:** Tools, Simulation (gravity, air drag, pull stiffness, speed), View (labels, dimensions, follow), Beam forces, Friction & ground, and Sound. Click a heading to open or fold it; which are open is remembered.
   - **Summaries:** a folded heading still says what matters: the tool in use, the beam colouring, deflection and breaking that are on, and whether friction or the ground is on.
   - **Still reachable:** tool keys and the right-click list work whether or not their block is open.

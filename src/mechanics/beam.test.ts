@@ -168,3 +168,9 @@ describe('internal forces along a bar', () => {
     expect(checked).toBeGreaterThan(50);
   }, 60000);
 });
+
+describe('the examples', () => {
+  it('every example has a description for the gallery', () => {
+    expect(presets.filter((p) => !p.description).map((p) => p.name)).toEqual([]);
+  });
+});
