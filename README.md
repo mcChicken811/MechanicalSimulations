@@ -209,7 +209,11 @@ While the simulation runs or is paused, the inspector measures the selected part
 
 **Settings…** switches to the part's usual inspector, for values that can change while it runs, such as a motor's torque. **← Measurements** switches back.
 
-**Graphs.** Click a quantity to graph it against time; one quantity is graphed at a time. The simulation records its state every frame from the start, so the graph shows the whole run so far and keeps growing while it runs. Angles are unwrapped, so they run on past ±180°.
+**Graphs.** Click a quantity to graph it against time; one quantity is graphed at a time. The simulation records its state every frame from the start, so the whole run so far can be looked back over. Angles are unwrapped, so they run on past ±180°.
+- **Time window:** the graph shows the most recent 10 seconds and scrolls along as it runs, rather than squeezing the whole run in. Early in a run the window starts at the beginning, with the rest still to fill.
+- **Scrolling back:** over the plot, the mouse wheel or a sideways trackpad swipe scrolls through time. So does dragging the plot, or the thumb of the scrollbar under the time axis, which shows where the window sits in the whole run. Scrolling back stops the graph following; scroll to the end again and it follows the latest time once more. The thumb is pale while following.
+- **Scales:** hover the time axis (its labels) and turn the wheel to zoom the time scale, from 0.05 s to 10 minutes, about the time under the mouse. Hover the value axis and turn the wheel to zoom the value scale about the value under the mouse, or drag it to slide the range. The value range fits what is visible until you set it.
+- **Resetting:** double-click the value axis to fit the values again, or the time axis to go back to the latest 10 s. Double-clicking the plot does both, keeping the zoom.
 - **Cursor line:** move the mouse over the graph for a vertical line at that time, a dot where it crosses the curve, and the time and value there.
 - **⤢ Enlarge:** moves the graph to the middle of the screen, much bigger; **⤡** shrinks it back, and **×** closes it.
 - **History length:** about the last 5 minutes are kept (20,000 frames). Reset clears the record.

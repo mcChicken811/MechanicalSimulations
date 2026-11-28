@@ -3185,10 +3185,48 @@ graphEl.hidden = true;
 graphEl.innerHTML = `<header><span class="g-title"></span><span class="g-now"></span><button class="g-big" title="Enlarge">⤢</button><button class="g-close" title="Close">×</button></header><canvas></canvas>`;
 document.body.append(graphEl);
 const graphCanvas = graphEl.querySelector('canvas')!;
-let graph: { kind: 'point' | 'link' | 'gear' | 'spring'; id: number; key: string; m: Measure; vals: number[]; big: boolean; hoverX: number | null } | null = null;
+/**
+ * The graph's view: a window of `span` seconds ending at `end` (null: following the latest
+ * time), and the value range (fitted to what is visible unless the user set it, `yAuto` false).
+ */
+interface GraphView {
+  span: number;
+  end: number | null;
+  yAuto: boolean;
+  lo: number;
+  hi: number;
+}
+/** Where the last drawing put things, for the mouse: the window, value range and plot box (CSS px). */
+interface GraphLayout {
+  a: number;
+  b: number;
+  t0: number;
+  t1: number;
+  lo: number;
+  hi: number;
+  L: number;
+  R: number;
+  T: number;
+  B: number;
+  W: number;
+  H: number;
+}
+let graph: {
+  kind: 'point' | 'link' | 'gear' | 'spring';
+  id: number;
+  key: string;
+  m: Measure;
+  vals: number[];
+  big: boolean;
+  hoverX: number | null;
+  view: GraphView;
+  layout: GraphLayout | null;
+  drag: { mode: 'pan' | 'thumb' | 'y'; x: number; y: number; end: number; lo: number; hi: number } | null;
+} | null = null;
+const GRAPH_SPAN = 10; // s shown by default: the most recent 10 seconds
 
 function openGraph(kind: 'point' | 'link' | 'gear' | 'spring', id: number, m: Measure) {
-  graph = { kind, id, key: m.key, m, vals: [], big: graph?.big ?? false, hoverX: null };
+  graph = { kind, id, key: m.key, m, vals: [], big: graph?.big ?? false, hoverX: null, view: { span: GRAPH_SPAN, end: null, yAuto: true, lo: 0, hi: 1 }, layout: null, drag: null };
   graphEl.hidden = false;
   graphEl.classList.toggle('big', graph.big);
   graphEl.querySelector('.g-big')!.textContent = graph.big ? '⤡' : '⤢';
@@ -3210,11 +3248,99 @@ graphEl.querySelector('.g-big')!.addEventListener('click', () => {
   graphEl.querySelector('.g-big')!.textContent = graph.big ? '⤡' : '⤢';
   graphEl.querySelector<HTMLButtonElement>('.g-big')!.title = graph.big ? 'Shrink' : 'Enlarge';
 });
-graphCanvas.addEventListener('pointermove', (e) => {
-  if (graph) graph.hoverX = e.offsetX;
+// ---- the graph's mouse: scroll through time, and set either axis's scale ----
+/** Which part of the graph a point (CSS px) is over: the plot, the value axis, the time axis, or the scrollbar. */
+function graphZone(x: number, y: number): 'plot' | 'y' | 'x' | 'bar' | null {
+  const l = graph?.layout;
+  if (!l) return null;
+  if (y >= l.H - 9 && x >= l.L && x <= l.W - l.R) return 'bar';
+  if (x < l.L && y >= l.T && y <= l.H - l.B) return 'y';
+  if (y > l.H - l.B && x >= l.L && x <= l.W - l.R) return 'x';
+  if (x >= l.L && x <= l.W - l.R && y >= l.T && y <= l.H - l.B) return 'plot';
+  return null;
+}
+
+/** Show the window ending at `end` (seconds), or follow the latest time if that reaches it. */
+function setGraphEnd(end: number) {
+  const g = graph!;
+  const l = g.layout!;
+  const latest = l.t1;
+  const earliest = l.t0 + Math.min(g.view.span, latest - l.t0);
+  g.view.end = end >= latest - 1e-9 ? null : Math.max(earliest, end); // at the latest: follow it again
+}
+
+graphCanvas.addEventListener(
+  'wheel',
+  (e) => {
+    const g = graph;
+    const l = g?.layout;
+    if (!g || !l) return;
+    e.preventDefault();
+    const zone = graphZone(e.offsetX, e.offsetY);
+    const f = Math.exp((e.deltaY || e.deltaX) * 0.0025);
+    if (zone === 'y') {
+      // zoom the value scale about the value under the mouse
+      const v = l.hi - ((e.offsetY - l.T) / (l.H - l.T - l.B)) * (l.hi - l.lo);
+      g.view = { ...g.view, yAuto: false, lo: v + (l.lo - v) * f, hi: v + (l.hi - v) * f };
+    } else if (zone === 'x' || zone === 'bar') {
+      // zoom the time scale about the time under the mouse (keeping the latest in view while following)
+      const t = l.a + ((e.offsetX - l.L) / (l.W - l.L - l.R)) * (l.b - l.a);
+      const span = Math.min(Math.max(g.view.span * f, 0.05), 600);
+      if (g.view.end === null) g.view.span = span;
+      else {
+        const end = t + (l.b - t) * (span / g.view.span);
+        g.view.span = span;
+        setGraphEnd(end);
+      }
+    } else {
+      // over the plot: scroll through time
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      setGraphEnd(l.b + (d / (l.W - l.L - l.R)) * (l.b - l.a));
+    }
+  },
+  { passive: false },
+);
+graphCanvas.addEventListener('pointerdown', (e) => {
+  const g = graph;
+  const l = g?.layout;
+  if (!g || !l || e.button !== 0) return;
+  const zone = graphZone(e.offsetX, e.offsetY);
+  if (!zone || zone === 'x') return;
+  graphCanvas.setPointerCapture(e.pointerId);
+  g.drag = { mode: zone === 'bar' ? 'thumb' : zone === 'y' ? 'y' : 'pan', x: e.offsetX, y: e.offsetY, end: l.b, lo: l.lo, hi: l.hi };
 });
+graphCanvas.addEventListener('pointermove', (e) => {
+  const g = graph;
+  if (!g) return;
+  g.hoverX = e.offsetX;
+  const l = g.layout;
+  const zone = graphZone(e.offsetX, e.offsetY);
+  graphCanvas.style.cursor = g.drag ? (g.drag.mode === 'y' ? 'ns-resize' : 'grabbing') : zone === 'y' ? 'ns-resize' : zone === 'x' ? 'ew-resize' : zone === 'bar' ? 'pointer' : 'crosshair';
+  if (!g.drag || !l) return;
+  const pw = l.W - l.L - l.R;
+  if (g.drag.mode === 'pan') setGraphEnd(g.drag.end - ((e.offsetX - g.drag.x) / pw) * (l.b - l.a)); // the plot moves with the mouse
+  else if (g.drag.mode === 'thumb') setGraphEnd(g.drag.end + ((e.offsetX - g.drag.x) / pw) * (l.t1 - l.t0)); // the thumb moves with it
+  else {
+    // drag the value axis: slide the range up and down
+    const dv = ((e.offsetY - g.drag.y) / (l.H - l.T - l.B)) * (g.drag.hi - g.drag.lo);
+    g.view = { ...g.view, yAuto: false, lo: g.drag.lo + dv, hi: g.drag.hi + dv };
+  }
+});
+const endGraphDrag = () => {
+  if (graph) graph.drag = null;
+};
+graphCanvas.addEventListener('pointerup', endGraphDrag);
+graphCanvas.addEventListener('pointercancel', endGraphDrag);
 graphCanvas.addEventListener('pointerleave', () => {
   if (graph) graph.hoverX = null;
+});
+graphCanvas.addEventListener('dblclick', (e) => {
+  const g = graph;
+  if (!g) return;
+  const zone = graphZone(e.offsetX, e.offsetY);
+  // double-click an axis to reset it: the value range fits again; the time goes back to the latest 10 s
+  if (zone === 'y' || zone === 'plot') g.view.yAuto = true;
+  if (zone === 'x' || zone === 'bar' || zone === 'plot') g.view = { ...g.view, span: zone === 'plot' ? g.view.span : GRAPH_SPAN, end: null };
 });
 
 /** Bring the graph's values up to date with the history, and draw it (every frame while open). */
@@ -3239,7 +3365,7 @@ function updateGraph() {
     graphEl.style.right = '';
     graphEl.style.bottom = '';
   }
-  drawGraph(graphCanvas, h.t, vals, m, graph.hoverX);
+  graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX);
 }
 
 /** A round step for about `n` ticks across `span`. */
@@ -3250,25 +3376,49 @@ function niceStep(span: number, n: number): number {
   return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
 }
 
-/** The graph: value against time, with gridlines and labels, and a cursor line where the mouse is. */
-function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measure, hoverX: number | null) {
+/**
+ * The graph: value against time over the view's window (the latest seconds while following),
+ * with gridlines and labels, a scrollbar for where the window sits in the whole run, and a
+ * cursor line where the mouse is. Returns the layout, for the mouse.
+ */
+function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measure, view: GraphView, hoverX: number | null): GraphLayout | null {
   const dpr = window.devicePixelRatio || 1;
   const [W, H] = [cv.clientWidth, cv.clientHeight];
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) [cv.width, cv.height] = [Math.round(W * dpr), Math.round(H * dpr)];
   const c = cv.getContext('2d')!;
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, W, H);
-  const [L, R, T, B] = [58, 10, 8, 22];
+  const [L, R, T, B] = [58, 10, 8, 30];
   const n = Math.min(t.length, vals.length);
-  if (n < 1) return;
-  const [t0, t1] = [t[0], Math.max(t[n - 1], t[0] + 1e-6)];
-  let [lo, hi] = [Infinity, -Infinity];
-  for (let i = 0; i < n; i++) if (Number.isFinite(vals[i])) [lo, hi] = [Math.min(lo, vals[i]), Math.max(hi, vals[i])];
-  if (!Number.isFinite(lo)) return;
-  if (hi - lo < 1e-9) [lo, hi] = [lo - 1e-3 - Math.abs(lo) * 0.01, hi + 1e-3 + Math.abs(hi) * 0.01];
-  const pad = (hi - lo) * 0.08;
-  [lo, hi] = [lo - pad, hi + pad];
-  const X = (tt: number) => L + ((tt - t0) / (t1 - t0)) * (W - L - R);
+  if (n < 1) return null;
+  const [t0, t1] = [t[0], t[n - 1]];
+  // the window: `span` seconds ending at the latest time (following) or where it was scrolled to;
+  // early in a run it starts at the beginning, the rest still to fill
+  let b = view.end ?? t1;
+  let a = b - view.span;
+  if (a < t0) [a, b] = [t0, t0 + view.span];
+  const find = (tt: number) => {
+    let [lo, hi] = [0, n - 1];
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (t[mid] < tt) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
+  const [i0, i1] = [Math.max(0, find(a)), Math.min(n - 1, find(b) + 1)];
+  // the value range: fitted to what is visible, unless set by the user
+  let [lo, hi] = [view.lo, view.hi];
+  if (view.yAuto) {
+    [lo, hi] = [Infinity, -Infinity];
+    for (let i = i0; i <= i1; i++) if (Number.isFinite(vals[i])) [lo, hi] = [Math.min(lo, vals[i]), Math.max(hi, vals[i])];
+    if (!Number.isFinite(lo)) [lo, hi] = [-1, 1];
+    if (hi - lo < 1e-9) [lo, hi] = [lo - 1e-3 - Math.abs(lo) * 0.01, hi + 1e-3 + Math.abs(hi) * 0.01];
+    const pad = (hi - lo) * 0.08;
+    [lo, hi] = [lo - pad, hi + pad];
+  }
+  const pw = W - L - R;
+  const X = (tt: number) => L + ((tt - a) / (b - a)) * pw;
   const Y = (v: number) => T + ((hi - v) / (hi - lo)) * (H - T - B);
   // gridlines and labels
   c.font = '10px system-ui, sans-serif';
@@ -3284,12 +3434,12 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
     c.moveTo(L, y);
     c.lineTo(W - R, y);
     c.stroke();
-    c.fillText(+v.toPrecision(6) === 0 ? '0' : `${+v.toPrecision(4)}`, L - 5, y);
+    c.fillText(Math.abs(v) < ys * 1e-6 ? '0' : `${+v.toPrecision(4)}`, L - 5, y);
   }
-  const xs = niceStep(t1 - t0, Math.max(2, Math.floor((W - L - R) / 70)));
+  const xs = niceStep(b - a, Math.max(2, Math.floor(pw / 70)));
   c.textAlign = 'center';
   c.textBaseline = 'top';
-  for (let tt = Math.ceil(t0 / xs) * xs; tt <= t1; tt += xs) {
+  for (let tt = Math.ceil(a / xs) * xs; tt <= b + 1e-9; tt += xs) {
     const x = Math.round(X(tt)) + 0.5;
     c.beginPath();
     c.moveTo(x, T);
@@ -3304,16 +3454,19 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
     c.lineTo(W - R, Math.round(Y(0)) + 0.5);
     c.stroke();
   }
-  // the curve: at most two points per pixel column (its lowest and highest), so long histories stay fast
+  // the curve, clipped to the plot: at most two points per pixel column (its lowest and highest)
+  c.save();
+  c.beginPath();
+  c.rect(L, T, pw, H - T - B);
+  c.clip();
   c.strokeStyle = '#3b6ea8';
   c.lineWidth = 1.6;
   c.beginPath();
   let started = false;
-  const cols = Math.max(1, Math.floor(W - L - R));
-  const per = Math.max(1, Math.floor(n / (2 * cols)));
-  for (let i = 0; i < n; i += per) {
+  const per = Math.max(1, Math.floor((i1 - i0 + 1) / (2 * Math.max(1, pw))));
+  for (let i = i0; i <= i1; i += per) {
     let [imin, imax] = [i, i];
-    for (let j = i; j < Math.min(n, i + per); j++) {
+    for (let j = i; j < Math.min(i1 + 1, i + per); j++) {
       if (vals[j] < vals[imin]) imin = j;
       if (vals[j] > vals[imax]) imax = j;
     }
@@ -3325,49 +3478,55 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
     }
   }
   c.stroke();
-  // the cursor line: the value at the time under the mouse
-  let k = n - 1;
+  c.restore();
+  // the scrollbar: the window within the whole run
+  const total = Math.max(t1 - t0, view.span);
+  c.fillStyle = '#ecece7';
+  c.beginPath();
+  c.roundRect(L, H - 7, pw, 5, 2.5);
+  c.fill();
+  c.fillStyle = view.end === null ? '#9db6d3' : '#3b6ea8';
+  c.beginPath();
+  c.roundRect(L + ((a - t0) / total) * pw, H - 7, Math.max(8, ((b - a) / total) * pw), 5, 2.5);
+  c.fill();
+  // the cursor line: the value at the time under the mouse (else the latest shown)
+  let k = Math.min(i1, n - 1);
   if (hoverX !== null && hoverX >= L && hoverX <= W - R) {
-    const tt = t0 + ((hoverX - L) / (W - L - R)) * (t1 - t0);
-    let [a, b] = [0, n - 1];
-    while (b - a > 1) {
-      const mid = (a + b) >> 1;
-      if (t[mid] < tt) a = mid;
-      else b = mid;
-    }
-    k = Math.abs(t[a] - tt) < Math.abs(t[b] - tt) ? a : b;
-    const x = X(t[k]);
+    const tt = a + ((hoverX - L) / pw) * (b - a);
+    const j = find(tt);
+    k = j + 1 < n && Math.abs(t[j + 1] - tt) < Math.abs(t[j] - tt) ? j + 1 : j;
     c.strokeStyle = '#e07b39';
     c.lineWidth = 1;
     c.beginPath();
-    c.moveTo(x, T);
-    c.lineTo(x, H - B);
+    c.moveTo(hoverX, T);
+    c.lineTo(hoverX, H - B);
     c.stroke();
   }
-  if (Number.isFinite(vals[k])) {
-    const [x, y] = [X(t[k]), Y(vals[k])];
+  const [px, py] = [X(t[k]), Y(vals[k])];
+  if (Number.isFinite(vals[k]) && px >= L - 1 && px <= W - R + 1 && py >= T && py <= H - B) {
     c.fillStyle = '#e07b39';
     c.beginPath();
-    c.arc(x, y, 3.5, 0, Math.PI * 2);
+    c.arc(px, py, 3.5, 0, Math.PI * 2);
     c.fill();
-    if (hoverX !== null) {
-      const text = `t = ${t[k].toFixed(3)} s   ${fmt3(vals[k])} ${m.unit}`;
-      c.font = '600 11px system-ui, sans-serif';
-      const w = c.measureText(text).width + 12;
-      const bx = Math.min(Math.max(x + 8, L), W - R - w);
-      const by = Math.max(T, Math.min(y - 26, H - B - 22));
-      c.fillStyle = 'rgba(255,255,255,0.94)';
-      c.strokeStyle = '#e07b39';
-      c.beginPath();
-      c.roundRect(bx, by, w, 20, 5);
-      c.fill();
-      c.stroke();
-      c.fillStyle = '#2b2d31';
-      c.textAlign = 'left';
-      c.textBaseline = 'middle';
-      c.fillText(text, bx + 6, by + 10);
-    }
   }
+  if (hoverX !== null && hoverX >= L && hoverX <= W - R && Number.isFinite(vals[k])) {
+    const text = `t = ${t[k].toFixed(3)} s   ${fmt3(vals[k])} ${m.unit}`;
+    c.font = '600 11px system-ui, sans-serif';
+    const w = c.measureText(text).width + 12;
+    const bx = Math.min(Math.max(hoverX + 8, L), W - R - w);
+    const by = Math.max(T, Math.min((Number.isFinite(py) ? py : T) - 26, H - B - 22));
+    c.fillStyle = 'rgba(255,255,255,0.94)';
+    c.strokeStyle = '#e07b39';
+    c.beginPath();
+    c.roundRect(bx, by, w, 20, 5);
+    c.fill();
+    c.stroke();
+    c.fillStyle = '#2b2d31';
+    c.textAlign = 'left';
+    c.textBaseline = 'middle';
+    c.fillText(text, bx + 6, by + 10);
+  }
+  return { a, b, t0, t1, lo, hi, L, R, T, B, W, H };
 }
 
 function renderInspectorPanel() {
