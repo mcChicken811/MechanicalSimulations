@@ -3421,7 +3421,8 @@ function beamShadeNow(): NonNullable<Scene['beamShades']>[number] | null {
 // ---- every bar coloured by an internal force (the side panel's Beam forces as colour) ----
 /**
  * Which force colours the bars (off, or V, N, M), and how: 'max', each bar one colour for its
- * largest size, on one scale for all bars; 'dist', along each bar, scaled to its own largest.
+ * largest size; 'dist', along each bar. Both on one scale for all bars (red: the largest any bar
+ * has reached in this run).
  */
 const BEAM_COLOUR_KEY = 'linkage-lab:beam-colour';
 const beamColour: { q: 'off' | BeamQ; mode: 'max' | 'dist' } = (() => {
@@ -3477,12 +3478,12 @@ function beamShadesNow(): Scene['beamShades'] {
         const f = beamColourPeak > 0 ? peaks[k] / beamColourPeak : 0;
         out.push({ link, s: [0, 1], f: [f, f], marker: null });
       } else {
-        // scaled to the bar's own largest (round-off on an unloaded bar stays green)
-        const scale = Math.max(peaks[k], frameMax * 1e-6, 1e-9);
+        // along it, on the same scale as every other bar
+        const scale = Math.max(beamColourPeak, 1e-9);
         out.push({ link, s: d.s.map((x) => x / d.L), f: d[q].map((v) => (Number.isFinite(v) ? Math.min(1, Math.abs(v) / scale) : 0)), marker: null });
       }
     });
-    beamLegend.querySelector('.bl-hi')!.textContent = beamColour.mode === 'max' ? `${beamColourPeak.toPrecision(3)} ${unit}` : 'each bar\'s largest';
+    beamLegend.querySelector('.bl-hi')!.textContent = `${beamColourPeak.toPrecision(3)} ${unit}`;
   } else if (q !== 'off') beamLegend.querySelector('.bl-hi')!.textContent = 'while running';
   if (shown) out.push(shown);
   return out;

@@ -263,7 +263,7 @@ Click one to see its diagram along the bar in the graph panel, from end A (`l.a`
 
 **Beam forces as colour.** The side panel's *Beam forces as colour* switch colours every bar by one internal force while the mechanism runs: **Off**, **Shear** (V), **Tension** (N, the colour shows its size, so compression counts too) or **Bending** (M). A second switch picks how:
 - **Maximum:** each bar is one colour for its largest value. All bars share one scale in newtons (or N·m), so they compare with each other. Red is the largest any bar has reached in this run, and the side panel shows that value. The scale starts again when you choose another force or reset.
-- **Distribution:** each bar is coloured along its length, scaled to its own largest value. This shows where in each bar the load is, not which bar carries most.
+- **Distribution:** each bar is coloured along its length, on the same shared scale as Maximum, so it shows both where in each bar the load is and how it compares with the other bars.
 
 The bar whose diagram is open in the graph panel keeps that diagram's colouring. The choice is remembered between visits.
 
