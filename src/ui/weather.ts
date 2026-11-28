@@ -1,7 +1,9 @@
 /**
  * The weather over a background scene: clear, cloudy, rain, storm, thunderstorm or hail, held
  * fixed or changing by itself (spells of clear sky of random length, broken by weather of a random
- * kind lasting a random time, which now and then turns into another before it clears).
+ * kind lasting a random time, which now and then turns into another before it clears). Any
+ * weather can also be started by hand, for a random while, a set time or until stopped, after
+ * which the weather goes back to its own ways; and lightning can be made to strike.
  *
  * The weather is a handful of levels, each easing towards what the weather of the moment wants
  * (so a storm rolls in and clears away rather than switching): how much of the sky is overcast,
@@ -112,6 +114,8 @@ export class Weather {
   /** Thunder, when lightning strikes: after `delay` s, `loud` 0–1. */
   onThunder: ((delay: number, loud: number) => void) | null = null;
   private mode: WeatherMode = 'random';
+  /** A weather started by hand, and how long it has left (s; Infinity: until stopped); then back to the mode's. */
+  triggered: { kind: WeatherKind; left: number } | null = null;
 
   /** Whether there is any weather to draw (anything but a clear sky, or still clearing). */
   get active(): boolean {
@@ -127,11 +131,15 @@ export class Weather {
   step(dt: number, mode: WeatherMode) {
     if (mode !== this.mode) {
       this.mode = mode;
+      this.triggered = null; // a weather chosen ends one started by hand
       // a set weather is that weather; changing weather starts from the weather it is
       if (mode !== 'random') this.kind = mode;
       this.left = this.kind === 'clear' ? between(20, 60) : between(30, 80);
     }
-    if (mode === 'random' && (this.left -= dt) <= 0) {
+    if (this.triggered) {
+      this.kind = this.triggered.kind;
+      if ((this.triggered.left -= dt) <= 0) this.endTrigger();
+    } else if (mode === 'random' && (this.left -= dt) <= 0) {
       this.kind = this.kind === 'clear' ? pick<WeatherKind>({ cloudy: 0.32, rain: 0.26, storm: 0.12, thunder: 0.16, hail: 0.14 }) : pick<WeatherKind>(NEXT[this.kind]!);
       // clear spells last longer than the weather between them
       this.left = this.kind === 'clear' ? between(40, 180) : this.kind === 'cloudy' ? between(30, 100) : between(25, 90);
@@ -149,6 +157,30 @@ export class Weather {
       this.strike();
     }
     this.flash = this.bolt ? flashAt(this.bolt.age) * (1 - 0.6 * this.bolt.far) : 0;
+  }
+
+  /**
+   * Start a weather now, by hand: for `secs` s (Infinity: until stopped; by default, a while as
+   * long as it would last by itself). It eases in as ever; when it ends, the weather goes back to
+   * its mode (changing weather: a clear spell; a set one: that weather).
+   */
+  trigger(kind: WeatherKind, secs?: number) {
+    this.triggered = { kind, left: secs && secs > 0 ? secs : kind === 'clear' ? between(40, 180) : kind === 'cloudy' ? between(30, 100) : between(25, 90) };
+    this.kind = kind;
+    if (kind === 'thunder') this.nextStrike = Math.min(this.nextStrike, between(1, 3)); // (the first strike soon after it has clouded over)
+  }
+
+  /** End the weather started by hand, at once (it eases out as ever). */
+  endTrigger() {
+    if (!this.triggered) return;
+    this.triggered = null;
+    this.kind = this.mode === 'random' ? 'clear' : this.mode;
+    this.left = between(40, 180);
+  }
+
+  /** Lightning, now, whatever the weather: a bolt from the blue if need be. */
+  strikeNow() {
+    this.strike();
   }
 
   /** A bolt: a jagged path down from the cloud base with a few forks, somewhere in view (set by the drawing). */
@@ -266,6 +298,7 @@ export class Weather {
     this.now = { ...TARGETS.clear };
     this.bolt = null;
     this.flash = 0;
+    this.triggered = null;
     if (this.mode === 'random') {
       this.kind = 'clear';
       this.left = between(20, 60);

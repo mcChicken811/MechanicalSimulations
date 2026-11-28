@@ -1610,6 +1610,17 @@ body.scrubbing * {
   gap: 6px;
 }
 
+.bg-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 2px;
+}
+
+.bg-trigger[hidden] {
+  display: none;
+}
+
 .bg-buttons[hidden] {
   display: none;
 }
@@ -1619,6 +1630,11 @@ body.scrubbing * {
   min-width: 0;
   padding: 4px 4px;
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.bg-buttons #bg-strike {
+  flex: 1.6;
 }
 
 .settings label.numrow[hidden] {

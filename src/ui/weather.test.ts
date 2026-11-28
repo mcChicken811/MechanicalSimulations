@@ -83,6 +83,51 @@ describe('weather', () => {
     expect(w.flash).toBe(0);
   });
 
+  it('a weather started by hand lasts its time, then changing weather clears', () => {
+    const w = new Weather();
+    run(w, 5, 'random');
+    w.trigger('hail', 30);
+    run(w, 29, 'random');
+    expect(w.kind).toBe('hail');
+    expect(w.now.hail).toBeGreaterThan(0.9);
+    run(w, 2, 'random');
+    expect(w.triggered).toBe(null);
+    expect(w.kind).toBe('clear');
+    run(w, 30, 'random');
+    expect(w.now.hail).toBeLessThan(0.01);
+  });
+
+  it('a weather started by hand over a set weather goes back to it; until stopped lasts until stopped', () => {
+    const w = new Weather();
+    run(w, 5, 'cloudy');
+    w.trigger('rain', 10);
+    run(w, 11, 'cloudy');
+    expect(w.kind).toBe('cloudy');
+    w.trigger('storm', Infinity);
+    run(w, 1000, 'cloudy');
+    expect(w.kind).toBe('storm');
+    w.endTrigger();
+    run(w, 1, 'cloudy');
+    expect(w.kind).toBe('cloudy');
+    // choosing a weather ends one started by hand
+    w.trigger('thunder', Infinity);
+    run(w, 1, 'random');
+    expect(w.triggered).toBe(null);
+  });
+
+  it('a thunderstorm started by hand strikes soon; lightning strikes on demand', () => {
+    const w = new Weather();
+    let n = 0;
+    w.onThunder = () => n++;
+    w.strikeNow();
+    expect(n).toBe(1);
+    expect(w.bolt).not.toBe(null);
+    run(w, 2, 'random');
+    w.trigger('thunder', 60);
+    run(w, 25, 'random');
+    expect(n).toBeGreaterThan(1);
+  });
+
   it('knows its modes', () => {
     expect(isWeatherMode('random')).toBe(true);
     expect(isWeatherMode('hail')).toBe(true);

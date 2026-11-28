@@ -205,6 +205,16 @@
             <label class="pick" id="bg-day-row" title="How long a day takes">A day lasts <select id="bg-day"><option value="60">1 min</option><option value="120">2 min</option><option value="300">5 min</option><option value="600">10 min</option><option value="1800">30 min</option><option value="0">forever (still)</option></select></label>
             <label class="check" id="bg-birds-row" title="A flock of birds flying by day, steered by the boids rules"><input type="checkbox" id="bg-birds" /> Birds</label>
             <label class="pick" id="bg-weather-row" title="Clear, cloudy, rain, storm, thunderstorm or hail: one all the time, or changing by itself (clear spells of random length, broken by weather of a random kind for a random time)">Weather <select id="bg-weather"></select></label>
+            <div class="bg-trigger" id="bg-trigger-row" hidden>
+              <label class="pick" title="A weather to start now, by hand: it rolls in, lasts its while, then the weather goes back to its own ways">Start now <select id="bg-trigger-kind"></select></label>
+              <label class="pick" title="How long the weather started by hand lasts">for <select id="bg-trigger-for"><option value="0">a random while</option><option value="30">30 s</option><option value="60">1 min</option><option value="120">2 min</option><option value="300">5 min</option><option value="Infinity">until stopped</option></select></label>
+              <div class="bg-buttons">
+                <button id="bg-trigger" title="Start this weather now">Start</button>
+                <button id="bg-trigger-stop" title="End the weather started by hand: it clears away and the weather goes back to its own ways" hidden>Stop</button>
+                <button id="bg-strike" title="Lightning, now, whatever the weather (with its thunder)">⚡ Lightning</button>
+              </div>
+              <p class="ground-tip" id="bg-trigger-status" hidden></p>
+            </div>
             <label class="check" id="bg-weather-sound-row" title="Hear the rain, the hail, the wind and the thunder (with sound effects on)"><input type="checkbox" id="bg-weather-sound" /> Weather sounds</label>
             <label class="slider" title="How strongly the background shows behind the mechanism">Strength <output id="bg-opacity-out"></output><input type="range" id="bg-opacity" min="0.1" max="1" step="0.05" value="0.7" /></label>
           </div>

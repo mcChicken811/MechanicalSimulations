@@ -13,7 +13,7 @@ import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
 import { Gallery, MY_PROJECTS, type GalleryItem } from './ui/gallery';
 import { Backdrop, clockText, DEFAULT_ANIM, NO_BACKGROUND, SCENES, type BackgroundState, type ImageLayer } from './ui/background';
-import { isWeatherMode, WEATHER_MODES } from './ui/weather';
+import { isWeatherMode, WEATHER_MODES, WEATHERS, type WeatherKind } from './ui/weather';
 import { BackgroundEditor } from './ui/bgeditor';
 import { askDialog } from './ui/dialog';
 import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
@@ -2350,7 +2350,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
 /** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
-const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-weather-sound']);
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds', 'bg-weather', 'bg-weather-sound', 'bg-trigger-kind', 'bg-trigger-for']);
 
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
@@ -2570,6 +2570,7 @@ function setBackground(b: BackgroundState, passing = false) {
   $<HTMLElement>('#bg-birds-row').hidden = !sc?.birds || !b.anim.on;
   $<HTMLInputElement>('#bg-birds').checked = b.anim.birds;
   $<HTMLElement>('#bg-weather-row').hidden = !sc?.weather || !b.anim.on;
+  $<HTMLElement>('#bg-trigger-row').hidden = !sc?.weather || !b.anim.on;
   $<HTMLElement>('#bg-weather-sound-row').hidden = !sc?.weather || !b.anim.on || b.anim.weather === 'clear';
   $<HTMLSelectElement>('#bg-weather').value = b.anim.weather;
   $<HTMLInputElement>('#bg-weather-sound').checked = b.anim.weatherSound;
@@ -2614,6 +2615,37 @@ $<HTMLInputElement>('#bg-weather-sound').addEventListener('change', (e) => setBa
 const backgroundScene = () => SCENES.find((x) => x.id === (backdrop.state.kind === 'custom' ? backdrop.state.base : backdrop.state.kind));
 /** Whether the weather is on show and to be heard: a scene with weather, animated, its sounds wanted. */
 const weatherHeard = () => backdrop.state.anim.on && backdrop.state.anim.weatherSound && !!backgroundScene()?.weather;
+// starting a weather by hand, and lightning
+const triggerKind = $<HTMLSelectElement>('#bg-trigger-kind');
+const triggerFor = $<HTMLSelectElement>('#bg-trigger-for');
+for (const k of WEATHERS) triggerKind.append(new Option(k.name, k.id));
+triggerKind.value = 'thunder';
+/** Start a weather now (for the chosen time) and say so. */
+function triggerWeather(kind: WeatherKind) {
+  backdrop.weather.trigger(kind, Number(triggerFor.value));
+  const name = WEATHERS.find((x) => x.id === kind)!.name.toLowerCase();
+  const left = backdrop.weather.triggered!.left;
+  messages.notify(`Weather: ${name} ${Number.isFinite(left) ? `for ${weatherTime(left)}` : 'until stopped'}.`);
+}
+/** A while in words: 45 s, 2:05. */
+const weatherTime = (secs: number) => (secs < 60 ? `${Math.ceil(secs)} s` : `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`);
+$<HTMLButtonElement>('#bg-trigger').addEventListener('click', () => triggerWeather(triggerKind.value as WeatherKind));
+$<HTMLButtonElement>('#bg-trigger-stop').addEventListener('click', () => {
+  backdrop.weather.endTrigger();
+  messages.notify('Weather: back to its own ways.');
+});
+$<HTMLButtonElement>('#bg-strike').addEventListener('click', () => backdrop.weather.strikeNow());
+/** The weather started by hand, as it goes: what it is and how long it has left (every frame, while the block shows it). */
+function showWeatherTrigger() {
+  const t = backdrop.weather.triggered;
+  const status = $<HTMLElement>('#bg-trigger-status');
+  const stop = $<HTMLElement>('#bg-trigger-stop');
+  if (stop.hidden !== !t) stop.hidden = !t;
+  if (status.hidden !== !t) status.hidden = !t;
+  if (!t) return;
+  const text = `${WEATHERS.find((x) => x.id === t.kind)!.name}, started by hand: ${Number.isFinite(t.left) ? `${weatherTime(t.left)} left` : 'until stopped'}.`;
+  if (status.textContent !== text) status.textContent = text;
+}
 // lightning: its thunder, after the time the sound takes to arrive
 backdrop.weather.onThunder = (delay, loud) => {
   if (weatherHeard()) sound.thunder(delay, loud);
@@ -2780,6 +2812,9 @@ function paletteCommands(): Command[] {
         wsel.value = m.id;
         wsel.dispatchEvent(new Event('change'));
       } });
+    for (const k of WEATHERS) out.push({ label: `Start weather now: ${k.name}`, group: 'Background', keywords: 'trigger manual rain storm thunder lightning hail cloudy clouds sky', run: () => triggerWeather(k.id) });
+    if (backdrop.weather.triggered) out.push({ label: 'Stop the weather started by hand', group: 'Background', keywords: 'trigger manual end weather', run: () => $<HTMLButtonElement>('#bg-trigger-stop').click() });
+    out.push({ label: 'Lightning strike', group: 'Background', keywords: 'thunder bolt flash weather trigger', run: () => backdrop.weather.strikeNow() });
   }
   out.push({ label: 'Background strength', group: 'Background', keywords: 'opacity fade backdrop', value: { type: 'range', min: bgOpacity.min, max: bgOpacity.max, step: bgOpacity.step, get: () => bgOpacity.value, set: (v, done) => drive(bgOpacity, v, done, ['input', 'change']), shown: () => `${Math.round(Number(bgOpacity.value) * 100)}%` } });
   // the integrator and step: each choice an entry (a toggle, like a switch's option)
@@ -3060,6 +3095,7 @@ function blockSummaries() {
   const bgAnim = backdrop.state.anim.on;
   put('sum-background', [backdrop.name, bgAnim && bgScene?.cycle && clockText(backdrop.hour), bgAnim && bgScene?.weather && backdrop.weather.name.toLowerCase()].filter(Boolean).join(' · '));
   if (!$<HTMLElement>('#bg-time-row').hidden) showBackgroundTime();
+  if (!$<HTMLElement>('#bg-trigger-row').hidden) showWeatherTrigger();
 }
 
 function setTool(t: Tool) {
