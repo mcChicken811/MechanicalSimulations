@@ -422,6 +422,63 @@ export interface Loads {
   motors?: { id: number; tau: number }[];
 }
 
+/**
+ * The integrators to step the equations with. All explicit, all built on the same q̈(q, q̇):
+ *  - Butcher tableaux (Euler, midpoint, Heun, Kutta's RK3, RK4): stages k_i = f(y + h Σ a_ij k_j),
+ *    y ← y + h Σ b_i k_i, for y = (q, q̇);
+ *  - partitioned ones that treat q and q̇ apart, kind to the energy of a conservative system:
+ *    symplectic Euler (q̇ first, then q with the new q̇) and velocity Verlet;
+ *  - Dormand–Prince RK45, adaptive: inside each step it takes as many sub-steps as its error
+ *    estimate (5th against 4th order) needs to stay within the tolerance.
+ * The heat, contact losses and motor and air work are summed over a step with the same weights b
+ * the integrator combines its stages with, so the energy budget matches it.
+ */
+export type Integrator = 'euler' | 'symplectic-euler' | 'midpoint' | 'heun' | 'verlet' | 'rk3' | 'rk4' | 'rk45';
+
+export const INTEGRATORS: Record<Integrator, { name: string; order: number; evaluations: number; note: string }> = {
+  euler: { name: 'Euler (explicit)', order: 1, evaluations: 1, note: 'the simplest; gains energy, needs small steps' },
+  'symplectic-euler': { name: 'Symplectic Euler', order: 1, evaluations: 1, note: 'first order, but keeps the energy of a swinging system bounded' },
+  midpoint: { name: 'Midpoint (RK2)', order: 2, evaluations: 2, note: 'second order, two evaluations' },
+  heun: { name: 'Heun (RK2, trapezoid)', order: 2, evaluations: 2, note: 'second order, two evaluations' },
+  verlet: { name: 'Velocity Verlet', order: 2, evaluations: 2, note: 'second order and symplectic for conservative forces: the energy wobbles but does not drift' },
+  rk3: { name: "Kutta's RK3", order: 3, evaluations: 3, note: 'third order, three evaluations' },
+  rk4: { name: 'Runge–Kutta 4 (classic)', order: 4, evaluations: 4, note: 'fourth order; the default' },
+  rk45: { name: 'Dormand–Prince RK45 (adaptive)', order: 5, evaluations: 7, note: 'fifth order with an error estimate: the step is the most it takes, smaller where the motion needs it' },
+};
+
+interface Tableau {
+  c: number[];
+  a: number[][];
+  b: number[];
+}
+
+const TABLEAUX: Partial<Record<Integrator, Tableau>> = {
+  euler: { c: [0], a: [[]], b: [1] },
+  midpoint: { c: [0, 0.5], a: [[], [0.5]], b: [0, 1] },
+  heun: { c: [0, 1], a: [[], [1]], b: [0.5, 0.5] },
+  rk3: { c: [0, 0.5, 1], a: [[], [0.5], [-1, 2]], b: [1 / 6, 2 / 3, 1 / 6] },
+  rk4: { c: [0, 0.5, 0.5, 1], a: [[], [0.5], [0, 0.5], [0, 0, 1]], b: [1 / 6, 1 / 3, 1 / 3, 1 / 6] },
+};
+
+/** Dormand–Prince 5(4): its stages, its 5th-order weights, and the 4th-order ones for the error. */
+const DOPRI: Tableau & { e: number[] } = {
+  c: [0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1, 1],
+  a: [
+    [],
+    [1 / 5],
+    [3 / 40, 9 / 40],
+    [44 / 45, -56 / 15, 32 / 9],
+    [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729],
+    [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656],
+    [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84],
+  ],
+  b: [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0],
+  e: [5179 / 57600, 0, 7571 / 16695, 393 / 640, -92097 / 339200, 187 / 2100, 1 / 40],
+};
+
+/** The most stages any integrator has (the per-stage bookkeeping is sized for it). */
+const MAX_STAGES = 7;
+
 /** Something that happened in a step, for sound: a landing on the ground or a slider hitting a stop, with its speed and the effective mass it stopped. */
 export interface SimEvent {
   kind: 'impact' | 'stop';
@@ -526,12 +583,21 @@ export class Simulator {
   private readonly Jt: Float64Array;
   private readonly K2: Float64Array;
   private readonly r2: Float64Array;
-  /** Ground-contact power dissipated at each RK4 stage (W). */
-  private readonly stageContactPower = new Float64Array(4);
-  /** Motor power delivered at each RK4 stage (W). */
-  private readonly stageMotorPower = new Float64Array(4);
-  /** Air power on the propellers at each RK4 stage (W). */
-  private readonly stageAirPower = new Float64Array(4);
+  /** Ground-contact power dissipated at each stage of a step (W). */
+  private readonly stageContactPower = new Float64Array(MAX_STAGES);
+  /** Motor power delivered at each stage (W). */
+  private readonly stageMotorPower = new Float64Array(MAX_STAGES);
+  /** Air power on the propellers at each stage (W). */
+  private readonly stageAirPower = new Float64Array(MAX_STAGES);
+  /** How the equations are stepped (see INTEGRATORS), and the adaptive one's tolerance (relative and absolute). */
+  integrator: Integrator = 'rk4';
+  tolerance = 1e-6;
+  /** The adaptive integrator's last sub-step (s), to start the next step's from; and how many it took in the last step. */
+  private adaptiveDt = 0;
+  adaptiveSteps = 0;
+  /** Stage buffers: each stage's q̇ and q̈. */
+  private stageV: Float64Array[] = [];
+  private stageA: Float64Array[] = [];
   private readonly gearAngleBuf: Float64Array;
   /** Per propeller, the index of its hub's yaw in gearAngles order (−1 if it cannot turn). */
   private readonly propHub: number[];
@@ -564,7 +630,9 @@ export class Simulator {
     this.meshHeat = new Float64Array(d.meshes.length);
     const ne = d.joints.length + d.meshes.length;
     this.power = new Float64Array(ne);
-    this.stagePower = [0, 1, 2, 3].map(() => new Float64Array(ne));
+    this.stagePower = Array.from({ length: MAX_STAGES }, () => new Float64Array(ne));
+    this.stageV = Array.from({ length: MAX_STAGES }, () => new Float64Array(n));
+    this.stageA = Array.from({ length: MAX_STAGES }, () => new Float64Array(n));
     const maxBodies = d.joints.reduce((m, j) => Math.max(m, j.bars.length + j.gears.length + 1), 1);
     this.bodyGrad = Array.from({ length: maxBodies }, () => new Float64Array(n));
     this.meshBuf = new Float64Array(d.meshes.length * n);
@@ -1030,10 +1098,10 @@ export class Simulator {
    * After a step: drop contacts that have lifted off, start static friction for new ones, and
    * let a contact pushed past μ F_n slide, moving its anchor to where the friction limit holds.
    */
-  private updateContacts(h: number) {
+  private updateContacts(h: number, w: number[] = [1 / 6, 1 / 3, 1 / 3, 1 / 6]) {
     const g = this.ground;
     const P = this.stageContactPower;
-    this.dissipated += ((P[0] + 2 * P[1] + 2 * P[2] + P[3]) / 6) * h;
+    this.dissipated += w.reduce((s, x, k) => s + x * P[k], 0) * h;
     const motion = this.contactMotion;
     motion.rolling = motion.slip = motion.scrape = 0;
     if (!g) {
@@ -1634,56 +1702,149 @@ export class Simulator {
   }
 
   /** One classical RK4 step. */
+  /** One step of h with the chosen integrator (the adaptive one in sub-steps), then the bookkeeping and constraint clean-up. */
   private rkStep(h: number): boolean {
     const { n } = this;
     if (n === 0) return true;
+    if (this.integrator === 'rk45') return this.adaptiveStep(h);
     const q0 = this.q.slice();
     const v0 = this.qd.slice();
+    const weights = this.integrator === 'symplectic-euler' || this.integrator === 'verlet' ? this.partitionedStep(h, q0, v0) : this.tableauStep(TABLEAUX[this.integrator] ?? TABLEAUX.rk4!, h, q0, v0);
+    if (!weights) return false;
+    return this.finishStep(h, weights);
+  }
+
+  /**
+   * An explicit Runge–Kutta step by tableau T from (q0, v0) into q, q̇: stage i at
+   * (q0 + h Σ a_ij v_j, v0 + h Σ a_ij a_j), then q ← q0 + h Σ b_i v_i, q̇ ← v0 + h Σ b_i a_i.
+   * Its weights b (for the bookkeeping), or null if a stage failed.
+   */
+  private tableauStep(T: Tableau, h: number, q0: Float64Array, v0: Float64Array): number[] | null {
+    const { n, stageV: V, stageA: A } = this;
     const tq = new Float64Array(n);
     const tv = new Float64Array(n);
-    const a = [new Float64Array(n), new Float64Array(n), new Float64Array(n), new Float64Array(n)];
-    const v = [v0, new Float64Array(n), new Float64Array(n), new Float64Array(n)];
-
-    if (!this.accelerations(q0, v0, a[0], 0)) return false;
-    const stage = (k: number, c: number) => {
-      for (let i = 0; i < n; i++) {
-        tq[i] = q0[i] + c * h * v[k - 1][i];
-        tv[i] = v0[i] + c * h * a[k - 1][i];
-      }
-      v[k].set(tv);
-      return this.accelerations(tq, tv, a[k], k);
-    };
-    if (!stage(1, 0.5) || !stage(2, 0.5) || !stage(3, 1)) return false;
-
-    for (let i = 0; i < n; i++) {
-      this.q[i] = q0[i] + (h / 6) * (v[0][i] + 2 * v[1][i] + 2 * v[2][i] + v[3][i]);
-      this.qd[i] = v0[i] + (h / 6) * (a[0][i] + 2 * a[1][i] + 2 * a[2][i] + a[3][i]);
+    for (let s = 0; s < T.c.length; s++) {
+      tq.set(q0);
+      tv.set(v0);
+      T.a[s].forEach((w, k) => {
+        if (!w) return;
+        for (let i = 0; i < n; i++) {
+          tq[i] += h * w * V[k][i];
+          tv[i] += h * w * A[k][i];
+        }
+      });
+      V[s].set(tv);
+      if (!this.accelerations(tq, tv, A[s], s)) return null;
     }
+    for (let i = 0; i < n; i++) {
+      let [dq, dv] = [0, 0];
+      T.b.forEach((w, s) => {
+        dq += w * V[s][i];
+        dv += w * A[s][i];
+      });
+      this.q[i] = q0[i] + h * dq;
+      this.qd[i] = v0[i] + h * dv;
+    }
+    return T.b;
+  }
+
+  /**
+   * The partitioned integrators, q and q̇ apart. Symplectic Euler: q̇ ← v0 + h q̈(q0, v0), then
+   * q ← q0 + h q̇ (the new q̇). Velocity Verlet: q ← q0 + h v0 + ½h² a0, then
+   * q̇ ← v0 + ½h (a0 + q̈(q, v0 + h a0)) (the end's q̇ predicted, as the forces depend on it).
+   */
+  private partitionedStep(h: number, q0: Float64Array, v0: Float64Array): number[] | null {
+    const { n, stageA: A } = this;
+    if (!this.accelerations(q0, v0, A[0], 0)) return null;
+    if (this.integrator === 'symplectic-euler') {
+      for (let i = 0; i < n; i++) {
+        this.qd[i] = v0[i] + h * A[0][i];
+        this.q[i] = q0[i] + h * this.qd[i];
+      }
+      return [1];
+    }
+    const vp = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      this.q[i] = q0[i] + h * v0[i] + 0.5 * h * h * A[0][i];
+      vp[i] = v0[i] + h * A[0][i];
+    }
+    if (!this.accelerations(this.q, vp, A[1], 1)) return null;
+    for (let i = 0; i < n; i++) this.qd[i] = v0[i] + 0.5 * h * (A[0][i] + A[1][i]);
+    return [0.5, 0.5];
+  }
+
+  /**
+   * Dormand–Prince RK45 over h: sub-steps sized by its error estimate, the largest error
+   * |y₅ − y₄| / (tol (1 + |y|)) over q and q̇ kept at most 1; a sub-step too large is tried again
+   * smaller, each one taken is finished (bookkeeping, projection, contacts) as a step of its own.
+   */
+  private adaptiveStep(h: number): boolean {
+    const { n, stageV: V, stageA: A } = this;
+    const tol = Math.max(this.tolerance, 1e-12);
+    let left = h;
+    let dt = Math.min(h, this.adaptiveDt > 0 ? this.adaptiveDt : h);
+    this.adaptiveSteps = 0;
+    let guard = 0;
+    while (left > 1e-12) {
+      if (++guard > 20000) return false; // it cannot make progress
+      dt = Math.min(dt, left);
+      const q0 = this.q.slice();
+      const v0 = this.qd.slice();
+      if (!this.tableauStep(DOPRI, dt, q0, v0)) return false;
+      // the error: the 5th-order result against the 4th-order one
+      let err = 0;
+      for (let i = 0; i < n; i++) {
+        let [eq, ev] = [0, 0];
+        for (let s = 0; s < 7; s++) {
+          const d = DOPRI.b[s] - DOPRI.e[s];
+          eq += d * V[s][i];
+          ev += d * A[s][i];
+        }
+        err = Math.max(err, Math.abs(dt * eq) / (tol * (1 + Math.abs(this.q[i]))), Math.abs(dt * ev) / (tol * (1 + Math.abs(this.qd[i]))));
+      }
+      const grow = err > 0 ? 0.9 * err ** -0.2 : 5;
+      if (err <= 1 || dt <= 1e-7) {
+        if (!this.finishStep(dt, DOPRI.b)) return false;
+        left -= dt;
+        this.adaptiveSteps++;
+        dt *= Math.min(5, Math.max(0.2, grow));
+        this.adaptiveDt = dt;
+      } else {
+        this.q.set(q0);
+        this.qd.set(v0);
+        dt *= Math.max(0.1, grow);
+      }
+    }
+    return true;
+  }
+
+  /** After a step of h whose stages were weighted `w`: time, work and heat, then projection, contacts and stops. */
+  private finishStep(h: number, w: number[]): boolean {
+    const { n } = this;
+    const avg = (P: ArrayLike<number>) => w.reduce((s, x, k) => s + x * P[k], 0);
     this.t += h;
-    const mp = this.stageMotorPower;
-    this.motorWork += ((mp[0] + 2 * mp[1] + 2 * mp[2] + mp[3]) / 6) * h;
-    const ap = this.stageAirPower;
-    this.airWork += ((ap[0] + 2 * ap[1] + 2 * ap[2] + ap[3]) / 6) * h;
-    this.updateHeat(h);
+    this.motorWork += avg(this.stageMotorPower) * h;
+    this.airWork += avg(this.stageAirPower) * h;
+    this.updateHeat(h, w);
     this.project();
-    this.updateContacts(h);
+    this.updateContacts(h, w);
     this.updateStops(h);
     for (let i = 0; i < n; i++) if (!Number.isFinite(this.q[i]) || !Number.isFinite(this.qd[i])) return false;
     return true;
   }
 
   /**
-   * Heat from friction, averaged over the RK4 stages with the RK4 weights (so the energy
+   * Heat from friction, averaged over the stages with the integrator's weights (so the energy
    * bookkeeping matches the integrator), then Newton's law of cooling solved exactly:
    * ΔT ← ΔT e^{−h/τ} + (P̄/C) τ (1 − e^{−h/τ}).
    */
-  private updateHeat(h: number) {
+  private updateHeat(h: number, w: number[]) {
     const { friction, power, stagePower, jointHeat, meshHeat } = this;
     const decay = Math.exp(-h / friction.coolingTime);
     const gain = (friction.coolingTime * (1 - decay)) / friction.heatCapacity;
     const nj = jointHeat.length;
     for (let e = 0; e < power.length; e++) {
-      const P = friction.enabled ? (stagePower[0][e] + 2 * stagePower[1][e] + 2 * stagePower[2][e] + stagePower[3][e]) / 6 : 0;
+      const P = friction.enabled ? w.reduce((s, x, k) => s + x * stagePower[k][e], 0) : 0;
       power[e] = P;
       this.dissipated += P * h;
       const heat = e < nj ? jointHeat : meshHeat;

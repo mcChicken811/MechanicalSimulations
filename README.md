@@ -127,6 +127,26 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body, for example two bars welded into an L-shaped arm. Click the same pair again to separate them. (This replaces the old Fix angle tool: designs saved with fixed angles open with those bars joined.) |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
+**Integrators.** The *Simulation* block chooses how the equations of motion are stepped in time, and the step. Each choice shows its order and cost, and the status bar names it.
+
+| Integrator | Order | Evaluations a step | What it is like |
+|---|---|---|---|
+| Euler (explicit) | 1 | 1 | the simplest; pumps energy into anything that swings, so it needs small steps |
+| Symplectic Euler | 1 | 1 | updates q̇ first, then q with the new q̇: first order, but the energy of a swinging system stays bounded |
+| Midpoint (RK2) | 2 | 2 | |
+| Heun (RK2, trapezoid) | 2 | 2 | |
+| Velocity Verlet | 2 | 2 | symplectic for conservative forces: the energy wobbles but does not drift (the end's q̇ is predicted, since the forces depend on it) |
+| Kutta's RK3 | 3 | 3 | |
+| Runge–Kutta 4 | 4 | 4 | the default |
+| Dormand–Prince RK45 | 5 | 7 | adaptive: within each step it takes as many sub-steps as its error estimate (5th against 4th order) needs for the tolerance, and the status bar shows how many |
+
+- **Step sizes:** 0.1 ms to 20 ms (for RK45, the largest it takes). The tolerance is 10⁻³ to 10⁻¹⁰.
+- **Real time:** simulated time is carried over from frame to frame, so any step keeps pace with the clock.
+- **Bookkeeping:** heat, contact losses and the work of motors and propellers are summed over a step with the integrator's own stage weights, so the energy budget matches whichever is chosen.
+- **Ground contact** is tuned for steps of about 1 ms: with much larger steps, or a low-order integrator, contacts can bounce or sink.
+- **Remembered:** the choice is remembered, and saved in projects.
+- **Measured** on a pendulum: the orders come out 1.01, 1.00, 1.86, 1.72, 2.00, 3.00 and 3.78. Over 10 s at 5 ms steps, explicit Euler gains 2.6 J, symplectic Euler stays within 0.04 J, Verlet within 2·10⁻⁴ J, and RK4 within 10⁻⁸ J.
+
 **Save & load.** The *Save & load* block in the side bar saves and opens files, in the browser's save dialog where it has one, otherwise as a download.
 - **Design** (the drawing: bars, joints, gears, springs, joins, the ground):
   - **Save** writes a design file.

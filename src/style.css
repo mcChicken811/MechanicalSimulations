@@ -1577,3 +1577,29 @@ body.scrubbing * {
   display: flex;
   gap: 6px;
 }
+
+/* the integrator and its step: a label and a menu on one line */
+.settings label.pick {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.settings label.pick[hidden] {
+  display: none;
+}
+
+.settings label.pick select {
+  max-width: 128px;
+  padding: 3px 4px;
+  font-size: 12px;
+}
+
+.settings .int-note {
+  margin: 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+}

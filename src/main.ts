@@ -2,7 +2,7 @@ import 'katex/dist/katex.min.css';
 import './style.css';
 import { deriveEquations, deriveSteps, type Derivation } from './mechanics/derive';
 import { bodyName, gearName, motorTorque, nextLeverColor, leverOf, pidTarget, measurable, quantityName, defaultGains, LEVER_TARGET_SCALE, QUANTITY_UNIT, type DSensor, type Quantity, type DPid, type DDimension, propellerAero, propellerMotor, clearConstraint, cloneDesign, motorHousingRadius, anglesToJoins, emptyDesign, groundCeiling, groundHeight, lowerGroundUnder, railOf, straightGround, type DGround, sameBody, type DBodyRef, gearLabel, linkLabel, linkLength, nextId, pointLabel, rackPitch, springLabel, teethForRadius, type Design, type DGear, type DLink, type PointKind } from './mechanics/model';
-import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator, type ControllerSpec, type GroundSettings, type Heat, type Loads } from './mechanics/simulate';
+import { CONTACT_OMEGA, dampingRatio, defaultFriction, INTEGRATORS, NumericSystem, Simulator, type Integrator, type ControllerSpec, type GroundSettings, type Heat, type Loads } from './mechanics/simulate';
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
@@ -46,7 +46,22 @@ let inspectorPanel: AutoHide | undefined;
 let inspectedFor = '';
 
 const STORAGE_KEY = 'linkage-lab-design';
-const H_STEP = 1e-3; // RK4 step (s)
+/** How the equations are stepped: the integrator, its step (s; the adaptive one's largest) and the adaptive one's tolerance (remembered). */
+const INTEGRATOR_KEY = 'linkage-lab:integrator';
+const stepping: { integrator: Integrator; h: number; tolerance: number } = (() => {
+  const out = { integrator: 'rk4' as Integrator, h: 1e-3, tolerance: 1e-6 };
+  try {
+    const v = JSON.parse(localStorage.getItem(INTEGRATOR_KEY) ?? '');
+    if (v.integrator in INTEGRATORS) out.integrator = v.integrator;
+    if (Number.isFinite(v.h) && v.h >= 1e-5 && v.h <= 0.05) out.h = v.h;
+    if (Number.isFinite(v.tolerance) && v.tolerance > 0) out.tolerance = v.tolerance;
+  } catch {
+    /* the defaults */
+  }
+  return out;
+})();
+/** Simulated time owed to the clock (s): carried from frame to frame, so any step keeps real time. */
+let simDebt = 0;
 const GRAVITY = 9.81;
 const DEFAULT_SPRING_K = 50; // N/m
 const DEFAULT_MASS = 1; // kg, for the mass tool
@@ -358,6 +373,7 @@ function startSim() {
     return;
   }
   sim = new Simulator(new NumericSystem(derivation));
+  simDebt = 0;
   sim.damping = settings.damping;
   sim.friction = friction;
   sim.ground = groundSettings();
@@ -446,12 +462,20 @@ function rebuildSim() {
 
 function advance(seconds: number) {
   if (!sim) return;
-  const steps = Math.min(400, Math.round(seconds / H_STEP));
+  const h = stepping.h;
+  sim.integrator = stepping.integrator;
+  sim.tolerance = stepping.tolerance;
+  // whole steps of h for the time this frame stands for (and what was left over), at most 0.1 s of them
+  simDebt += seconds;
+  let steps = Math.floor(simDebt / h + 1e-9);
+  simDebt -= steps * h;
+  const most = Math.min(4000, Math.ceil(0.1 / h));
+  if (steps > most) [steps, simDebt] = [most, 0]; // falling behind: let it go rather than catch up
   sim.damping = settings.damping;
   sim.grab = grab ? { ...grab, target: mouseWorld, stiffness: settings.stiffness } : null;
   for (let i = 0; i < steps; i++) {
     if (trail.id >= 0) recordTrail(sim);
-    if (!sim.step(H_STEP)) {
+    if (!sim.step(h)) {
       running = false;
       simError = 'The solver hit a singular configuration (for example a fully stretched loop). Press Reset to edit.';
       sfx('error');
@@ -2307,9 +2331,9 @@ const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale']);
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
   const out: Record<string, boolean | string> = {};
-  document.querySelectorAll<HTMLInputElement>('#toolbar input[id]').forEach((el) => {
+  document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('#toolbar input[id], #toolbar select[id]').forEach((el) => {
     if (NOT_SETTINGS.has(el.id)) return;
-    out[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+    out[el.id] = el instanceof HTMLInputElement && el.type === 'checkbox' ? el.checked : el.value;
   });
   return out;
 }
@@ -2318,6 +2342,14 @@ function captureControls(): Record<string, boolean | string> {
 function applyControls(c: Record<string, boolean | string>) {
   for (const [id, v] of Object.entries(c)) {
     const el = document.getElementById(id);
+    if (el instanceof HTMLSelectElement && el.closest('#toolbar') && typeof v === 'string') {
+      if (![...el.options].some((o) => o.value === v)) el.append(new Option(v, v)); // a step not in the list
+      if (el.value !== v) {
+        el.value = v;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      continue;
+    }
     if (!(el instanceof HTMLInputElement) || NOT_SETTINGS.has(id) || !el.closest('#toolbar')) continue;
     if (el.type === 'checkbox') {
       if (typeof v !== 'boolean' || el.checked === v) continue;
@@ -2465,6 +2497,43 @@ $<HTMLButtonElement>('#load-design').addEventListener('click', () => void loadDe
 $<HTMLButtonElement>('#load-project').addEventListener('click', () => void loadProjectFile());
 $<HTMLButtonElement>('#import-design').addEventListener('click', () => void importDesignFile());
 
+// ---- the integrator and its step (the Simulation block) ----
+const integratorSel = $<HTMLSelectElement>('#integrator');
+const stepSel = $<HTMLSelectElement>('#step-size');
+const toleranceSel = $<HTMLSelectElement>('#tolerance');
+for (const [key, it] of Object.entries(INTEGRATORS)) integratorSel.append(new Option(`${it.name}`, key));
+/** A step in words: 1 ms, 0.5 ms. */
+const stepText = (h: number) => `${+(h * 1000).toPrecision(3)} ms`;
+/** The integrator and step for the status bar: "RK4, h = 1 ms", or the adaptive one's sub-steps. */
+function steppingText(): string {
+  const short = { euler: 'Euler', 'symplectic-euler': 'symplectic Euler', midpoint: 'midpoint', heun: 'Heun', verlet: 'Verlet', rk3: 'RK3', rk4: 'RK4', rk45: 'RK45' }[stepping.integrator];
+  if (stepping.integrator === 'rk45') return `${short}, h ≤ ${stepText(stepping.h)} (${sim?.adaptiveSteps ?? 1} per step), tol ${stepping.tolerance.toExponential(0)}`;
+  return `${short}, h = ${stepText(stepping.h)}`;
+}
+function showStepping() {
+  integratorSel.value = stepping.integrator;
+  // a step not in the list (from a file): add it
+  if (![...stepSel.options].some((o) => Number(o.value) === stepping.h)) stepSel.append(new Option(stepText(stepping.h), String(stepping.h)));
+  stepSel.value = [...stepSel.options].find((o) => Number(o.value) === stepping.h)!.value;
+  if (![...toleranceSel.options].some((o) => Number(o.value) === stepping.tolerance)) toleranceSel.append(new Option(stepping.tolerance.toExponential(0), String(stepping.tolerance)));
+  toleranceSel.value = [...toleranceSel.options].find((o) => Number(o.value) === stepping.tolerance)!.value;
+  const adaptive = stepping.integrator === 'rk45';
+  $<HTMLElement>('#tolerance-row').hidden = !adaptive;
+  $<HTMLElement>('#step-label').textContent = adaptive ? 'Largest step' : 'Step';
+  const it = INTEGRATORS[stepping.integrator];
+  $<HTMLElement>('#integrator-note').textContent = `Order ${it.order}, ${it.evaluations} evaluation${it.evaluations === 1 ? '' : 's'} a step: ${it.note}.`;
+}
+for (const sel of [integratorSel, stepSel, toleranceSel])
+  sel.addEventListener('change', () => {
+    stepping.integrator = integratorSel.value as Integrator;
+    stepping.h = Number(stepSel.value);
+    stepping.tolerance = Number(toleranceSel.value);
+    localStorage.setItem(INTEGRATOR_KEY, JSON.stringify(stepping));
+    showStepping();
+    simDebt = 0;
+  });
+showStepping();
+
 // ---- the right-click search list: everything in the side panel, found by typing (ui/palette.ts) ----
 const palette = new Palette();
 const sidePanel = $<HTMLElement>('#toolbar');
@@ -2526,6 +2595,15 @@ function paletteCommands(): Command[] {
       value: { type: 'range', min: input.min, max: input.max, step: input.step, get: () => input.value, set: (v, done) => drive(input, v, done, ['input', 'change']), shown: () => textOf(output) },
     });
   });
+  // the integrator and step: each choice an entry (a toggle, like a switch's option)
+  for (const [sel, name] of [[integratorSel, 'Integrator'], [stepSel, stepping.integrator === 'rk45' ? 'Largest step' : 'Step'], [toleranceSel, 'Tolerance']] as const) {
+    if (!usable(sel)) continue;
+    for (const o of sel.options)
+      out.push({ label: `${name}: ${o.textContent}`, group: 'Simulation', keywords: sel === integratorSel ? 'integrator solver method' : sel === stepSel ? 'time step size' : 'adaptive error tolerance', on: sel.value === o.value, toggle: true, run: () => {
+        sel.value = o.value;
+        sel.dispatchEvent(new Event('change'));
+      } });
+  }
   const numbers: [string, string, string][] = [
     ['#deflect-scale', 'Deflection drawn larger by', '×'],
     ['#beam-E', "Young's modulus E (default for bars)", 'GPa'],
@@ -5950,7 +6028,7 @@ function renderStatus() {
     (grab ? ` · |F| = <b>${F.toFixed(1)} N</b>` : '') +
     (sim.ground ? ` · ${sim.contactCount()} touching the ground` : '') +
     (friction.enabled || sim.dissipated > 0 || sim.sys.derivation.motors.length ? heatStatus(sim) : '') +
-    ` · RK4, h = 1 ms`;
+    ` · ${steppingText()}`;
 }
 
 // ---- view -----------------------------------------------------------------------
