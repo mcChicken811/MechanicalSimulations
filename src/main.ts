@@ -11,7 +11,7 @@ import { enableScrubbing } from './ui/scrub';
 import { Palette, type Command } from './ui/palette';
 import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
-import { Gallery } from './ui/gallery';
+import { Gallery, MY_PROJECTS, type GalleryItem } from './ui/gallery';
 import { askDialog } from './ui/dialog';
 import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
@@ -2345,8 +2345,13 @@ async function saveDesign(): Promise<boolean> {
   return ok;
 }
 
+/** The project as it is now: the drawing, the side panel's settings, the beam colouring, the view. */
+function buildProject(): ProjectFile {
+  return { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: cloneDesign(persistable()), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view } };
+}
+
 async function saveProject(): Promise<boolean> {
-  const project: ProjectFile = { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: persistable(), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view } };
+  const project = buildProject();
   const ok = await saveJson(project, fileName(designTitle, 'project'), 'Linkage Lab project');
   if (ok) {
     setUnsaved(false);
@@ -2407,10 +2412,16 @@ async function loadDesignFile() {
 async function loadProjectFile() {
   const f = await openDesignFile('project');
   if (!f || !f.project) return;
-  replaceDesign(f.design, f.name);
+  applyProject(f.project, f.design, f.name);
+  messages.notify(`Loaded project ${f.name}: its drawing, settings and view.`);
+}
+
+/** Put a project in place of everything: its drawing, its settings, its beam colouring and its view. */
+function applyProject(project: ProjectFile, d: Design, title: string) {
+  replaceDesign(d, title);
   setUnsaved(false);
-  applyControls(f.project.controls ?? {});
-  const bc = f.project.beamColour as Partial<BeamColour> | undefined;
+  applyControls(project.controls ?? {});
+  const bc = project.beamColour as Partial<BeamColour> | undefined;
   if (bc && typeof bc === 'object') {
     if (['off', 'N', 'V', 'M'].includes(bc.q as string)) beamColour.q = bc.q!;
     if (['max', 'dist'].includes(bc.mode as string)) beamColour.mode = bc.mode!;
@@ -2419,19 +2430,23 @@ async function loadProjectFile() {
     saveBeamColour();
     showBeamColour();
   }
-  const v = f.project.view;
+  const v = project.view;
   if (v && [v.ox, v.oy, v.scale].every(Number.isFinite) && v.scale > 0) Object.assign(view, { ox: v.ox, oy: v.oy, scale: v.scale });
   else fitView();
   sfx('preset');
-  messages.notify(`Loaded project ${f.name}: its drawing, settings and view.`);
 }
 
 /** Add a design to the drawing: its outline follows the mouse until a click places it (as a duplicate does). */
 async function importDesignFile() {
   const f = await openDesignFile('design');
   if (!f) return;
-  if (!f.design.points.length) {
-    messages.notify(`${f.name} is empty: nothing to import.`, 'warn');
+  startImport(f.design, f.name);
+}
+
+/** Add design d (named `label`) to the drawing: its outline follows the mouse until a click places it. */
+function startImport(d: Design, label: string) {
+  if (!d.points.length) {
+    messages.notify(`${label} is empty: nothing to import.`, 'warn');
     return;
   }
   stopSim();
@@ -2439,7 +2454,7 @@ async function importDesignFile() {
   setTool('select');
   selection = null;
   multi = null;
-  duplicating = { frag: f.design, centre: fragmentCentre(f.design), label: f.name };
+  duplicating = { frag: d, centre: fragmentCentre(d), label };
   sfx('copy');
   refreshControls();
 }
@@ -2533,7 +2548,11 @@ function paletteCommands(): Command[] {
   }
   const eom = $<HTMLButtonElement>('#eom-toggle');
   out.push({ label: `Equations panel: ${eom.textContent === '–' ? 'collapse' : 'expand'}`, group: 'View', run: () => eom.click() });
-  out.push({ label: 'Browse examples…', group: 'Example', keywords: 'gallery presets open', run: () => gallery.open() });
+  out.push({ label: 'Open the gallery…', group: 'File', keywords: 'gallery examples presets projects browse', run: () => gallery.open() });
+  out.push({ label: 'Save project to the gallery', group: 'File', keywords: 'save browser gallery project store', run: () => {
+    gallery.open();
+    (document.querySelector('#gallery .g-save') as HTMLButtonElement | null)?.click();
+  } });
   presets.forEach((p, i) =>
     out.push({
       label: p.name,
@@ -2821,22 +2840,126 @@ clearBtn.addEventListener('click', () => {
 });
 $<HTMLButtonElement>('#fit').addEventListener('click', () => fitView());
 
-// ---- the examples: browsed in the gallery (ui/gallery.ts), opened after asking about unsaved work ----
-const gallery = new Gallery(presets, (i) => void requestPreset(i));
-$<HTMLButtonElement>('#examples-btn').addEventListener('click', () => gallery.open());
+// ---- the gallery (ui/gallery.ts): the user's projects, saved in this browser, and the examples ----
+/** A project kept in the gallery: its name and description (the user's to edit), when, and the project itself. */
+interface StoredProject {
+  id: string;
+  name: string;
+  description: string;
+  savedAt: string;
+  project: ProjectFile;
+}
+const PROJECTS_KEY = 'linkage-lab:projects';
+
+/** The user's projects in this browser, newest first. */
+function storedProjects(): StoredProject[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(PROJECTS_KEY) ?? '[]');
+    return Array.isArray(list) ? list.filter((x) => x && typeof x.id === 'string' && x.project?.design) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Keep the user's projects; false (and said so) if the browser has no room for them. */
+function storeProjects(list: StoredProject[]): boolean {
+  try {
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+    return true;
+  } catch {
+    messages.notify("The browser has no room left to keep this project: save it to a file instead (Save & load), or delete some from the gallery.", 'error');
+    return false;
+  }
+}
+
+/** A saved design made whole (from a copy: what is stored stays as it was). */
+const designCopy = (raw: unknown) => normaliseDesign(JSON.parse(JSON.stringify(raw))) ?? emptyDesign();
+
+const when = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+};
+
+function galleryItems(): GalleryItem[] {
+  const own = storedProjects().map((sp): GalleryItem => ({ key: `p:${sp.id}`, group: MY_PROJECTS, name: sp.name, description: sp.description, notes: `Your project · saved ${when(sp.savedAt)}`, design: () => designCopy(sp.project.design), editable: true }));
+  const examples = presets.map((p, i): GalleryItem => ({
+    key: `e:${i}`,
+    group: p.group,
+    name: p.name,
+    description: p.description ?? '',
+    notes: `${p.group}${p.topView ? ' · seen from above (no gravity)' : ''}${p.follow ? ' · the view follows it' : ''}`,
+    design: () => p.build(),
+  }));
+  return [...own, ...examples];
+}
+
+const projectOf = (key: string) => storedProjects().find((x) => `p:${x.id}` === key);
+
+/** Save the current project to the gallery, in this browser, first in its list; its key, or null if there was no room. */
+function saveToGallery(): string | null {
+  const sp: StoredProject = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: designTitle === 'linkage' ? 'Untitled project' : designTitle, description: '', savedAt: new Date().toISOString(), project: buildProject() };
+  if (!storeProjects([sp, ...storedProjects()])) return null;
+  setUnsaved(false);
+  sfx('place');
+  messages.notify(`Saved “${sp.name}” to the gallery, in this browser: name it and describe it there.`);
+  return `p:${sp.id}`;
+}
+
+const gallery = new Gallery({
+  items: galleryItems,
+  open: (key) => {
+    if (key.startsWith('e:')) void requestPreset(Number(key.slice(2)));
+    else void requestProject(key);
+  },
+  import: (key) => {
+    const sp = projectOf(key);
+    const p = key.startsWith('e:') ? presets[Number(key.slice(2))] : null;
+    if (sp) startImport(designCopy(sp.project.design), sp.name);
+    else if (p) startImport(p.build(), p.name);
+  },
+  saveCurrent: () => saveToGallery(),
+  replace: (key) => {
+    const list = storedProjects();
+    const sp = list.find((x) => `p:${x.id}` === key);
+    if (!sp) return;
+    Object.assign(sp, { project: buildProject(), savedAt: new Date().toISOString() });
+    if (!storeProjects(list)) return;
+    setUnsaved(false);
+    messages.notify(`Updated “${sp.name}” with the current project.`);
+  },
+  rename: (key, name, description) => {
+    const list = storedProjects();
+    const sp = list.find((x) => `p:${x.id}` === key);
+    if (!sp) return;
+    Object.assign(sp, { name, description });
+    storeProjects(list);
+  },
+  remove: async (key) => {
+    const sp = projectOf(key);
+    if (!sp) return false;
+    const a = await askDialog({ title: `Delete “${sp.name}”?`, body: 'It is removed from the gallery in this browser. This cannot be undone (a copy saved to a file stays).', buttons: [{ id: 'delete', label: 'Delete', primary: true }, { id: 'cancel', label: 'Cancel' }] });
+    if (a.choice !== 'delete') return false;
+    storeProjects(storedProjects().filter((x) => x.id !== sp.id));
+    messages.notify(`Deleted “${sp.name}” from the gallery.`);
+    return true;
+  },
+});
+$<HTMLButtonElement>('#gallery-btn').addEventListener('click', () => gallery.open());
 const NO_WARN_KEY = 'linkage-lab:no-unsaved-warning';
 
-/** Open example i, first asking (unless told not to) when the drawing has changes not saved to a file. */
-async function requestPreset(i: number) {
-  const p = presets[i];
-  if (!p) return;
+/**
+ * Whether to go ahead replacing the drawing with `what`: yes at once if it has no unsaved changes
+ * (or the user said not to ask); else asked, with saving first as a choice.
+ */
+async function confirmReplace(what: string): Promise<boolean> {
   const muted = localStorage.getItem(NO_WARN_KEY) === '1' || sessionStorage.getItem(NO_WARN_KEY) === '1';
   if (unsaved && !muted) {
     const a = await askDialog({
       title: 'Your design has unsaved changes',
-      body: `Opening “${p.name}” replaces your drawing, which has changes not saved to a file. Undo can bring it back until you reload the page.`,
+      body: `Opening “${what}” replaces your drawing, which has changes not saved. Undo can bring it back until you reload the page.`,
       buttons: [
-        { id: 'save', label: 'Save design first…' },
+        { id: 'gallery', label: 'Save to gallery first' },
+        { id: 'save', label: 'Save to a file first…' },
         { id: 'open', label: 'Open without saving', primary: true },
         { id: 'cancel', label: 'Cancel' },
       ],
@@ -2844,10 +2967,25 @@ async function requestPreset(i: number) {
     });
     if (a.remember === 'forever') localStorage.setItem(NO_WARN_KEY, '1');
     else if (a.remember === 'session') sessionStorage.setItem(NO_WARN_KEY, '1');
-    if (a.choice === 'cancel') return;
-    if (a.choice === 'save' && !(await saveDesign())) return; // cancelled the save: stay
+    if (a.choice === 'cancel') return false;
+    if (a.choice === 'save' && !(await saveProject())) return false; // cancelled the save: stay
+    if (a.choice === 'gallery' && !saveToGallery()) return false; // no room: stay
   }
-  openPreset(i);
+  return true;
+}
+
+/** Open example i (asking first about unsaved changes). */
+async function requestPreset(i: number) {
+  const p = presets[i];
+  if (p && (await confirmReplace(p.name))) openPreset(i);
+}
+
+/** Open one of the user's projects from the gallery (asking first about unsaved changes). */
+async function requestProject(key: string) {
+  const sp = projectOf(key);
+  if (!sp || !(await confirmReplace(sp.name))) return;
+  applyProject(sp.project, designCopy(sp.project.design), sp.name);
+  messages.notify(`Opened your project “${sp.name}”: its drawing, settings and view.`);
 }
 
 function openPreset(i: number) {

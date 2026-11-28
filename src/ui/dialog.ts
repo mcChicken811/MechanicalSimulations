@@ -25,6 +25,7 @@ export function askDialog(opts: { title: string; body: string; buttons: { id: st
     const done = (choice: string) => {
       const box = back.querySelector<HTMLInputElement>('.d-remember input');
       const how = back.querySelector<HTMLSelectElement>('.d-remember select');
+      window.removeEventListener('keydown', onKey, { capture: true });
       back.remove();
       resolve({ choice, remember: box?.checked ? (how!.value as 'session' | 'forever') : null });
     };
@@ -32,13 +33,15 @@ export function askDialog(opts: { title: string; body: string; buttons: { id: st
     back.addEventListener('pointerdown', (e) => {
       if (e.target === back) done('cancel');
     });
-    back.addEventListener('keydown', (e) => {
+    // Esc, wherever the focus is (a click on its text leaves it on the page)
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         done('cancel');
       }
-    });
+    };
+    window.addEventListener('keydown', onKey, { capture: true });
     (back.querySelector<HTMLButtonElement>('.d-buttons button.primary') ?? back.querySelector<HTMLButtonElement>('.d-buttons button'))?.focus();
   });
 }

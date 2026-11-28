@@ -1336,9 +1336,23 @@ body.scrubbing * {
 }
 
 #gallery .g-section[hidden],
-#gallery .g-card[hidden],
-#gallery .g-detail[hidden] {
+#gallery .g-card[hidden] {
   display: none;
+}
+
+/* nothing chosen yet: the panel keeps its place (no reflow under a double-click), saying what it is for */
+#gallery .g-detail.empty > :not(.g-placeholder) {
+  display: none;
+}
+
+#gallery .g-detail:not(.empty) .g-placeholder {
+  display: none;
+}
+
+#gallery .g-placeholder {
+  margin: auto 0;
+  color: var(--muted);
+  text-align: center;
 }
 
 #gallery .g-section h3 {
@@ -1454,11 +1468,7 @@ body.scrubbing * {
   color: var(--muted);
 }
 
-#gallery .g-open {
-  margin-top: auto;
-  align-self: flex-start;
-  padding: 7px 22px;
-}
+
 
 /* ---- a question in the middle of the screen (ui/dialog.ts) ---- */
 .dialog-backdrop {
@@ -1500,4 +1510,70 @@ body.scrubbing * {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* ---- the gallery's own projects ---- */
+#gallery .g-save {
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--muted);
+  min-height: 160px;
+}
+
+#gallery .g-save .g-plus {
+  font-size: 30px;
+  line-height: 1;
+  min-height: 0;
+  color: var(--primary);
+}
+
+#gallery .g-save span:last-child {
+  min-height: 0;
+  text-align: center;
+}
+
+#gallery .g-name-edit,
+#gallery .g-desc-edit {
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  resize: vertical;
+}
+
+#gallery .g-name-edit {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+#gallery .g-name-edit[hidden],
+#gallery .g-desc-edit[hidden],
+#gallery .g-name[hidden],
+#gallery .g-desc[hidden],
+#gallery .g-own[hidden] {
+  display: none;
+}
+
+#gallery .g-desc-edit {
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+#gallery .g-actions {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+#gallery .g-actions .g-open {
+  padding: 7px 18px;
+}
+
+#gallery .g-own {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
 }

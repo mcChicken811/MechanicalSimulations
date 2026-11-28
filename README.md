@@ -77,12 +77,22 @@ Open the address it prints (usually http://localhost:5173). The page reloads whe
 
 ## Using the simulation
 
-The first time you open the app, it shows one leg of Theo Jansen's Strandbeest. After that, it remembers your last design in the browser. Use **Examples…** to browse other mechanisms, or **Clear** to start from scratch.
+The first time you open the app, it shows one leg of Theo Jansen's Strandbeest. After that, it remembers your last design in the browser. Use **Gallery…** to browse other mechanisms and your own saved projects, or **Clear** to start from scratch.
 
-**The examples gallery.** **Examples…** opens a panel in the middle of the screen with every example as a card, its drawing above its name, grouped into famous mechanisms and basics. A box at the top filters them by name or description.
-- **Choosing a card** shows it on the right: a bigger drawing (drag with any mouse button to move it, scroll to zoom, double-click to fit; the *Labels* box in its corner shows or hides the names, and is remembered), its name, what it is and what to look for, and what it is made of. **Open** loads it; so do double-clicking a card and Enter.
-- **Unsaved changes:** if your drawing has changes not saved to a file, opening an example asks first. You can save the design first, open without saving (Undo can still bring your drawing back until you reload), or cancel. Tick *Don't show this again* to stop the question for this session or for good.
-- **What counts as saved:** saving or loading a design or project, or opening an example, counts as saved; any edit after that counts as a change. This is remembered across reloads.
+**The gallery.** **Gallery…** opens a panel in the middle of the screen with everything as a card, its drawing above its name: **My projects** first, then the examples (famous mechanisms and basics). A box at the top filters them by name or description.
+- **My projects:** projects saved in this browser, each a whole project (the drawing, every setting and the view).
+  - **Saving:** the first card, **Save current project**, keeps the current one there; type its name straight away, and a description too.
+  - **Editing:** a project's name and description can be edited any time in its panel.
+  - **Update** saves the current project over it. **Delete** removes it, after asking.
+  - **Room:** they're kept in the browser's storage. If that runs out, it says so; save to a file instead.
+- **Choosing a card** shows it on the right:
+  - a bigger drawing (drag with any mouse button to move it, scroll to zoom, double-click to fit; the *Labels* box in its corner shows or hides the names, and is remembered);
+  - its name, notes and description, and what it is made of.
+- **The buttons:**
+  - **Open** (*Open project* for yours) replaces everything: your project with its settings and view, or the example. Double-clicking a card or Enter opens it too.
+  - **Import** adds just its drawing to yours: its outline follows the mouse, a click places it, and its settings are left out.
+- **Unsaved changes:** if your drawing has changes not saved, opening anything asks first. You can save to the gallery first, save to a file first, open without saving (Undo can still bring your drawing back until you reload), or cancel. Tick *Don't show this again* to stop the question for this session or for good.
+- **What counts as saved:** saving or loading a file, saving to the gallery, or opening an example or project counts as saved; any edit after that counts as a change. This is remembered across reloads.
 
  Examples marked *top view* lie in the horizontal plane, such as the two car steering linkages, so loading one turns gravity off; loading any other example turns it back on.
 
@@ -204,7 +214,7 @@ Other controls:
 - Undo with Ctrl/Cmd+Z.
 - Right-drag or middle-drag to pan, and use the mouse wheel to zoom. You can zoom in to millimetre scale; the scale bar, and the grid when it shows, follow.
 - **The side bar** is a column of separate floating blocks, with the drawing showing and clickable between them.
-  - **Always open:** the top block, with Play, Step, Reset, Undo, Fit view, Clear and the Examples gallery.
+  - **Always open:** the top block, with Play, Step, Reset, Undo, Fit view, Clear and the Gallery.
   - **Folded at first:** Tools, Simulation (gravity, air drag, pull stiffness, speed), View (labels, dimensions, follow), Beam forces, Friction & ground, and Sound. Click a heading to open or fold it; which are open is remembered.
   - **Summaries:** a folded heading still says what matters: the tool in use, the beam colouring, deflection and breaking that are on, and whether friction or the ground is on.
   - **Still reachable:** tool keys and the right-click list work whether or not their block is open.
