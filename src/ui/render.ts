@@ -71,6 +71,8 @@ export interface Scene {
   ground?: [number, number][] | null;
   /** The ground is selected: its waypoints show as handles, `waypoint` the selected one. */
   groundSelected?: { waypoint: number | null } | null;
+  /** Drawn over everything, last (the background editor's outlines and handles). */
+  overlay?: ((ctx: CanvasRenderingContext2D, w: number, h: number, v: View) => void) | null;
   /** A background drawn over the plain paper, before anything else (ui/background.ts). */
   backdrop?: ((ctx: CanvasRenderingContext2D, w: number, h: number, v: View) => void) | null;
   /** Where the scale bar goes: bottom right (the default), bottom left, or none. */
@@ -233,6 +235,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     ctx.fillText(s.cursorLabel.text, x + 20, y + 20);
     ctx.restore();
   }
+  s.overlay?.(ctx, w, h, v);
 }
 
 /** The outline of parts about to be placed: dashed bars, springs, gears and joints in the accent colour. */

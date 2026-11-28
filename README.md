@@ -127,12 +127,20 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body, for example two bars welded into an L-shaped arm. Click the same pair again to separate them. (This replaces the old Fix angle tool: designs saved with fixed angles open with those bars joined.) |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
-**Backgrounds.** The *Background* block puts a scene or your own image behind the drawing. Backgrounds are saved in projects (files and the gallery) and remembered in the browser.
-- **Scenes:** blue sky with clouds, a city skyline, a night sky, a sunset over hills, mountains, a blueprint and graph paper. They are drawn by the app, the same every time, and stay put as you pan and zoom.
-- **Your image** (PNG, JPEG, SVG and other picture files) is placed one of two ways:
-  - **in the drawing:** it pans and zooms with the mechanism, so you can trace over a photo or a sketch at its true size. Set its **width** in metres; **Fit to view** lays it across what is in view.
-  - **filling the screen:** it covers the screen, centred, and stays put.
-  - **Large pictures** are scaled down to at most 2048 px across, so they fit in the browser and in project files; SVGs are kept as they are. If an image is still too big for the browser to keep between visits, it says so; it stays for now and is saved in projects.
+**Backgrounds.** The *Background* block puts a scene, or a custom background of your own, behind the drawing. Backgrounds are saved in projects (files and the gallery) and remembered in the browser.
+- **Depth:** every layer of a background lies at a distance z from you, in units of the drawing's own distance, and moves by 1/z of the view: parallax.
+  - At z = 1 a layer moves with the drawing exactly; at z = 2 it moves half as far as the view pans and zooms less; at ∞ it stays put.
+  - For a layer placed with the view centred on c₀ at s₀ px/m, a point p of it is drawn at centre + (p − c₀)·s₀·f − (c − c₀)·s/z, with f = (s/s₀)^(1/z), for the view now centred on c at s px/m. That reduces to the drawing's own map at z = 1 and to a fixed place on the screen at ∞.
+- **Scenes:** blue sky with clouds, a city skyline, a night sky, a sunset over hills, mountains, a blueprint and graph paper. They are drawn by the app, the same every time, in layers at the distances their parts would be.
+  - The sky stays put (∞); clouds are far (14–20); the city's far buildings are at 6 and its near ones at 3; the mountain ranges are at 10, 6 and 4, with a meadow at 2; the sunset's hills are at 9, 5 and 2.5.
+  - Panning shows them slide past each other. They repeat sideways and run on below, so the view never runs out of them.
+- **Custom…** opens the **background editor**, where you build your own over a base scene.
+  - **Add image…** (PNG, JPEG, SVG and other picture files) places an image across the middle of the view, at distance 1.
+  - On the drawing, drag an image to move it and its corner handle to resize it (its shape is kept).
+  - In the panel, set each image's **distance**, or tick **∞** to fix it on the screen. **Fill** makes an image fill the screen (at ∞). ▲ ▼ order images at the same distance, and × or Delete removes one.
+  - Changing an image's distance keeps it where it looks now. Right-drag pans as ever, to see the depths at work.
+  - **Done** or Esc leaves the editor. **Edit background…** in the block opens it again.
+  - **Large pictures** are scaled down to at most 2048 px across, so they fit in the browser and in project files; SVGs are kept as they are. If the images are still too big for the browser to keep between visits, it says so; they stay for now and are saved in projects.
 - **Strength** sets how strongly the background shows behind the mechanism. Each scene starts at a strength that keeps the mechanism easy to read.
 
 **Integrators.** The *Simulation* block chooses how the equations of motion are stepped in time, and the step. Each choice shows its order and cost, and the status bar names it.

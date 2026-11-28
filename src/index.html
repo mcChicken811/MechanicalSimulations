@@ -196,13 +196,10 @@
         <button class="block-head" type="button" aria-expanded="false"><span class="block-title">Background</span><span class="block-sum" id="sum-background"></span><span class="chev" aria-hidden="true"></span></button>
         <div class="block-body">
           <div class="group settings">
-            <label class="pick" title="A scene behind the drawing, or an image of your own (saved with the project)">Scene <select id="bg-kind"></select></label>
-            <div class="bg-buttons" id="bg-image-row" hidden>
-              <button id="bg-choose" title="Choose an image (PNG, JPEG, SVG…) for the background">Choose image…</button>
-              <button id="bg-fit" title="Put the image across what is in view now">Fit to view</button>
+            <label class="pick" title="A scene behind the drawing, or a custom one with images of your own at distances (saved with the project)">Scene <select id="bg-kind"></select></label>
+            <div class="bg-buttons" id="bg-edit-row" hidden>
+              <button id="bg-edit" title="Place images over the scene, at distances: the farther, the slower they move as the view pans">Edit background…</button>
             </div>
-            <label class="pick" id="bg-mode-row" hidden title="In the drawing it pans and zooms with the mechanism (to trace over); filling the screen, it stays put">Placed <select id="bg-mode"><option value="world">in the drawing</option><option value="cover">filling the screen</option></select></label>
-            <label class="numrow" id="bg-width-row" hidden title="How wide the image is in the drawing; its height follows its shape">Width <input type="number" id="bg-width" min="0.001" step="0.01" /> m</label>
             <label class="slider" title="How strongly the background shows behind the mechanism">Strength <output id="bg-opacity-out"></output><input type="range" id="bg-opacity" min="0.1" max="1" step="0.05" value="0.7" /></label>
           </div>
         </div>
