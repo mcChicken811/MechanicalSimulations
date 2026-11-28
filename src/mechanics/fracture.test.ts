@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { beamDiagram } from './beam';
 import { deriveEquations } from './derive';
+import { barDiagram } from './beam';
+import { jointForces } from './forces';
 import { breakBars, breakPoints, transferState } from './fracture';
+import { towerBridge } from '../ui/presets';
 import type { Design } from './model';
 import { NumericSystem, Simulator } from './simulate';
 
@@ -92,5 +95,37 @@ describe('breaking bars', () => {
     for (let i = 0; i < 300; i++) expect(next.step(1e-3)).toBe(true);
     const e2 = next.energy();
     expect(e2.T + e2.V).toBeCloseTo(e0.T + e0.V, 3);
+  });
+
+  it('a slow motor driving almost nothing stays stable and runs at its no-load speed', () => {
+    // b = τ / ω₀ ≈ 23 N·m·s on I ≈ 2e-6 kg·m²: far stiffer than a 1 ms RK4 step could follow
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }], links: [], springs: [], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 0, radius: 0.02, teeth: 12, mass: 0.01, locked: false, motor: { torque: 6, noLoadRpm: 2.5, mass: 0.1, mounted: true } }],
+    };
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    for (let i = 0; i < 500; i++) expect(sim.step(1e-3)).toBe(true);
+    expect([...sim.q, ...sim.qd].every(Number.isFinite)).toBe(true);
+    expect(Math.abs(sim.qd[0])).toBeCloseTo((2.5 * 2 * Math.PI) / 60, 3);
+  });
+
+  it('Tower Bridge breaking at 2 N·m: its leaves snap off and it carries on (no blow-up)', () => {
+    let d = towerBridge();
+    let sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    for (let i = 0; i < 16; i++) sim.step(1e-3);
+    const { qdd, loads } = sim.snapshot();
+    const r = jointForces(d, sim.sys, sim.q, sim.qd, qdd, loads, { gravity: G, friction: null });
+    const found = d.links.map((l) => {
+      const bd = barDiagram(r, l.id, { gravity: G })!;
+      return { link: l.id, u: breakPoints(bd, 2).map((x) => x / bd.L) };
+    }).filter((f) => f.u.length);
+    expect(found.map((f) => f.link)).toEqual([0, 1, 2, 3, 6, 7]); // the leaves, their tails, the walkways
+    const out = breakSim(d, sim, found);
+    [d, sim] = [out.design, out.next];
+    const e0 = sim.energy();
+    for (let i = 0; i < 3000; i++) expect(sim.step(1e-3)).toBe(true);
+    expect([...sim.q, ...sim.qd].every(Number.isFinite)).toBe(true);
+    const e1 = sim.energy();
+    expect(Math.abs(e1.T + e1.V - (e0.T + e0.V))).toBeLessThan(0.5); // the motors spin stubs now: little work
   });
 });

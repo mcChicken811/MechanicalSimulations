@@ -418,6 +418,8 @@ export interface PointLoad {
 export interface Loads {
   points: PointLoad[];
   stops: { joint: number; along: number }[];
+  /** Each motor's torque as applied (its speed–torque line, held integrable: see limitMotorDamping), by gear id. */
+  motors?: { id: number; tau: number }[];
 }
 
 /** Something that happened in a step, for sound: a landing on the ground or a slider hitting a stop, with its speed and the effective mass it stopped. */
@@ -606,6 +608,14 @@ export class Simulator {
       for (let j = 0; j < n; j++) s += M[i * n + j] * qd[j];
       f[i] -= this.damping * s;
     }
+    // a motor too stiff for the step: its torque as limitMotorDamping makes it (f has τ − b ρ̇)
+    this.motorParams.forEach((m, k) => {
+      if ((this.motorStiff[k] ?? 1) >= 1) return;
+      let w = 0;
+      for (const t of m.terms) w += t.k * qd[t.coord];
+      const d = this.motorTorque(k, qd) - (sys.params[m.tau] - (m.b >= 0 ? sys.params[m.b] * w : 0));
+      for (const t of m.terms) f[t.coord] += t.k * d;
+    });
     this.applyGrab(q, qd, f);
     this.applyPropellers(q, qd, f, stage);
     this.applyContacts(q, qd, f, stage);
@@ -614,11 +624,11 @@ export class Simulator {
       // the motors' torque is in f already (symbolically); here only the power they put in,
       // τ(ρ̇) ρ̇ with ρ̇ the gear's turn rate in its housing
       let P = 0;
-      for (const m of this.motorParams) {
+      this.motorParams.forEach((m, k) => {
         let w = 0;
         for (const t of m.terms) w += t.k * qd[t.coord];
-        P += (sys.params[m.tau] - (m.b >= 0 ? sys.params[m.b] * w : 0)) * w;
-      }
+        P += this.motorTorque(k, qd) * w;
+      });
       this.stageMotorPower[stage] = P;
     }
 
@@ -1279,7 +1289,7 @@ export class Simulator {
       let w = 0;
       for (const t of m.terms) w += t.k * qd[t.coord];
       const tau = sys.params[m.tau];
-      return { id: sys.derivation.motors[k].id, speed: w, torque: tau - (m.b >= 0 ? sys.params[m.b] * w : 0), stall: Math.abs(tau) };
+      return { id: sys.derivation.motors[k].id, speed: w, torque: this.motorTorque(k, qd), stall: Math.abs(tau) };
     });
   }
 
@@ -1317,7 +1327,7 @@ export class Simulator {
    */
   snapshot(): { qdd: Float64Array; loads: Loads } {
     const qdd = new Float64Array(this.n);
-    this.capture = { points: [], stops: [] };
+    this.capture = { points: [], stops: [], motors: this.motorParams.map((_, k) => ({ id: this.sys.derivation.motors[k].id, tau: this.motorTorque(k, this.qd) })) };
     try {
       if (!this.accelerations(this.q, this.qd, qdd, -1)) qdd.fill(NaN);
     } finally {
@@ -1386,6 +1396,7 @@ export class Simulator {
    * eight for very dead impacts (ζ > 1), whose strong damping needs it for the energy budget.
    */
   step(h: number): boolean {
+    this.limitMotorDamping(h);
     if (this.controllers.length) this.runControllers(h);
     const ground = !!this.ground && this.nearGround(h);
     const stops = this.updateStops(h);
@@ -1396,6 +1407,46 @@ export class Simulator {
       return true;
     }
     return this.rkStep(h);
+  }
+
+  /** For each motor, the fraction s ≤ 1 of its speed–torque damping that a step can follow (see limitMotorDamping). */
+  private motorStiff: number[] = [];
+  private motorCheck = 0;
+
+  /**
+   * Keep every motor's speed–torque line integrable. Its −b ρ̇ against the inertia it drives,
+   * m = 1 / gᵀ A g (A the constrained inverse inertia, g its torque's direction), dies away at the
+   * rate b / m, which RK4 follows only while b h / m stays under 2.8: a slow motor driving almost
+   * nothing (a bascule's motor once its leaf has broken off) would blow the simulation up. Such a
+   * motor reaches its no-load speed within a step anyway, so its line is made s = 2 m / (b h)
+   * times as steep: τ and b both (s τ − s b ρ̇: the same no-load speed, reached as fast as a step
+   * shows) or, under a PID controller, which sets τ itself, b alone. Checked again every 50
+   * steps as the mechanism moves (its inertia changes).
+   */
+  private limitMotorDamping(h: number) {
+    if (this.motorCheck-- > 0 || !this.motorParams.some((m) => m.b >= 0)) return;
+    this.motorCheck = 50;
+    const p = this.sys.params;
+    this.motorStiff = this.motorParams.map((m) => {
+      if (m.b < 0 || !(p[m.b] > 0)) return 1;
+      const g = new Float64Array(this.n);
+      for (const t of m.terms) g[t.coord] += t.k;
+      const inv = this.response(this.q, g, g);
+      return inv > 0 ? Math.min(1, 2 / (inv * h * p[m.b])) : 1;
+    });
+  }
+
+  /** Motor k's torque at rates qd, as applied (its speed–torque line, made integrable). */
+  private motorTorque(k: number, qd: ArrayLike<number>): number {
+    const m = this.motorParams[k];
+    const p = this.sys.params;
+    let w = 0;
+    for (const t of m.terms) w += t.k * qd[t.coord];
+    const [tau, b] = [p[m.tau], m.b >= 0 ? p[m.b] : 0];
+    const s = this.motorStiff[k] ?? 1;
+    if (s >= 1) return tau - b * w;
+    const controlled = this.controllers.some((c) => c.motor === this.sys.derivation.motors[k].id && c.sign !== 0);
+    return controlled ? tau - s * b * w : s * (tau - b * w);
   }
 
   /**

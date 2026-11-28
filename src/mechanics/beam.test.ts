@@ -4,7 +4,7 @@ import { deriveEquations } from './derive';
 import { jointForces } from './forces';
 import type { Design } from './model';
 import { NumericSystem, Simulator } from './simulate';
-import { presets } from '../ui/presets';
+import { presets, towerBridge } from '../ui/presets';
 
 const G = 9.81;
 const still = (A: [number, number], B: [number, number], m: number) => ({ id: 0, m, A, B, vA: [0, 0] as [number, number], vB: [0, 0] as [number, number], aA: [0, 0] as [number, number], aB: [0, 0] as [number, number] });
@@ -115,6 +115,35 @@ describe('internal forces along a bar', () => {
     // shear: V = m g / 4 − μ g s + (3 μ g / 4L) s² (the falling bar's inertia relieves its weight towards the tip)
     for (const s of [0.2, 0.5, 0.9]) expect(valueAt(bd, bd.V, s)).toBeCloseTo((m * G) / 4 - (m / L) * G * s + ((3 * m * G) / (4 * L * L)) * s * s, 6);
   });
+
+  it('Tower Bridge: the leaves open to their target, a closed leaf is a cantilever, the walkways carry w L² / 8', () => {
+    const d = towerBridge();
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    sim.setControllers([0, 1].map((k) => {
+      const pid = d.gears[k].motor!.pid!;
+      const l = d.links[pid.sensor!.body.id];
+      return { motor: k, sensor: { quantity: 'angle' as const, a: l.a, b: l.b }, kp: pid.kp, ki: pid.ki, kd: pid.kd, max: 6, target: pid.offset + pid.lever!.position * pid.lever!.scale, direction: 'auto' as const };
+    }));
+    const forces = () => {
+      const { qdd, loads } = sim.snapshot();
+      return jointForces(d, sim.sys, sim.q, sim.qd, qdd, loads, { gravity: G, friction: null });
+    };
+    // closed, at rest but for the motor starting to lift it: its moment at the trunnion is m g L / 2 and more
+    const leaf = barDiagram(forces(), 0, { gravity: G })!;
+    expect(-leaf.M[1]).toBeGreaterThan((3 * G * leaf.L) / 2);
+    const walk = barDiagram(forces(), 6, { gravity: G })!;
+    expect(peak(walk.M).v).toBeCloseTo((1.5 * G * walk.L) / 8, 6); // a still beam, pinned at both towers
+    for (let i = 0; i < 12000; i++) sim.step(1e-3);
+    const P = sim.jointPositions();
+    const angle = (a: number, b: number) => (Math.atan2(P.get(b)![1] - P.get(a)![1], P.get(b)![0] - P.get(a)![0]) * 180) / Math.PI;
+    expect(angle(0, 1)).toBeGreaterThan(74);
+    expect(angle(0, 1)).toBeLessThan(90);
+    expect(angle(3, 4)).toBeCloseTo(180 - angle(0, 1), 0); // the two open alike
+    // raised, the leaf mostly carries its weight along itself: compression, little bending
+    const open = barDiagram(forces(), 0, { gravity: G })!;
+    expect(Math.abs(peak(open.M).v)).toBeLessThan(0.3 * Math.abs(peak(leaf.M).v));
+    expect(peak(open.N).v).toBeLessThan(-20);
+  }, 30000);
 
   it('every bar of every preset: the diagram closes (the forces balance the motion)', () => {
     let checked = 0;

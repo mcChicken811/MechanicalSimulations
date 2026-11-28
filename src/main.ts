@@ -384,6 +384,9 @@ function togglePlay() {
   refreshControls();
 }
 
+/** Whether a simulation's state is all numbers (not blown up). */
+const finiteState = (s: Simulator) => s.q.every(Number.isFinite) && s.qd.every(Number.isFinite);
+
 /** Re-derive with new settings while keeping the current state (coordinates are unchanged). */
 function rebuildSim() {
   derive();
@@ -425,6 +428,14 @@ function advance(seconds: number) {
   }
   if (trail.id >= 0) recordTrail(sim);
   if (!sim) return;
+  if (!finiteState(sim)) {
+    // blown up: stop rather than carry NaN into the drawing, the forces and the sound
+    running = false;
+    simError = 'The simulation became unstable (its state is no longer finite). Press Reset to edit.';
+    sfx('error');
+    refreshControls();
+    return;
+  }
   if (!grab) sim.appliedForce = [0, 0];
   simPositions = sim.jointPositions();
   simGearAngles = sim.gearAngles();
@@ -2320,6 +2331,7 @@ presetSel.addEventListener('change', () => {
   drag.dispatchEvent(new Event('input'));
   designChanged();
   fitView(p.view);
+  if (p.analysis) showAnalysis(p.analysis); // an example made to show the beam analysis
 });
 
 function bindSlider(id: 'damping' | 'stiffness' | 'speed', fmt: (v: number) => string) {
@@ -3580,6 +3592,21 @@ beamScaleInput.addEventListener('change', () => {
 });
 showBeamColour();
 
+/** Turn on the beam analysis an example asks for: its colouring, and deflection drawn (side panel and saved). */
+function showAnalysis(a: NonNullable<(typeof presets)[number]['analysis']>) {
+  Object.assign(beamColour, { q: a.colour, mode: a.mode, scale: a.scale });
+  beamColourPeak = 0;
+  saveBeamColour();
+  showBeamColour();
+  if (a.deflect) {
+    deflect.on = true;
+    deflect.scale = a.deflect;
+    $<HTMLInputElement>('#deflect').checked = true;
+    $<HTMLInputElement>('#deflect-scale').value = String(a.deflect);
+    localStorage.setItem(DEFLECT_KEY, JSON.stringify(deflect));
+  }
+}
+
 /**
  * The bars' colours: every bar by the chosen force while it runs, and the bar whose diagram is in
  * the graph panel by that diagram (on its scale). Updates the side panel's scale as well.
@@ -3684,6 +3711,15 @@ function breakNow(found: { link: number; u: number[]; xs: number[]; M: number }[
   next.q.set(st.q);
   next.qd.set(st.qd);
   next.project();
+  if (!finiteState(next)) {
+    // the state could not be carried over: leave it whole and stop breaking
+    design = before;
+    derive();
+    breaking.on = breakBox.checked = false;
+    saveBreaking();
+    flash(`${names.join('; ')} would break, but the motion could not be carried over to the pieces, so breaking is turned off.`);
+    return;
+  }
   next.energyOffset = old.energy().V - next.energy().V; // V's zero moves with the mechanism: E carries on
   next.t = old.t;
   next.damping = settings.damping;
@@ -5175,6 +5211,21 @@ let last = performance.now();
 /** The grab spring's pull on the grabbed point this frame (N), shown by the arrow and status bar. */
 let grabPull: Vec = [0, 0];
 function frame(now: number) {
+  // whatever goes wrong in a frame, the next one still comes (else the whole page stops)
+  try {
+    drawFrame(now);
+  } catch (e) {
+    console.error(e);
+    if (sim && running) {
+      running = false;
+      simError = `Something went wrong while it ran (${errorText(e)}). Press Reset to edit.`;
+      refreshControls();
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+function drawFrame(now: number) {
   const dt = Math.min((now - last) / 1000, 1 / 20);
   last = now;
   const target = trailTarget();
@@ -5248,7 +5299,6 @@ function frame(now: number) {
     bends: bendsNow(),
   });
   renderStatus();
-  requestAnimationFrame(frame);
 }
 
 window.addEventListener('resize', resize);

@@ -628,6 +628,81 @@ export function pidArm(): Design {
   };
 }
 
+/**
+ * Tower Bridge, London (1894), at about 1:25: its two bascules open for a ship. Each leaf is a
+ * deck welded to a tail that carries a counterweight below the road, turning on a trunnion at the
+ * pier; a motor on the trunnion, its PID controller holding the leaf's angle at what its lever
+ * says, raises it (the real ones were raised by hydraulic engines, balanced the same way). The
+ * towers and the two high-level walkways stand still, and the side spans' suspension chains hang
+ * from the tower tops to the shore. Made to show the beam analysis: measure a leaf (pause, click
+ * it) and open its bending moment, or colour every bar by it, as the cantilever's moment at the
+ * trunnion turns into compression along it as it rises.
+ */
+export function towerBridge(): Design {
+  const [pier, tip, tail] = [1.2, 0.004, 0.4]; // trunnion, leaf tip and counterweight distances from the middle (m)
+  const [towerX, top, walk, base] = [1.38, 2.05, 1.85, -0.45];
+  const leafMass = 3;
+  const counterweight = 4; // a little under the leaf's moment: it rests closed
+  // the suspension chains: from a tower top down to the shore, sagging (each a few links)
+  const chain = (side: 1 | -1, firstId: number) => {
+    const [ax, ay, bx, by] = [side * towerX, top, side * 3.2, 0.35];
+    const n = 5;
+    return Array.from({ length: n - 1 }, (_, k) => {
+      const u = (k + 1) / n;
+      return pt(firstId + k, ax + u * (bx - ax), ay + u * (by - ay) - 0.18 * Math.sin(Math.PI * u));
+    });
+  };
+  const points: DPoint[] = [
+    pt(0, -pier, 0, 'fixed'), // trunnions
+    pt(1, -tip, 0), // leaf tips, meeting in the middle
+    weighted(pt(2, -pier - tail, 0), counterweight), // counterweights, under the road
+    pt(3, pier, 0, 'fixed'),
+    pt(4, tip, 0),
+    weighted(pt(5, pier + tail, 0), counterweight),
+    pt(6, -towerX, base, 'fixed'), // towers: pier and top
+    pt(7, -towerX, top, 'fixed'),
+    pt(8, towerX, base, 'fixed'),
+    pt(9, towerX, top, 'fixed'),
+    pt(10, -towerX, walk, 'fixed'), // the lower walkway's ends
+    pt(11, towerX, walk, 'fixed'),
+    pt(12, -3.2, 0.35, 'fixed'), // shore anchorages of the chains
+    pt(13, 3.2, 0.35, 'fixed'),
+    ...chain(-1, 14), // 14–17
+    ...chain(1, 18), // 18–21
+  ];
+  const links = barsM([
+    [0, 1, leafMass], // 0: left leaf
+    [0, 2, 0.5], // 1: its tail
+    [3, 4, leafMass], // 2: right leaf
+    [3, 5, 0.5], // 3: its tail
+    [6, 7, 4], // 4, 5: towers
+    [8, 9, 4],
+    [7, 9, 1.5], // 6, 7: the high-level walkways
+    [10, 11, 1.5],
+    [7, 14, 0.3], [14, 15, 0.3], [15, 16, 0.3], [16, 17, 0.3], [17, 12, 0.3], // 8–12: left chain
+    [9, 18, 0.3], [18, 19, 0.3], [19, 20, 0.3], [20, 21, 0.3], [21, 13, 0.3], // 13–17: right chain
+  ]);
+  const bascule = (id: number, centre: number, leaf: number, offset: number, scale: number, color: string, lever: string): DGear => ({
+    ...gear(id, centre, 0.1, 0.3),
+    motor: { torque: 6, noLoadRpm: 2.5, mass: 0.5, mounted: true, pid: { kp: 0.3, ki: 0.1, kd: 0.15, offset, sensor: { body: { kind: 'link', id: leaf }, quantity: 'angle' }, color, lever: { color: lever, scale, position: 1 } } },
+  });
+  return {
+    points,
+    links,
+    springs: [],
+    // left leaf drawn at 0° (opens to +80°), right at 180° (opens to 100°): both levers up opens them
+    gears: [bascule(0, 0, 0, 0, 80, '#7b5ce0', '#e04f5f'), bascule(1, 3, 2, 180, -80, '#2f9e8f', '#f2a93b')],
+    meshes: [],
+    rackMeshes: [],
+    joins: [
+      { id: 0, a: { kind: 'link', id: 0 }, b: { kind: 'link', id: 1 } }, // leaf and tail: one bascule
+      { id: 1, a: { kind: 'gear', id: 0 }, b: { kind: 'link', id: 0 } }, // turned by its motor
+      { id: 2, a: { kind: 'link', id: 2 }, b: { kind: 'link', id: 3 } },
+      { id: 3, a: { kind: 'gear', id: 1 }, b: { kind: 'link', id: 2 } },
+    ],
+  };
+}
+
 /** The motor car with cruise control: a PID controller on its motor holds the chassis's speed over the hills. */
 export function cruiseCar(): Design {
   const d = motorCar();
@@ -762,6 +837,11 @@ export interface Preset {
   follow?: boolean;
   /** The area to fit in view when loading it (world metres), when its motion reaches beyond its drawing. */
   view?: { x: [number, number]; y: [number, number] };
+  /**
+   * Show the beam analysis when loading it: the bars coloured by an internal force (N, V or M; how,
+   * and on what scale), and drawn bent this many times larger (if `deflect` is set).
+   */
+  analysis?: { colour: 'N' | 'V' | 'M'; mode: 'max' | 'dist'; scale: 'now' | 'run'; deflect?: number };
 }
 
 export const presets: Preset[] = [
@@ -769,6 +849,7 @@ export const presets: Preset[] = [
   { name: 'Strandbeest leg driven by a crank motor', group: 'Famous mechanisms', build: () => drivenJansenLeg() },
   { name: 'Strandbeest with four legs, gear-coupled and motor-driven', group: 'Famous mechanisms', build: () => strandbeest() },
   { name: 'Quick-return mechanism (crank and slotted lever)', group: 'Famous mechanisms', build: () => quickReturn() },
+  { name: 'Tower Bridge: bascules opening (beam forces, deflection)', group: 'Famous mechanisms', build: () => towerBridge(), drag: 0.3, view: { x: [-3.5, 3.5], y: [-0.8, 2.4] }, analysis: { colour: 'M', mode: 'dist', scale: 'run', deflect: 100 } },
   {
     // James Watt, 1781. The planet gear is fixed to the connecting rod (bars E–P and E–Q make
     // them one rigid body) and is kept in mesh with the sun gear by the link O–P. One orbit of

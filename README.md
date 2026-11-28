@@ -272,6 +272,14 @@ Both modes use one scale for all bars, so bars compare with each other, and a th
 
 The bar whose diagram is open in the graph panel keeps that diagram's colouring. The choice is remembered between visits.
 
+**Example: Tower Bridge.** The *Tower Bridge: bascules opening* example (Famous mechanisms) is a 1:25 model of London's 1894 bascule bridge, made to show this analysis. Loading it turns on Bending colouring (Distribution, Run peak) and deflection drawn ×100.
+- **The leaves:** each leaf is a deck welded to a tail with a counterweight below the road, turning on a trunnion at its pier. A motor whose PID controller holds the leaf's angle raises it to 80°; the levers in the dock set how far.
+- **The rest:** the towers and the two high-level walkways stand still, and the side spans' suspension chains hang from the tower tops to the shore.
+- **What to watch:** pause and click a leaf to see its diagram.
+  - Closed, a leaf is a cantilever: its bending moment at the trunnion is m g L/2, plus the push that starts it lifting.
+  - As it rises, that moment drains into compression along the leaf: at 80° there is little bending and about 29 N of compression.
+  - The walkways carry their own weight as beams pinned at both towers, M = wL²/8, and are drawn sagging.
+
 **Deflection.** Tick *Draw deflection ×* in the side panel to draw every bar bent by its bending moment while the mechanism runs. Racks stay straight.
 - **Formula:** Euler–Bernoulli, EI w″ = M, with w measured square to the bar (positive to the left of A → B) and w = 0 at both joints. The bar bends between its joints and stays connected to them. The motion is still that of rigid bars, so the deflection is drawn, not simulated.
 - **Integration:** w is integrated twice along the bar from the bending-moment diagram. Between stations M is taken as the cubic that matches its value and slope (dM/ds = V) at each end. That is exact here, because a bar's distributed load is linear along it, so the textbook PL³/48EI and 5wL⁴/384EI come out to round-off.
@@ -331,6 +339,12 @@ A motor turns its gear with a torque τ, given in N·m; a positive torque turns 
 - **Free:** neither mounted nor joined. The housing spins back the other way.
 
 In the equations, the torque acts on the gear's turn inside its housing, ρ = φ − ψ, as the generalized force Q = (τ − b ρ̇) ∂ρ/∂q with b = |τ|/Ω (so the torque falls to zero at the no-load speed turning the way it pushes, clockwise for a negative torque). This puts +τ on the gear and −τ on whatever the housing is part of, with nothing pushing from nowhere. The housing has a mass, 0.5 kg by default and set in the inspector, and turns as a disk of 0.6 times the gear's radius.
+
+*Very stiff motors.* A slow motor driving almost nothing has a damping b far stiffer than the 1 ms step can follow. With b/m beyond 2/h, where m is the inertia it drives (from the constrained mass matrix), RK4 would blow up. An example is a bascule's motor once its leaf has broken off. Such a motor reaches its no-load speed within a step anyway, so its speed–torque line is made as steep as the step allows, rechecked every 50 steps as the inertia changes:
+- **Without a PID controller,** τ and b are scaled together, so the no-load speed stays exact.
+- **Under a PID controller,** which sets τ itself, only b is scaled.
+
+The joint forces use the torque as applied.
 
 The equations panel shows the torque. To drive a bar, such as a crank, join a gear to it with **Join bodies**. You can change the torque and the speed while the simulation runs. The status bar adds the motor's work, W_m, to the energy budget, so E + W − W_m stays constant.
 

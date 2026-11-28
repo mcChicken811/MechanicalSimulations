@@ -328,7 +328,8 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     if (!gr || gr.propeller) continue; // a propeller's motor spins its blades about an axis in the plane
     let rho = 0;
     for (const t of mo.terms) rho += t.k * qd[t.coord];
-    const tau = sys.params[paramIndex.get(mo.tau)!] - (mo.b ? sys.params[paramIndex.get(mo.b)!] * rho : 0);
+    // as the simulator applied it, if it says (a motor too stiff for its step is softened there)
+    const tau = loads.motors?.find((x) => x.id === mo.id)?.tau ?? sys.params[paramIndex.get(mo.tau)!] - (mo.b ? sys.params[paramIndex.get(mo.b)!] * rho : 0);
     const kg = bodyIndex.get(`gear:${gr.id}`);
     if (kg !== undefined) knownOnBody(kg, bodies[kg].G, [0, 0], tau, { type: 'motor', key: 'motor', label: 'motor torque' });
     const kh = bodyIndex.get(`motor:${gr.id}`);
