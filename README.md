@@ -190,6 +190,9 @@ Other controls:
   - **Checkboxes and switch options** flip in place and the list stays open, so you can set several in a row. The list then shows things as they are now: ticking Friction & heating brings its sliders into it.
   - **Sliders and number boxes** are worked right in their row, with a slider or number box of the list's own that moves the side panel's along with it. A number box can be typed into or dragged sideways like every number box. Enter on one of these rows gives its control the keyboard, and Enter again goes back to searching.
   - **Panning:** right-dragging, even when it starts on the list, closes the list and pans as usual.
+  - **On a part,** right-clicking selects the part, and before anything is typed the list shows only that part's own entries, under its name. Typing still searches everything, the part's entries included.
+    - **While editing:** what the tools do to it, without picking the tool first. That covers joining it to another body, pinning, putting it on a rail, freeing it, a mass, a motor, locking, a lever and a PID controller. Its numbers can be set right there: mass, a bar's E and I, a joint's x and y, a motor's torque and speed, a spring's k and rest length. It also offers its dimension, making a bar a rack, its initial motion, duplicate and delete. Entries that need another click, such as choosing the body to join to, leave that tool active.
+    - **While running:** measuring it and graphing any of its quantities and forces. For a bar there are also its bending moment, shear, axial force and deflection along it, its own E and I, and the beam colouring, deflection and breaking options.
 - **Fit view** re-centres the mechanism.
 
 ### Running it

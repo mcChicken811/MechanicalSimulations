@@ -10,6 +10,9 @@
  *    now are (ticking one may bring others: Friction brings its sliders);
  *  - a value (a slider, a number box): edited right in its row, a slider or number box of its own
  *    (dragged sideways like every number box); Enter on it gives that control the keyboard.
+ *
+ * Opened on a part, it has a context: the part's name and its own entries, listed while the search
+ * box is empty; typing searches those and everything else alike.
  */
 export interface Command {
   label: string;
@@ -35,6 +38,9 @@ export class Palette {
   private readonly input: HTMLInputElement;
   private readonly list: HTMLDivElement;
   private source: () => Command[] = () => [];
+  /** What it was opened on: a title and the entries shown before anything is typed. */
+  private context: { title: string; items: () => Command[] } | null = null;
+  private contextItems: Command[] = [];
   private items: Command[] = [];
   /** The press that last closed it (so that press does nothing else, as a click outside a menu). */
   private dismissal: Event | null = null;
@@ -100,10 +106,14 @@ export class Palette {
     return this.dismissal === e;
   }
 
-  /** Open at (x, y) (viewport px) with the commands `source` gives (asked again after a toggle), the search box empty and ready for typing. */
-  open(x: number, y: number, source: () => Command[]) {
+  /**
+   * Open at (x, y) (viewport px) with the commands `source` gives (asked again after a toggle), the
+   * search box empty and ready for typing; with a context, its entries are what shows until typing.
+   */
+  open(x: number, y: number, source: () => Command[], context: { title: string; items: () => Command[] } | null = null) {
     this.source = source;
-    this.items = source();
+    this.context = context;
+    this.fetch();
     this.input.value = '';
     this.active = 0;
     this.el.hidden = false;
@@ -135,7 +145,7 @@ export class Palette {
       // flip it, and stay: the list as things now are, the same entry chosen
       c.run?.();
       const label = c.label;
-      this.items = this.source();
+      this.fetch();
       this.render(false);
       const k = this.shown.findIndex((x) => x.label === label);
       if (k >= 0) this.active = k;
@@ -147,10 +157,17 @@ export class Palette {
     c.run?.();
   }
 
-  /** The commands matching the search, best first. */
+  /** Everything to search, the context's entries first (and once), as things are now. */
+  private fetch() {
+    this.contextItems = this.context?.items() ?? [];
+    const seen = new Set(this.contextItems.map((c) => `${c.group}|${c.label}`));
+    this.items = [...this.contextItems, ...this.source().filter((c) => !seen.has(`${c.group}|${c.label}`))];
+  }
+
+  /** The commands matching the search, best first (before typing: the context's, if any). */
   private match(): Command[] {
     const words = this.input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return this.items;
+    if (!words.length) return this.context ? this.contextItems : this.items;
     const scored: { c: Command; s: number; k: number }[] = [];
     this.items.forEach((c, k) => {
       const label = c.label.toLowerCase();
@@ -170,7 +187,8 @@ export class Palette {
     this.shown = this.match();
     const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
     const ids: string[] = [];
-    this.list.innerHTML = this.shown.length
+    const title = this.context && !this.input.value.trim() ? `<div class="p-title">${esc(this.context.title)}<span>type to search everything</span></div>` : '';
+    this.list.innerHTML = title + (this.shown.length
       ? this.shown
           .map((c, i) => {
             const head = `<span class="p-check">${c.on ? '✓' : ''}</span><span class="p-label">${esc(c.label)}</span>`;
@@ -182,7 +200,7 @@ export class Palette {
             return `<div class="p-item p-value" role="option" data-i="${i}">${head}${ctl}<span class="p-shown">${esc(v.shown?.() ?? v.unit ?? '')}</span></div>`;
           })
           .join('')
-      : '<div class="p-none">Nothing matches</div>';
+      : '<div class="p-none">Nothing matches</div>');
     // a row's own control drives the setting, as the side panel's does
     this.shown.forEach((c, i) => {
       if (!c.value) return;

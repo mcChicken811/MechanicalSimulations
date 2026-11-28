@@ -1898,6 +1898,11 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
 
+  toolClick(w, sp);
+});
+
+/** What a click with the current tool does at w (screen point sp), editing; also run by the right-click list's actions on a part. */
+function toolClick(w: Vec, sp: Vec) {
   switch (tool) {
     case 'bar':
     case 'rack':
@@ -2090,7 +2095,7 @@ canvas.addEventListener('pointerdown', (e) => {
     default:
       break;
   }
-});
+}
 
 canvas.addEventListener('pointermove', (e) => {
   const sp = screenOf(e);
@@ -2156,8 +2161,9 @@ canvas.addEventListener('pointerup', (e) => {
   }
   if (panning) {
     const click = panning.right && !panning.moved;
+    const at = panning.start;
     panning = null;
-    if (click) palette.open(e.clientX, e.clientY, paletteCommands); // right-click: the search list, here
+    if (click) openPalette(e.clientX, e.clientY, at); // right-click: the search list, here (a part's own, on a part)
     return;
   }
   if (drawing && !drawing.clickMode) {
@@ -2350,6 +2356,191 @@ function paletteCommands(): Command[] {
       },
     }),
   );
+  return out;
+}
+
+/**
+ * Open the search list at (x, y) (viewport px) for a right-click at screen point sp: on a part, its
+ * own entries first (selecting it, so it shows which); elsewhere, everything.
+ */
+function openPalette(x: number, y: number, sp: Vec) {
+  const hit = ic || duplicating || drawing ? null : hitTest(toWorld(view, sp));
+  if (!hit) {
+    palette.open(x, y, paletteCommands);
+    return;
+  }
+  const part: Selection = hit.kind === 'lever' || hit.kind === 'pid' ? { kind: 'gear', id: hit.id } : hit;
+  if (!selectionExists(part)) {
+    palette.open(x, y, paletteCommands);
+    return;
+  }
+  if (part.kind !== selection?.kind || part.id !== selection?.id) {
+    selection = part;
+    multi = null;
+    renderInspector();
+  }
+  palette.open(x, y, paletteCommands, { title: partTitle(part.kind, part.id).replace(/^./, (c) => c.toUpperCase()), items: () => (selectionExists(part) ? partCommands(part) : []) });
+}
+
+/** Where a part is, to click at with a tool: a joint, a bar's middle, a gear's centre, a spring's middle. */
+function partAnchor(s: Selection): Vec {
+  switch (s.kind) {
+    case 'point':
+      return pos(s.id);
+    case 'link':
+    case 'spring': {
+      const x = (s.kind === 'link' ? design.links : design.springs).find((y) => y.id === s.id)!;
+      const [a, b] = [pos(x.a), pos(x.b)];
+      return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    }
+    default:
+      return pos(design.gears.find((g) => g.id === s.id)!.center);
+  }
+}
+
+/**
+ * A part's own entries in the search list. Editing: what the tools do to it (join, pin, motor,
+ * lock, …), its numbers to set right there, its dimension, its initial motion, duplicate, delete.
+ * Running: measuring it and graphing its quantities, and for a bar its internal forces (diagrams,
+ * its E and I, the beam colouring).
+ */
+function partCommands(s: Selection): Command[] {
+  const out: Command[] = [];
+  const name = partTitle(s.kind, s.id);
+  const group = name.replace(/^./, (c) => c.toUpperCase());
+  const plain = (h: string) => h.replace(/<sub>(.*?)<\/sub>/g, '$1').replace(/<[^>]+>/g, '');
+  const kind = s.kind as 'point' | 'link' | 'gear' | 'spring';
+  const inspect = () => {
+    selection = s;
+    multi = null;
+    inspectSettings = false;
+    renderInspector();
+  };
+  /** Do what clicking it with tool t does; keep the tool when it needs more clicks (join, pin, a rail, initial state, a PID's sensor). */
+  const withTool = (t: Tool, keep = false) => () => {
+    const prev = tool;
+    const w = partAnchor(s);
+    setTool(t);
+    toolClick(w, toScreen(view, w));
+    if (!keep && tool === t) setTool(prev);
+  };
+  /** A number of the part's, set right in the list (one undo step; saved, and derived again unless `look` only). */
+  const field = (label: string, get: () => number, set: (v: number) => void, step: string, unit: string, look = false): Command => ({
+    label,
+    group,
+    value: {
+      type: 'number',
+      min: '0',
+      max: '',
+      step,
+      unit,
+      get: () => String(+get().toPrecision(6)),
+      set: (v) => {
+        const x = parseFloat(v);
+        if (!Number.isFinite(x)) return;
+        pushUndo();
+        set(x);
+        if (look) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable()));
+          beamCache.clear();
+        } else designChanged({ keepInspector: true });
+      },
+    },
+  });
+  const dimension = (label: string): Command => {
+    const shown = !!design.dimensions?.some((x) => x.kind === s.kind && x.id === s.id);
+    return { label: shown ? `Hide its ${label}` : `Show its ${label}`, group, keywords: 'dimension', on: shown, toggle: true, run: () => toggleDimension({ kind: kind as DDimension['kind'], id: s.id }) };
+  };
+
+  if (sim) {
+    // running: measure it, graph it, and a bar's internal forces
+    out.push({ label: `Measure ${name}`, group, keywords: 'inspector quantities', run: inspect });
+    if (s.kind === 'link' && forcesNow()) {
+      const l = design.links.find((x) => x.id === s.id)!;
+      for (const q of ['M', 'V', 'N', 'w'] as BeamQ[])
+        out.push({ label: `${BEAM_Q[q].name[0].toUpperCase()}${BEAM_Q[q].name.slice(1)} along it`, group, keywords: 'beam diagram internal force', run: () => {
+          inspect();
+          openBeam(s.id, q);
+        } });
+      if (!l.rack) {
+        out.push(field("Young's modulus E (this bar)", () => (l.E ?? deflect.E) / 1e9, (v) => (l.E = v * 1e9), '1', 'GPa', true));
+        out.push(field('Second moment of area I (this bar)', () => (l.I ?? deflect.I) * 1e8, (v) => (l.I = v * 1e-8), '0.01', 'cm⁴', true));
+      }
+      out.push(...paletteCommands().filter((c) => c.group === 'Beam forces'));
+    }
+    for (const m of [...measuresOf(design, kind, s.id, g0()), ...forceMeasures(kind, s.id), ...loadMeasures(kind, s.id)])
+      out.push({ label: `Graph ${plain(m.sym)}: ${m.name}`, group, keywords: 'graph plot over time', run: () => {
+        inspect();
+        openGraph(kind, s.id, m);
+      } });
+    return out;
+  }
+
+  // editing
+  out.push({ label: `Edit ${name} in the inspector`, group, keywords: 'select settings', run: inspect });
+  if (s.kind === 'link') {
+    const l = design.links.find((x) => x.id === s.id)!;
+    out.push({ label: 'Join it to another body…', group, keywords: 'weld rigid join bodies', run: withTool('join', true) });
+    out.push(field('Mass', () => l.mass, (v) => (l.mass = Math.max(0.01, v)), '0.1', 'kg'));
+    if (!l.rack) {
+      out.push(field("Young's modulus E (for deflection)", () => (l.E ?? deflect.E) / 1e9, (v) => (l.E = v * 1e9), '1', 'GPa', true));
+      out.push(field('Second moment of area I (for deflection)', () => (l.I ?? deflect.I) * 1e8, (v) => (l.I = v * 1e-8), '0.01', 'cm⁴', true));
+    }
+    out.push({
+      label: l.rack ? 'Make it a plain bar (no teeth)' : 'Make it a rack (toothed)',
+      group,
+      on: !!l.rack,
+      toggle: true,
+      run: () => {
+        pushUndo();
+        if (l.rack) {
+          delete l.rack;
+          design.rackMeshes = design.rackMeshes.filter((m) => m.rack !== l.id);
+        } else l.rack = 1;
+        designChanged();
+      },
+    });
+    out.push(dimension('length'));
+  } else if (s.kind === 'point') {
+    const p = design.points.find((x) => x.id === s.id)!;
+    const constrained = p.kind !== 'free' || !!p.pin || !!p.slide || p.gear !== undefined;
+    out.push({ label: 'Pin it (onto a body, or the ground)…', group, keywords: 'pin fix ground', run: withTool('pin', true) });
+    out.push({ label: 'Put it on a rail…', group, keywords: 'slider rail slide', run: withTool('slider', true) });
+    if (constrained) out.push({ label: 'Make it free', group, keywords: 'free unpin', run: withTool('free') });
+    out.push({ label: p.mass > 0 ? 'Remove its mass' : 'Hang a mass on it', group, keywords: 'mass weight', run: withTool('mass') });
+    if (p.mass > 0) out.push(field('Point mass', () => p.mass, (v) => (p.mass = Math.max(0, v)), '0.1', 'kg'));
+    out.push(field('x', () => p.x, (v) => (p.x = v), '0.01', 'm'));
+    out.push(field('y', () => p.y, (v) => (p.y = v), '0.01', 'm'));
+    out.push(dimension('position'));
+  } else if (s.kind === 'gear') {
+    const g = design.gears.find((x) => x.id === s.id)!;
+    out.push({ label: g.motor ? 'Remove its motor' : 'Put a motor on it', group, keywords: 'motor drive torque', run: withTool('motor') });
+    if (!g.propeller) out.push({ label: g.locked ? 'Unlock it' : 'Lock it (no turning)', group, keywords: 'lock brake', on: g.locked, toggle: true, run: withTool('lockGear') });
+    out.push({ label: g.motor?.lever ? 'Remove its lever' : 'Give its motor a lever', group, keywords: 'lever throttle control', run: withTool('lever') });
+    out.push({ label: g.motor?.pid ? 'Remove its PID controller' : 'Put a PID controller on it…', group, keywords: 'pid controller sensor', run: withTool('pid', !g.motor?.pid) });
+    out.push({ label: 'Join it to another body…', group, keywords: 'weld rigid join bodies', run: withTool('join', true) });
+    out.push(field('Mass', () => g.mass, (v) => (g.mass = Math.max(0.001, v)), '0.1', 'kg'));
+    if (g.motor && !g.motor.lever && !g.motor.pid) out.push(field('Motor torque', () => g.motor!.torque, (v) => (g.motor!.torque = v), '0.1', 'N·m'));
+    if (g.motor) out.push(field('Motor no-load speed (0: constant torque)', () => g.motor!.noLoadRpm, (v) => (g.motor!.noLoadRpm = Math.max(0, v)), '1', 'rpm'));
+    out.push(dimension('radius'));
+  } else if (s.kind === 'spring') {
+    const sp = design.springs.find((x) => x.id === s.id)!;
+    out.push(field('Stiffness k', () => sp.k, (v) => (sp.k = Math.max(0, v)), '1', 'N/m'));
+    out.push(field('Rest length', () => sp.rest, (v) => (sp.rest = Math.max(0, v)), '0.01', 'm'));
+    out.push({ label: 'Tension only (a cable)', group, keywords: 'cable rope slack', on: !!sp.tensionOnly, toggle: true, run: () => {
+      pushUndo();
+      sp.tensionOnly = !sp.tensionOnly;
+      designChanged({ keepInspector: true });
+    } });
+    out.push(dimension('length'));
+  }
+  if (s.kind !== 'spring') out.push({ label: 'Set its initial motion…', group, keywords: 'initial state velocity', run: withTool('initial', true) });
+  out.push({ label: 'Duplicate it', group, keywords: 'copy', hint: 'Ctrl D', run: () => {
+    selection = s;
+    multi = null;
+    startDuplicate();
+  } });
+  out.push({ label: `Delete ${name}`, group, keywords: 'remove', run: () => deleteSelection(s) });
   return out;
 }
 
