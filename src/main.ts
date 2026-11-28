@@ -1893,12 +1893,11 @@ canvas.addEventListener('pointerdown', (e) => {
   }
 
   if (sim && !running) {
-    // paused: click a part to inspect it (again elsewhere, or on nothing, to let it go)
+    // paused: a part pressed is measured and grabbed, as while running (drag to set up a pull, Space
+    // to let it act); a click on the part already measured lets it go (see pointerup)
     const hit = hitTest(w);
-    selection = hit && (hit.kind !== selection?.kind || hit.id !== selection?.id) ? hit : null; // the same part again lets it go
-    if (hit) sfx('select');
-    renderInspector();
-    return;
+    pausePress = { at: sp, wasSelected: !!hit && hit.kind === selection?.kind && hit.id === selection?.id };
+    if (hit && !pausePress.wasSelected) sfx('select');
   }
   if (sim) {
     const lv = leverAt(w);
@@ -2238,7 +2237,19 @@ canvas.addEventListener('pointerup', (e) => {
   }
   grab = null;
   if (sim) sim.grab = null;
+  // paused: a click (no drag) on the part already measured lets it go
+  if (pausePress) {
+    const p = pausePress;
+    pausePress = null;
+    if (sim && p.wasSelected && Math.hypot(sp[0] - p.at[0], sp[1] - p.at[1]) < 4) {
+      selection = null;
+      renderInspector();
+    }
+  }
 });
+
+/** A press on the drawing while paused: where, and whether it was on the part already measured. */
+let pausePress: { at: Vec; wasSelected: boolean } | null = null;
 
 canvas.addEventListener(
   'wheel',
@@ -3346,7 +3357,7 @@ function refreshControls() {
   messages.instruct(sim
     ? running
       ? 'Drag a bar, joint or gear to pull it (red arrow = force); it is measured in the inspector. Pause to pick parts to measure.'
-      : 'Paused: click a part to measure it (again, or on empty space, to let it go); click a quantity to graph it over time.'
+      : 'Paused: click a part to measure it (again, or on empty space, to let it go), or drag it to set up a pull: keep holding and press Space to let it act. Click a quantity to graph it over time.'
     : ic
         ? ic.rate
           ? `Setting ${ic.label}: move the mouse to set the speed (the arrow shows the motion over half a second); the rest follows. Click to settle, Esc to cancel.`

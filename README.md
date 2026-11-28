@@ -274,7 +274,7 @@ Other controls:
 
 ### Measuring while it runs
 
-While the simulation runs or is paused, the inspector measures the selected part instead of showing its settings. Pause and click a part to measure it; click it again, or empty space, to let go. While running, pulling a part selects it too. Every value is live and given to three decimals.
+While the simulation runs or is paused, the inspector measures the selected part instead of showing its settings. Pause and click a part to measure it; click it again, or empty space, to let go. Pulling a part selects it too, running or paused: while paused, drag a part to set up the pull (its spring and arrow show), keep holding, and press Space to let it act. Every value is live and given to three decimals.
 - **Bars, racks, gears, wheels and propellers** (rigid bodies):
   - the centre of mass x_G, y_G, and the angle θ (a gear's turn φ, a propeller's hub yaw);
   - their rates ẋ_G, ẏ_G and the angular velocity;
