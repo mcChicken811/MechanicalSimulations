@@ -3115,13 +3115,14 @@ interface History {
   t: number[];
   q: Float64Array[];
   qd: Float64Array[];
-  /** E = T + V, heat W, motor work W_m, air work W_a. */
+  /** E = T + V, heat W, motor work W_m, air work W_a, and the largest constraint error max|Φ|. */
   e: number[];
   w: number[];
   wm: number[];
   wa: number[];
+  phi: number[];
 }
-const emptyHistory = (): History => ({ t: [], q: [], qd: [], e: [], w: [], wm: [], wa: [] });
+const emptyHistory = (): History => ({ t: [], q: [], qd: [], e: [], w: [], wm: [], wa: [], phi: [] });
 let history: History = emptyHistory();
 
 function resetHistory() {
@@ -3141,9 +3142,10 @@ function recordState() {
   h.w.push(sim.dissipated);
   h.wm.push(sim.motorWork);
   h.wa.push(sim.airWork);
+  h.phi.push(sim.constraintError());
   if (h.t.length > HISTORY_MAX) {
     const drop = 2000;
-    for (const a of [h.t, h.q, h.qd, h.e, h.w, h.wm, h.wa]) a.splice(0, drop);
+    for (const a of [h.t, h.q, h.qd, h.e, h.w, h.wm, h.wa, h.phi]) a.splice(0, drop);
     if (graph) graph.vals.splice(0, Math.min(drop, graph.vals.length));
   }
 }
@@ -3239,7 +3241,7 @@ let graph: {
   hoverX: number | null;
   view: GraphView;
   layout: GraphLayout | null;
-  drag: { mode: 'pan' | 'thumb' | 'y'; x: number; y: number; end: number; lo: number; hi: number } | null;
+  drag: { mode: 'pan' | 'y'; x: number; y: number; end: number; lo: number; hi: number } | null;
 } | null = null;
 const GRAPH_SPAN = 10; // s shown by default: the most recent 10 seconds
 
@@ -3257,6 +3259,9 @@ function energySeries(key: string): { m: Measure; at: (i: number) => number } | 
       return make('W<sub>m</sub>', 'motor work', (i) => h().wm[i]);
     case 'Wa':
       return make('W<sub>a</sub>', 'air work', (i) => h().wa[i]);
+    case 'phi':
+      // tiny when all is well (round-off), so in scientific notation rather than to three decimals
+      return { m: { key, sym: 'max|Φ|', name: 'largest constraint error', unit: '', value: none, fmt: (v: number) => (Number.isFinite(v) ? v.toExponential(2) : '–') }, at: (i) => h().phi[i] };
     case 'budget': {
       // named as the status bar shows it: only the terms this mechanism has
       const d = sim?.sys.derivation;
@@ -3292,11 +3297,10 @@ graphEl.querySelector('.g-big')!.addEventListener('click', () => {
   graphEl.querySelector<HTMLButtonElement>('.g-big')!.title = graph.big ? 'Shrink' : 'Enlarge';
 });
 // ---- the graph's mouse: scroll through time, and set either axis's scale ----
-/** Which part of the graph a point (CSS px) is over: the plot, the value axis, the time axis, or the scrollbar. */
-function graphZone(x: number, y: number): 'plot' | 'y' | 'x' | 'bar' | null {
+/** Which part of the graph a point (CSS px) is over: the plot, the value axis or the time axis. */
+function graphZone(x: number, y: number): 'plot' | 'y' | 'x' | null {
   const l = graph?.layout;
   if (!l) return null;
-  if (y >= l.H - 9 && x >= l.L && x <= l.W - l.R) return 'bar';
   if (x < l.L && y >= l.T && y <= l.H - l.B) return 'y';
   if (y > l.H - l.B && x >= l.L && x <= l.W - l.R) return 'x';
   if (x >= l.L && x <= l.W - l.R && y >= l.T && y <= l.H - l.B) return 'plot';
@@ -3325,7 +3329,7 @@ graphCanvas.addEventListener(
       // zoom the value scale about the value under the mouse
       const v = l.hi - ((e.offsetY - l.T) / (l.H - l.T - l.B)) * (l.hi - l.lo);
       g.view = { ...g.view, yAuto: false, lo: v + (l.lo - v) * f, hi: v + (l.hi - v) * f };
-    } else if (zone === 'x' || zone === 'bar') {
+    } else if (zone === 'x') {
       // zoom the time scale about the time under the mouse (keeping the latest in view while following)
       const t = l.a + ((e.offsetX - l.L) / (l.W - l.L - l.R)) * (l.b - l.a);
       const span = Math.min(Math.max(g.view.span * f, 0.05), 600);
@@ -3348,9 +3352,10 @@ graphCanvas.addEventListener('pointerdown', (e) => {
   const l = g?.layout;
   if (!g || !l || e.button !== 0) return;
   const zone = graphZone(e.offsetX, e.offsetY);
-  if (!zone || zone === 'x') return;
+  if (!zone) return;
   graphCanvas.setPointerCapture(e.pointerId);
-  g.drag = { mode: zone === 'bar' ? 'thumb' : zone === 'y' ? 'y' : 'pan', x: e.offsetX, y: e.offsetY, end: l.b, lo: l.lo, hi: l.hi };
+  // the plot or the time axis: drag to move through time; the value axis: drag to slide the values
+  g.drag = { mode: zone === 'y' ? 'y' : 'pan', x: e.offsetX, y: e.offsetY, end: l.b, lo: l.lo, hi: l.hi };
 });
 graphCanvas.addEventListener('pointermove', (e) => {
   const g = graph;
@@ -3358,11 +3363,10 @@ graphCanvas.addEventListener('pointermove', (e) => {
   g.hoverX = e.offsetX;
   const l = g.layout;
   const zone = graphZone(e.offsetX, e.offsetY);
-  graphCanvas.style.cursor = g.drag ? (g.drag.mode === 'y' ? 'ns-resize' : 'grabbing') : zone === 'y' ? 'ns-resize' : zone === 'x' ? 'ew-resize' : zone === 'bar' ? 'pointer' : 'crosshair';
+  graphCanvas.style.cursor = g.drag ? (g.drag.mode === 'y' ? 'ns-resize' : 'grabbing') : zone === 'y' ? 'ns-resize' : zone === 'x' ? 'ew-resize' : 'crosshair';
   if (!g.drag || !l) return;
   const pw = l.W - l.L - l.R;
   if (g.drag.mode === 'pan') setGraphEnd(g.drag.end - ((e.offsetX - g.drag.x) / pw) * (l.b - l.a)); // the plot moves with the mouse
-  else if (g.drag.mode === 'thumb') setGraphEnd(g.drag.end + ((e.offsetX - g.drag.x) / pw) * (l.t1 - l.t0)); // the thumb moves with it
   else {
     // drag the value axis: slide the range up and down
     const dv = ((e.offsetY - g.drag.y) / (l.H - l.T - l.B)) * (g.drag.hi - g.drag.lo);
@@ -3381,9 +3385,9 @@ graphCanvas.addEventListener('dblclick', (e) => {
   const g = graph;
   if (!g) return;
   const zone = graphZone(e.offsetX, e.offsetY);
-  // double-click an axis to reset it: the value range fits again; the time goes back to the latest 10 s
+  // double-click: the value axis fits the values again; the time axis (or the plot) comes back to the current time
   if (zone === 'y' || zone === 'plot') g.view.yAuto = true;
-  if (zone === 'x' || zone === 'bar' || zone === 'plot') g.view = { ...g.view, span: zone === 'plot' ? g.view.span : GRAPH_SPAN, end: null };
+  if (zone === 'x' || zone === 'plot') g.view = { ...g.view, end: null };
 });
 
 /** Bring the graph's values up to date with the history, and draw it (every frame while open). */
@@ -3393,7 +3397,7 @@ function updateGraph() {
   const h = history;
   for (let i = graph.vals.length; i < h.t.length; i++) graph.vals.push(graph.at(i));
   const vals = m.angle ? unwrapDegrees(graph.vals) : graph.vals;
-  graphEl.querySelector('.g-now')!.textContent = vals.length ? `${fmt3(vals[vals.length - 1])} ${m.unit}` : '';
+  graphEl.querySelector('.g-now')!.textContent = vals.length ? `${(m.fmt ?? fmt3)(vals[vals.length - 1])} ${m.unit}` : '';
   // where it sits: above the inspector, or beside it if the inspector is too tall
   if (!graph.big) {
     const top = inspectorEl.getBoundingClientRect().top;
@@ -3421,8 +3425,8 @@ function niceStep(span: number, n: number): number {
 
 /**
  * The graph: value against time over the view's window (the latest seconds while following),
- * with gridlines and labels, a scrollbar for where the window sits in the whole run, and a
- * cursor line where the mouse is. Returns the layout, for the mouse.
+ * with gridlines and labels, and a cursor line where the mouse is. Returns the layout, for the
+ * mouse.
  */
 function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measure, view: GraphView, hoverX: number | null): GraphLayout | null {
   const dpr = window.devicePixelRatio || 1;
@@ -3431,7 +3435,7 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
   const c = cv.getContext('2d')!;
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, W, H);
-  const [L, R, T, B] = [58, 10, 8, 30];
+  const [L, R, T, B] = [58, 10, 8, 22];
   const n = Math.min(t.length, vals.length);
   if (n < 1) return null;
   const [t0, t1] = [t[0], t[n - 1]];
@@ -3456,7 +3460,12 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
     [lo, hi] = [Infinity, -Infinity];
     for (let i = i0; i <= i1; i++) if (Number.isFinite(vals[i])) [lo, hi] = [Math.min(lo, vals[i]), Math.max(hi, vals[i])];
     if (!Number.isFinite(lo)) [lo, hi] = [-1, 1];
-    if (hi - lo < 1e-9) [lo, hi] = [lo - 1e-3 - Math.abs(lo) * 0.01, hi + 1e-3 + Math.abs(hi) * 0.01];
+    // a flat line gets some room, relative to its size (tiny values such as max|Φ| keep their own scale)
+    const mag = Math.max(Math.abs(lo), Math.abs(hi));
+    if (hi - lo <= mag * 1e-6) {
+      const d = mag > 0 ? mag * 0.05 : 1e-3;
+      [lo, hi] = [lo - d, hi + d];
+    }
     const pad = (hi - lo) * 0.08;
     [lo, hi] = [lo - pad, hi + pad];
   }
@@ -3522,16 +3531,14 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
   }
   c.stroke();
   c.restore();
-  // the scrollbar: the window within the whole run
-  const total = Math.max(t1 - t0, view.span);
-  c.fillStyle = '#ecece7';
-  c.beginPath();
-  c.roundRect(L, H - 7, pw, 5, 2.5);
-  c.fill();
-  c.fillStyle = view.end === null ? '#9db6d3' : '#3b6ea8';
-  c.beginPath();
-  c.roundRect(L + ((a - t0) / total) * pw, H - 7, Math.max(8, ((b - a) / total) * pw), 5, 2.5);
-  c.fill();
+  // scrolled back from the current time: say so, at the top right
+  if (view.end !== null) {
+    c.font = '600 10px system-ui, sans-serif';
+    c.textAlign = 'right';
+    c.textBaseline = 'top';
+    c.fillStyle = '#3b6ea8';
+    c.fillText('◂ scrolled back · double-click for now', W - R - 2, T + 2);
+  }
   // the cursor line: the value at the time under the mouse (else the latest shown)
   let k = Math.min(i1, n - 1);
   if (hoverX !== null && hoverX >= L && hoverX <= W - R) {
@@ -3553,7 +3560,7 @@ function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measur
     c.fill();
   }
   if (hoverX !== null && hoverX >= L && hoverX <= W - R && Number.isFinite(vals[k])) {
-    const text = `t = ${t[k].toFixed(3)} s   ${fmt3(vals[k])} ${m.unit}`;
+    const text = `t = ${t[k].toFixed(3)} s   ${(m.fmt ?? fmt3)(vals[k])} ${m.unit}`;
     c.font = '600 11px system-ui, sans-serif';
     const w = c.measureText(text).width + 12;
     const bx = Math.min(Math.max(hoverX + 8, L), W - R - w);
@@ -4025,7 +4032,7 @@ function renderStatus() {
   const phi = sim.constraintError();
   statusEl.innerHTML =
     `${running ? 'Running' : 'Paused'} · t = <b>${sim.t.toFixed(2)} s</b> · ${statQ('E', `E = T + V = <b>${(T + V).toFixed(4)} J</b>`)}` +
-    (sim.sys.nc ? ` · max|Φ| = ${phi.toExponential(1)}` : '') +
+    (sim.sys.nc ? ` · ${statQ('phi', `max|Φ| = ${phi.toExponential(1)}`)}` : '') +
     (grab ? ` · |F| = <b>${F.toFixed(1)} N</b>` : '') +
     (sim.ground ? ` · ${sim.contactCount()} touching the ground` : '') +
     (friction.enabled || sim.dissipated > 0 || sim.sys.derivation.motors.length ? heatStatus(sim) : '') +

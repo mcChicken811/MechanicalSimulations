@@ -74,6 +74,8 @@ export interface Measure {
   unit: string;
   /** An angle (in °): its history is unwrapped so it runs on past ±180°. */
   angle?: boolean;
+  /** How to write a value, if not to three decimals. */
+  fmt?: (v: number) => string;
   value: (s: StateAt) => number;
 }
 
