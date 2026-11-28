@@ -11,6 +11,7 @@ import { enableScrubbing } from './ui/scrub';
 import { Palette, type Command } from './ui/palette';
 import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
+import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
 import { barDiagram, deflection, peak, valueAt, type BeamDiagram } from './mechanics/beam';
@@ -87,12 +88,24 @@ const friction = defaultFriction();
 let simHeat: Heat = { joints: new Map(), meshes: new Map(), racks: new Map() };
 
 // ---- persistence & undo ------------------------------------------------------
+/** The design kept in the browser, if any (see normaliseDesign). */
 function loadDesign(): Design | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const d = JSON.parse(raw) as Design;
-    if (!Array.isArray(d.points) || !Array.isArray(d.links)) return null;
+    return raw ? normaliseDesign(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A design read from storage or a file, made whole: what older versions saved is brought up to
+ * date, and references to parts that are not there are dropped. Null if it is not a design.
+ */
+function normaliseDesign(raw: unknown): Design | null {
+  try {
+    const d = raw as Design;
+    if (!d || !Array.isArray(d.points) || !Array.isArray(d.links)) return null;
     if (!Array.isArray(d.springs)) d.springs = []; // saved before springs existed
     // Saved before gears existed, or with the earlier gear-pair format: drop those gears.
     if (!Array.isArray(d.gears) || d.gears.some((g) => typeof (g as Partial<DGear>).center !== 'number')) d.gears = [];
@@ -1551,7 +1564,8 @@ function initialArrows(): { from: Vec; to: Vec; color: string; width?: number }[
 
 // ---- duplicating: Ctrl/⌘+D, then click to place ----------------------------------------
 /** A copy of the selected parts following the cursor as an outline, until a click places it (Esc cancels). */
-let duplicating: { frag: Design; centre: Vec } | null = null;
+/** Parts being placed (a duplicate, or an imported design, named by `label`): an outline that follows the mouse until a click. */
+let duplicating: { frag: Design; centre: Vec; label?: string } | null = null;
 
 /** Start duplicating the selected parts (or the parts chosen together). */
 function startDuplicate(): boolean {
@@ -2230,6 +2244,9 @@ window.addEventListener('keydown', (e) => {
   } else if ((e.metaKey || e.ctrlKey) && k === 'v' && !sim) {
     e.preventDefault();
     pasteClipboard();
+  } else if ((e.metaKey || e.ctrlKey) && k === 's') {
+    e.preventDefault(); // not the browser's Save Page
+    void saveProject();
   } else if ((e.metaKey || e.ctrlKey) && k === 'a' && !sim) {
     e.preventDefault();
     setTool('select');
@@ -2269,6 +2286,145 @@ window.addEventListener('keydown', (e) => {
     setTool(toolKeys[k]);
   }
 });
+
+// ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
+/** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale']);
+
+/** The side panel's settings, by control id: ticked or not, or the value. */
+function captureControls(): Record<string, boolean | string> {
+  const out: Record<string, boolean | string> = {};
+  document.querySelectorAll<HTMLInputElement>('#toolbar input[id]').forEach((el) => {
+    if (NOT_SETTINGS.has(el.id)) return;
+    out[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  return out;
+}
+
+/** Set the side panel's controls as if by hand (their own handlers apply them), from captureControls. */
+function applyControls(c: Record<string, boolean | string>) {
+  for (const [id, v] of Object.entries(c)) {
+    const el = document.getElementById(id);
+    if (!(el instanceof HTMLInputElement) || NOT_SETTINGS.has(id) || !el.closest('#toolbar')) continue;
+    if (el.type === 'checkbox') {
+      if (typeof v !== 'boolean' || el.checked === v) continue;
+      el.checked = v;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      if (typeof v !== 'string' || el.value === v) continue;
+      el.value = v;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+}
+
+/** A title for files: the example it came from, else "linkage". */
+let designTitle = 'linkage';
+
+async function saveDesign() {
+  const ok = await saveJson({ format: DESIGN_FORMAT, version: 1, design: persistable() }, fileName(designTitle, 'design'), 'Linkage Lab design');
+  if (ok) messages.notify('Design saved.');
+}
+
+async function saveProject() {
+  const project: ProjectFile = { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: persistable(), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view } };
+  const ok = await saveJson(project, fileName(designTitle, 'project'), 'Linkage Lab project');
+  if (ok) messages.notify('Project saved: the drawing, every setting and the view.');
+}
+
+/** Ask for a file and read the design in it (a design, a project, or a bare design); null if cancelled or unreadable (said so). */
+async function openDesignFile(want: 'design' | 'project'): Promise<{ design: Design; project: ProjectFile | null; name: string } | null> {
+  let picked;
+  try {
+    picked = await pickJson();
+  } catch (e) {
+    messages.notify(errorText(e), 'error');
+    return null;
+  }
+  if (!picked) return null;
+  const read = readFile(picked.data);
+  const d = read && normaliseDesign(read.design);
+  if (!read || !d) {
+    messages.notify(`${picked.name} is not a Linkage Lab ${want}.`, 'error');
+    return null;
+  }
+  if (want === 'project' && !read.project) {
+    messages.notify(`${picked.name} is a design, not a project: use Load design to open it (it has no settings).`, 'warn');
+    return null;
+  }
+  return { design: d, project: read.project, name: picked.name.replace(/\.(design|project)?\.?json$/i, '') };
+}
+
+/** Put a design in place of the drawing (one undo step). */
+function replaceDesign(d: Design, title: string) {
+  stopSim();
+  if (ic || !icMenu.hidden) cancelInitial();
+  duplicating = null;
+  pushUndo();
+  design = d;
+  designTitle = title;
+  selection = null;
+  multi = null;
+  constrain = null;
+  groundSel = null;
+  syncGroundUI();
+  designChanged();
+}
+
+async function loadDesignFile() {
+  const f = await openDesignFile('design');
+  if (!f) return;
+  replaceDesign(f.design, f.name);
+  fitView();
+  sfx('preset');
+  messages.notify(`Loaded ${f.name}${f.project ? ' (the drawing from that project; its settings are left as they are)' : ''}.`);
+}
+
+async function loadProjectFile() {
+  const f = await openDesignFile('project');
+  if (!f || !f.project) return;
+  replaceDesign(f.design, f.name);
+  applyControls(f.project.controls ?? {});
+  const bc = f.project.beamColour as Partial<BeamColour> | undefined;
+  if (bc && typeof bc === 'object') {
+    if (['off', 'N', 'V', 'M'].includes(bc.q as string)) beamColour.q = bc.q!;
+    if (['max', 'dist'].includes(bc.mode as string)) beamColour.mode = bc.mode!;
+    if (['now', 'run', 'set'].includes(bc.scale as string)) beamColour.scale = bc.scale!;
+    if (bc.fixed && typeof bc.fixed === 'object') beamColour.fixed = { ...bc.fixed };
+    saveBeamColour();
+    showBeamColour();
+  }
+  const v = f.project.view;
+  if (v && [v.ox, v.oy, v.scale].every(Number.isFinite) && v.scale > 0) Object.assign(view, { ox: v.ox, oy: v.oy, scale: v.scale });
+  else fitView();
+  sfx('preset');
+  messages.notify(`Loaded project ${f.name}: its drawing, settings and view.`);
+}
+
+/** Add a design to the drawing: its outline follows the mouse until a click places it (as a duplicate does). */
+async function importDesignFile() {
+  const f = await openDesignFile('design');
+  if (!f) return;
+  if (!f.design.points.length) {
+    messages.notify(`${f.name} is empty: nothing to import.`, 'warn');
+    return;
+  }
+  stopSim();
+  if (ic || !icMenu.hidden) cancelInitial();
+  setTool('select');
+  selection = null;
+  multi = null;
+  duplicating = { frag: f.design, centre: fragmentCentre(f.design), label: f.name };
+  sfx('copy');
+  refreshControls();
+}
+
+$<HTMLButtonElement>('#save-design').addEventListener('click', () => void saveDesign());
+$<HTMLButtonElement>('#save-project').addEventListener('click', () => void saveProject());
+$<HTMLButtonElement>('#load-design').addEventListener('click', () => void loadDesignFile());
+$<HTMLButtonElement>('#load-project').addEventListener('click', () => void loadProjectFile());
+$<HTMLButtonElement>('#import-design').addEventListener('click', () => void importDesignFile());
 
 // ---- the right-click search list: everything in the side panel, found by typing (ui/palette.ts) ----
 const palette = new Palette();
@@ -2342,6 +2498,10 @@ function paletteCommands(): Command[] {
     const input = $<HTMLInputElement>(id);
     if (usable(input))
       out.push({ label, group: 'Beam forces', value: { type: 'number', min: input.min, max: input.max, step: input.step, get: () => input.value, set: (v) => drive(input, v, true, ['change']), unit: id === '#beam-scale' ? textOf($('#beam-legend .bl-unit')) : unit } });
+  }
+  for (const [id, label, hint] of [['#save-design', 'Save design…', ''], ['#load-design', 'Load design…', ''], ['#import-design', 'Import design…', ''], ['#save-project', 'Save project…', 'Ctrl S'], ['#load-project', 'Load project…', '']] as const) {
+    const b = $<HTMLButtonElement>(id);
+    out.push({ label, group: 'File', hint: hint || undefined, keywords: `${b.title} save load open import file`, run: () => b.click() });
   }
   for (const [id, group, hint] of [['#undo', 'Edit', 'Ctrl Z'], ['#fit', 'View', ''], ['#clear', 'Edit', '']] as const) {
     const b = $<HTMLButtonElement>(id);
@@ -2656,6 +2816,7 @@ presetSel.addEventListener('change', () => {
   pushUndo();
   sfx('preset');
   design = p.build();
+  designTitle = p.name.split(/[:(]/)[0].trim(); // files saved from it are named after it
   selection = null;
   multi = null;
   constrain = null;
@@ -2931,7 +3092,9 @@ function refreshControls() {
           ? `Setting ${ic.label}: move the mouse to set the speed (the arrow shows the motion over half a second); the rest follows. Click to settle, Esc to cancel.`
           : `Setting ${ic.label}: the part is pulled towards the mouse; ${ic.ed.dragFree.length > 1 ? `it and the ${ic.ed.dragFree.length - 1} coordinate${ic.ed.dragFree.length === 2 ? '' : 's'} tied to it move` : 'only it moves'}, the rest is held. Click to settle, Esc to cancel.`
         : duplicating
-        ? `Duplicating ${duplicating.frag.points.length} joint${duplicating.frag.points.length === 1 ? '' : 's'} and what is on them: move to where the copy should go and click to place it (Esc to cancel).`
+        ? duplicating.label
+          ? `Importing ${duplicating.label}: move to where it should go and click to place it (Esc to cancel).`
+          : `Duplicating ${duplicating.frag.points.length} joint${duplicating.frag.points.length === 1 ? '' : 's'} and what is on them: move to where the copy should go and click to place it (Esc to cancel).`
         : pidPick
         ? `Now click what the PID controller on motor M${gearLabel(pidPick.gear)} should measure: a joint, bar, rack, gear, wheel or propeller (Esc to leave it without a sensor).`
         : constrain

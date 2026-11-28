@@ -18,7 +18,7 @@ export class Messages {
   private readonly bar: HTMLDivElement;
   private readonly panel: AutoHide;
   private instruction = '';
-  private notice: { text: string; kind: MessageKind } | null = null;
+  private notice: { text: string; kind: MessageKind; at: number } | null = null;
   private timer = 0;
 
   /** `host` spans the top of the drawing; the bar sits centred in it. */
@@ -31,16 +31,24 @@ export class Messages {
     this.panel = autoHide(this.bar, 'top');
   }
 
-  /** Set the standing instruction; a different one brings the bar out. */
+  /**
+   * Set the standing instruction; a different one brings the bar out. It means the user has moved
+   * on (a new tool, a pick begun), so it also ends a notice that has been up a moment already
+   * (one posted with the change itself stays).
+   */
   instruct(text: string) {
     if (text === this.instruction) return;
     this.instruction = text;
+    if (this.notice && performance.now() - this.notice.at > 500) {
+      clearTimeout(this.timer);
+      this.notice = null;
+    }
     if (!this.notice) this.render();
   }
 
   /** Show a passing notice (over the instruction), long enough to read; it brings the bar out. */
   notify(text: string, kind: MessageKind = 'info') {
-    this.notice = { text, kind };
+    this.notice = { text, kind, at: performance.now() };
     clearTimeout(this.timer);
     const ms = Math.min(9000, Math.max(kind === 'error' ? 5000 : 1800, text.length * 45));
     this.timer = window.setTimeout(() => {

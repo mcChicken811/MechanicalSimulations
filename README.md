@@ -110,6 +110,17 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Join bodies | J | Click two bodies (bars, racks or gears) to make them one rigid body, for example two bars welded into an L-shaped arm. Click the same pair again to separate them. (This replaces the old Fix angle tool: designs saved with fixed angles open with those bars joined.) |
 | Delete | D | Click a joint, bar, rack, spring or gear to delete it. |
 
+**Save & load.** The *Save & load* block in the side bar saves and opens files, in the browser's save dialog where it has one, otherwise as a download.
+- **Design** (the drawing: bars, joints, gears, springs, joins, the ground):
+  - **Save** writes a design file.
+  - **Load** opens one in place of the drawing (one undo step).
+  - **Import** adds one to the drawing: like a duplicate, its outline follows the mouse, a click places it (selected, ready to drag) and Esc cancels. Its ground isn't imported.
+- **Project** (the drawing plus every side-panel setting, the beam colouring and the view):
+  - **Save** writes a project file (Ctrl/⌘+S).
+  - **Load** opens one, restoring the drawing, gravity, drag, pull stiffness, speed, labels, dimensions, follow, sound, friction, beam colouring, deflection with its E and I, breaking, and the pan and zoom.
+- **Opening a project as a design:** Load and Import design also open project files, taking just their drawing.
+- **Formats:** files are JSON tagged `linkage-lab-design` or `linkage-lab-project`. Opening one runs the same checks as the design kept in the browser, so files from older versions open too. The file name defaults to the example the drawing came from.
+
 **Select is the default tool.** The app starts with it, and Reset, loading an example and Clear all go back to it. Esc cancels whatever is under way, such as a bar being drawn, a join or pin half done, a duplicate being placed or a box selection; pressed again with nothing under way, it switches back to Select.
 
 Bars and springs that start or end on a gear are pinned to the gear and turn with it.

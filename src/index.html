@@ -28,6 +28,25 @@
           <select id="preset" title="Load an example mechanism"><option value="">Examples…</option></select>
         </div>
       </section>
+      <section class="block panel collapsible collapsed" data-block="file">
+        <button class="block-head" type="button" aria-expanded="false"><span class="block-title">Save &amp; load</span><span class="block-sum"></span><span class="chev" aria-hidden="true"></span></button>
+        <div class="block-body">
+          <div class="group file-group">
+            <span class="file-title" title="The drawing: bars, joints, gears, springs, joins, the ground">Design</span>
+            <div class="row">
+              <button id="save-design" title="Save the drawing as a design file">Save</button>
+              <button id="load-design" title="Open a design (or a project's design) in place of the drawing">Load</button>
+              <button id="import-design" title="Add a design (or a project's design) to the drawing: its outline follows the mouse, click to place it">Import</button>
+            </div>
+            <span class="file-title" title="The drawing and every setting: gravity, drag, speed, friction, beam colouring, deflection, breaking, the view">Project</span>
+            <div class="row">
+              <button id="save-project" title="Save the drawing with every setting and the view (Ctrl/Cmd+S)">Save</button>
+              <button id="load-project" title="Open a project: its drawing, settings and view">Load</button>
+            </div>
+            <p class="file-note">Load and Import design also open projects, taking just their drawing.</p>
+          </div>
+        </div>
+      </section>
       <section class="block panel collapsible collapsed" data-block="tools">
         <button class="block-head" type="button" aria-expanded="false"><span class="block-title">Tools</span><span class="block-sum" id="sum-tools"></span><span class="chev" aria-hidden="true"></span></button>
         <div class="block-body">
