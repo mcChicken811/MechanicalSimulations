@@ -42,6 +42,10 @@ export interface Scene {
   multi?: PartSet | null;
   /** The selection box being dragged, in world coordinates. */
   box?: { from: Vec; to: Vec } | null;
+  /** Arrows in the world (initial velocities): from, to, colour. */
+  arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
+  /** A small label beside the cursor (screen position). */
+  cursorLabel?: { at: Vec; text: string } | null;
   /** Parts being duplicated, drawn as an outline shifted by (dx, dy) to where a click will place them. */
   ghost?: { design: Design; dx: number; dy: number } | null;
   /** A rail being placed with the Slider tool: through `at`, at `angle` degrees, with the ends chosen so far (m along it). */
@@ -185,6 +189,24 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
   if (s.railPreview) drawRailPreview(ctx, w, h, v, s.railPreview);
   if (s.box) drawBox(ctx, v, s.box);
   if (s.ghost) drawGhost(ctx, v, s.ghost);
+  for (const a of s.arrows ?? []) arrowLine(ctx, toScreen(v, a.from), toScreen(v, a.to), a.color, a.width ?? 2);
+  if (s.cursorLabel) {
+    const [x, y] = s.cursorLabel.at;
+    ctx.save();
+    ctx.font = '600 12px system-ui, sans-serif';
+    const w = ctx.measureText(s.cursorLabel.text).width;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.strokeStyle = C.accent;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x + 14, y + 10, w + 12, 20, 5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = C.ink;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(s.cursorLabel.text, x + 20, y + 20);
+    ctx.restore();
+  }
 }
 
 /** The outline of parts about to be placed: dashed bars, springs, gears and joints in the accent colour. */

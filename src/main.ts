@@ -6,10 +6,11 @@ import { CONTACT_OMEGA, dampingRatio, defaultFriction, NumericSystem, Simulator,
 import { allParts, emptyParts, extractParts, fragmentCentre, partCount, partsInBox, pasteParts, type PartSet } from './mechanics/fragment';
 import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
+import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { drawScene, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
-type Tool = 'select' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
+type Tool = 'select' | 'initial' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
 type MeshTarget = { gear?: number; rack?: number; at: Vec; side?: 1 | -1 };
 
@@ -288,6 +289,7 @@ function startSim() {
   sim.damping = settings.damping;
   sim.friction = friction;
   sim.ground = groundSettings();
+  applyInitialRates(sim);
   sim.setControllers(controllerSpecs());
   for (const c of sim.controllers)
     if (c.sign === 0) flash(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures here, so the controller does nothing. Set its pushing direction to Forward or Reverse to drive it anyway.`);
@@ -323,6 +325,7 @@ function stopSim() {
 
 function togglePlay() {
   duplicating = null;
+  if (ic || !icMenu.hidden) cancelInitial();
   if (!sim) startSim();
   else running = !running;
   sfx(running ? 'play' : 'pause');
@@ -412,6 +415,8 @@ function recordTrail(s: Simulator) {
 function pos(id: number): Vec {
   const s = simPositions.get(id);
   if (sim && s) return s;
+  const c = icPose?.positions.get(id);
+  if (c) return c; // the pose being set with the Initial state tool
   const p = design.points.find((pt) => pt.id === id)!;
   return [p.x, p.y];
 }
@@ -506,8 +511,8 @@ function gearAt(w: Vec): DGear | null {
   return best;
 }
 
-const gearAngleNow = (id: number) => (sim ? (simGearAngles.get(id) ?? 0) : 0);
-const motorAngleNow = (id: number) => (sim ? (simMotorAngles.get(id) ?? 0) : 0);
+const gearAngleNow = (id: number) => (sim ? (simGearAngles.get(id) ?? 0) : (icPose?.gearAngles.get(id) ?? 0));
+const motorAngleNow = (id: number) => (sim ? (simMotorAngles.get(id) ?? 0) : (icPose?.motorAngles.get(id) ?? 0));
 
 /** The gear whose motor housing (a box from the axle out to one side) contains w. */
 /**
@@ -1051,6 +1056,257 @@ function copyParts(): boolean {
   return true;
 }
 
+// ---- initial state: drive a coordinate with the mouse, the rest following ----------------
+/** A coordinate being set: the editor, the point that follows the mouse, which coordinate, and whether its rate. */
+let ic: { ed: PoseEditor; mp: MaterialPoint; k: number; rate: boolean; label: string; readout: string } | null = null;
+/** The pose shown while setting a position: joint positions, gear and housing turns. */
+let icPose: { positions: Map<number, Vec>; gearAngles: Map<number, number>; motorAngles: Map<number, number> } | null = null;
+let mouseScreen: Vec = [0, 0];
+const icMenu = document.createElement('div');
+icMenu.id = 'ic-menu';
+icMenu.className = 'panel';
+icMenu.hidden = true;
+document.body.append(icMenu);
+/** Arrows show a velocity as the motion over this long (s). */
+const ARROW_T = 0.5;
+
+let icSys: { of: Derivation; sys: NumericSystem } | null = null;
+/** A numeric system for the current derivation, built once per derivation. */
+function editSystem(): NumericSystem | null {
+  if (!derivation || !derivation.coords.length) return null;
+  if (icSys?.of !== derivation) icSys = { of: derivation, sys: new NumericSystem(derivation) };
+  return icSys.sys;
+}
+
+/** The stored initial rates, in coordinate order. */
+function storedRates(d: Derivation): number[] {
+  return d.coords.map((c) => design.initialRates?.[c.sym] ?? 0);
+}
+
+const hasInitialRates = () => Object.values(design.initialRates ?? {}).some((v) => Math.abs(v) > 1e-12);
+
+/** Start the simulation moving at the initial rates, made consistent with the constraints. */
+function applyInitialRates(s: Simulator) {
+  if (!hasInitialRates()) return;
+  storedRates(s.sys.derivation).forEach((v, i) => (s.qd[i] = v));
+  s.project();
+}
+
+/** A coordinate's name: its symbol (HTML) and what it measures. */
+function coordName(c: Derivation['coords'][number], rate: boolean): { sym: string; what: string } {
+  const base = ({ '\\theta': 'θ', '\\varphi': 'φ', '\\psi': 'ψ' } as Record<string, string>)[c.base] ?? c.base;
+  const sym = `${base}${rate ? '\u0307' : ''}<sub>${c.sub}</sub>`;
+  const id = Number(c.sym.replace(/^[a-z]+/, ''));
+  const g = design.gears.find((x) => x.id === id);
+  const what = c.sym.startsWith('th')
+    ? `angle of ${bodyName(design, { kind: 'link', id })}`
+    : c.sym.startsWith('ph')
+      ? g?.propeller
+        ? `yaw of ${gearName(design, id)}`
+        : `turn of ${gearName(design, id)}`
+      : c.sym.startsWith('sp')
+        ? `spin of ${gearName(design, id)}`
+        : c.sym.startsWith('ms')
+          ? `turn of motor M${gearLabel(id)}'s housing`
+          : c.sym.startsWith('s')
+            ? `travel of joint ${pointLabel(id)} along its rail`
+            : `${c.kind} of joint ${pointLabel(id)}`;
+  return { sym, what: rate ? `rate of the ${what}` : what };
+}
+
+/** A coordinate's value (or rate) in display units. */
+function coordValue(c: Derivation['coords'][number], v: number, rate: boolean): string {
+  if (c.kind === 'angle') {
+    if (rate && c.sym.startsWith('sp')) return `${((v * 60) / (2 * Math.PI)).toFixed(0)} rpm`;
+    return `${((v * 180) / Math.PI).toFixed(1)}°${rate ? '/s' : ''}`;
+  }
+  return `${v.toFixed(3)} m${rate ? '/s' : ''}`;
+}
+
+/** The point of the part under w that will follow the mouse. */
+function materialPointAt(w: Vec): MaterialPoint | null {
+  const pt = pointAt(w);
+  if (pt !== null) return { kind: 'point', id: pt };
+  const l = linkAt(w);
+  if (l) {
+    const link = design.links.find((x) => x.id === l.id)!;
+    return { kind: 'bar', a: link.a, b: link.b, s: l.s };
+  }
+  const g = propellerAt(w) ?? gearAt(w);
+  if (!g) return null;
+  const c = pos(g.center);
+  let [u, v] = [w[0] - c[0], w[1] - c[1]];
+  if (Math.hypot(u, v) < 0.3 * g.radius) {
+    // near the centre: a point out on the rim (on a propeller's blade line), so turning moves it
+    const a = g.propeller?.angle ?? 0;
+    [u, v] = [0.8 * g.radius * Math.cos(a), 0.8 * g.radius * Math.sin(a)];
+  }
+  return { kind: 'gear', gear: g.id, center: g.center, u, v };
+}
+
+/** The Initial state tool's click: the part's coordinates and rates, in a menu beside the mouse. */
+function pickInitial(w: Vec, sp: Vec) {
+  const mp = materialPointAt(w);
+  if (!mp) return;
+  derive(); // up to date with the drawing
+  const sys = editSystem();
+  if (!sys || !derivation) {
+    flash(deriveError ?? 'Nothing can move yet, so there is no initial state to set.');
+    return;
+  }
+  const d = derivation;
+  const ed = new PoseEditor(sys, d.coords.map((c) => c.initial), storedRates(d));
+  const ks = ed.related(mp).filter((k) => !d.coords[k].sym.startsWith('ms'));
+  // a propeller's spin moves no point in the plane, but its rate matters: offer it too
+  if (mp.kind === 'gear') {
+    const k = d.coords.findIndex((c) => c.sym === `sp${mp.gear}`);
+    if (k >= 0 && !ks.includes(k)) ks.push(k);
+  }
+  if (!ks.length) {
+    flash('That part cannot move, so it has no initial state to set.');
+    return;
+  }
+  const row = (k: number, rate: boolean) => {
+    const c = d.coords[k];
+    const { sym, what } = coordName(c, rate);
+    return `<button data-k="${k}" data-rate="${rate ? 1 : 0}"><b>${sym}</b> ${esc(what)}<span>${coordValue(c, rate ? ed.qd[k] : ed.q[k], rate)}</span></button>`;
+  };
+  icMenu.innerHTML = `<div class="sm-title">Set the initial state of:</div>
+    ${ks.filter((k) => !d.coords[k].sym.startsWith('sp')).map((k) => row(k, false)).join('')}
+    <div class="sm-sep">or its velocity:</div>
+    ${ks.map((k) => row(k, true)).join('')}
+    ${hasInitialRates() ? '<button class="sm-clear">Clear all initial velocities</button>' : ''}
+    <button class="sm-cancel">Cancel</button>`;
+  icMenu.hidden = false;
+  const r = icMenu.getBoundingClientRect();
+  icMenu.style.left = `${Math.min(sp[0] + 12, window.innerWidth - r.width - 8)}px`;
+  icMenu.style.top = `${Math.min(sp[1] + 12, window.innerHeight - r.height - 8)}px`;
+  icMenu.querySelectorAll<HTMLButtonElement>('[data-k]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const k = Number(b.dataset.k);
+      const rate = b.dataset.rate === '1';
+      const { sym } = coordName(d.coords[k], rate);
+      icMenu.hidden = true;
+      ic = { ed, mp, k, rate, label: sym.replace(/<\/?sub>/g, ''), readout: '' };
+      sfx('select');
+      chaseInitial(mouseWorld);
+      refreshControls();
+    }),
+  );
+  icMenu.querySelector('.sm-clear')?.addEventListener('click', () => {
+    icMenu.hidden = true;
+    pushUndo();
+    delete design.initialRates;
+    sfx('delete');
+    designChanged();
+  });
+  icMenu.querySelector('.sm-cancel')!.addEventListener('click', () => (icMenu.hidden = true));
+}
+
+/** Follow the mouse: the chosen coordinate (or rate) moves, the others with it. */
+function chaseInitial(w: Vec) {
+  if (!ic) return;
+  const { ed, mp, k, rate } = ic;
+  const c = ed.sys.derivation.coords[k];
+  const v = rate ? ed.chaseRate(k, mp, w, ARROW_T) : ed.chasePosition(k, mp, w, c.kind === 'angle' ? 0.3 : 0.25);
+  ic.readout = `${ic.label}${rate ? '' : ''} = ${coordValue(c, v, rate)}`;
+  if (rate) return;
+  const n = ed.sys.pointIndex.size;
+  const p = new Float64Array(2 * n);
+  ed.sys.positions(ed.q, p);
+  const ga = new Float64Array(ed.sys.gearIds.length);
+  ed.sys.gearAngles(ed.q, ga);
+  const ma = new Float64Array(ed.sys.derivation.motorAngles.length);
+  ed.sys.motorAngles(ed.q, ma);
+  icPose = {
+    positions: new Map([...ed.sys.pointIndex].map(([id, i]) => [id, [p[2 * i], p[2 * i + 1]] as Vec])),
+    gearAngles: new Map(ed.sys.gearIds.map((id, i) => [id, ga[i]])),
+    motorAngles: new Map(ed.sys.derivation.motorAngles.map((m, i) => [m.id, ma[i]])),
+  };
+}
+
+/**
+ * Settle: a new pose becomes the drawing (every bar keeping its length, so the geometry is the
+ * same), and the rates are stored for the next run.
+ */
+function settleInitial() {
+  if (!ic) return;
+  const { ed, rate } = ic;
+  ic = null;
+  pushUndo();
+  if (!rate) {
+    const sys = ed.sys;
+    const d = sys.derivation;
+    // slider ranges are measured from where the joint is drawn: shift them by its travel
+    if (d.sliderStops.length) {
+      const buf = new Float64Array(d.sliderStops.length * (sys.n + 1));
+      sys.stops(ed.q, buf);
+      d.sliderStops.forEach((st, k) => {
+        const range = design.points.find((p) => p.id === st.joint)?.slide?.range;
+        const s = buf[k * (sys.n + 1)];
+        if (!range) return;
+        if (range.min !== null) range.min = +(range.min - s).toFixed(6);
+        if (range.max !== null) range.max = +(range.max - s).toFixed(6);
+      });
+    }
+    // a propeller's drawn blade line turns with its hub
+    for (const g of design.gears) if (g.propeller) g.propeller.angle = +(g.propeller.angle + (icPose?.gearAngles.get(g.id) ?? 0)).toFixed(6);
+    for (const [id, [x, y]] of icPose?.positions ?? []) {
+      const p = design.points.find((pt) => pt.id === id);
+      if (p) [p.x, p.y] = [+x.toFixed(6), +y.toFixed(6)];
+    }
+  }
+  const rates: Record<string, number> = {};
+  ed.sys.derivation.coords.forEach((c, i) => {
+    if (Math.abs(ed.qd[i]) > 1e-9) rates[c.sym] = +ed.qd[i].toPrecision(8);
+  });
+  if (Object.keys(rates).length) design.initialRates = rates;
+  else delete design.initialRates;
+  icPose = null;
+  sfx('place');
+  designChanged();
+  refreshControls();
+}
+
+function cancelInitial() {
+  ic = null;
+  icPose = null;
+  icMenu.hidden = true;
+  refreshControls();
+}
+
+let icArrowCache: { key: string; arrows: { from: Vec; to: Vec; color: string; width?: number }[] } | null = null;
+/**
+ * Velocity arrows: while setting a rate, the dragged point's (to the mouse) and every joint's;
+ * otherwise, if initial velocities are set, every moving joint's, fainter.
+ */
+function initialArrows(): { from: Vec; to: Vec; color: string; width?: number }[] | null {
+  const jointArrows = (ed: PoseEditor, color: string) => {
+    const out: { from: Vec; to: Vec; color: string; width?: number }[] = [];
+    for (const id of ed.sys.pointIndex.keys()) {
+      const v = ed.velocity({ kind: 'point', id });
+      const p = ed.point({ kind: 'point', id });
+      if (v && p && Math.hypot(v[0], v[1]) > 1e-4) out.push({ from: p.r, to: [p.r[0] + v[0] * ARROW_T, p.r[1] + v[1] * ARROW_T], color, width: 1.8 });
+    }
+    return out;
+  };
+  if (ic?.rate) {
+    const p = ic.ed.point(ic.mp);
+    const v = ic.ed.velocity(ic.mp);
+    const own = p && v ? [{ from: p.r, to: [p.r[0] + v[0] * ARROW_T, p.r[1] + v[1] * ARROW_T] as Vec, color: '#e07b39', width: 2.6 }] : [];
+    return [...jointArrows(ic.ed, 'rgba(47,158,143,0.9)'), ...own];
+  }
+  if (ic || !hasInitialRates() || !derivation) return null;
+  const key = `${derivation.coords.length}:${JSON.stringify(design.initialRates)}:${design.points.length}`;
+  if (icArrowCache?.key !== key || icSys?.of !== derivation) {
+    const sys = editSystem();
+    if (!sys) return null;
+    const ed = new PoseEditor(sys, derivation.coords.map((c) => c.initial), storedRates(derivation));
+    icArrowCache = { key, arrows: jointArrows(ed, 'rgba(47,158,143,0.75)') };
+  }
+  return icArrowCache.arrows;
+}
+
 // ---- duplicating: Ctrl/⌘+D, then click to place ----------------------------------------
 /** A copy of the selected parts following the cursor as an outline, until a click places it (Esc cancels). */
 let duplicating: { frag: Design; centre: Vec } | null = null;
@@ -1330,6 +1586,11 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (e.button !== 0) return;
+  if (ic && !sim) {
+    settleInitial();
+    return;
+  }
+  if (!icMenu.hidden && !sim) icMenu.hidden = true; // a click elsewhere closes the menu (and may pick again)
   if (duplicating && !sim) {
     placeDuplicate();
     return;
@@ -1514,6 +1775,9 @@ canvas.addEventListener('pointerdown', (e) => {
       designChanged();
       break;
     }
+    case 'initial':
+      pickInitial(w, sp);
+      break;
     case 'pid': {
       const pid = pointAt(w);
       const g = pidAt(w) ?? leverAt(w) ?? propellerAt(w) ?? housingAt(w) ?? ((pid !== null && design.gears.find((x) => x.center === pid)) || gearAt(w));
@@ -1567,12 +1831,14 @@ canvas.addEventListener('pointermove', (e) => {
   const sp = screenOf(e);
   const w = toWorld(view, sp);
   mouseWorld = w;
+  mouseScreen = sp;
   if (panning) {
     view.ox += sp[0] - panning.last[0];
     view.oy += sp[1] - panning.last[1];
     panning.last = sp;
     return;
   }
+  if (ic && !sim) chaseInitial(w);
   if (drawing?.kind === 'propeller') {
     // the edge point: its distance is the radius, its direction the blade line (15° steps with snap on)
     const r0 = Math.hypot(w[0] - drawing.from[0], w[1] - drawing.from[1]);
@@ -1690,7 +1956,7 @@ canvas.addEventListener(
 );
 
 // ---- keyboard -------------------------------------------------------------------
-const toolKeys: Record<string, Tool> = { v: 'select', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
+const toolKeys: Record<string, Tool> = { v: 'select', i: 'initial', b: 'bar', k: 'rack', s: 'spring', g: 'gear', w: 'wheel', p: 'propeller', m: 'mass', l: 'lockGear', o: 'motor', e: 'lever', c: 'pid', j: 'join', f: 'pin', x: 'slider', n: 'free', d: 'delete' };
 
 window.addEventListener('keydown', (e) => {
   const target = e.target as HTMLElement;
@@ -1734,6 +2000,7 @@ window.addEventListener('keydown', (e) => {
       renderInspector();
     } else flash('The ground needs at least two waypoints.');
   } else if (k === 'escape') {
+    if (ic || !icMenu.hidden) cancelInitial();
     if (duplicating) cancelDuplicate();
     if (pidPick) cancelSensorPick();
     drawing = null;
@@ -1758,6 +2025,7 @@ toolButtons.forEach((b) => b.addEventListener('click', () => setTool(b.dataset.t
 
 function setTool(t: Tool) {
   if (pidPick) cancelSensorPick();
+  if (ic || !icMenu.hidden) cancelInitial();
   duplicating = null;
   constrain = null;
   groundSel = null;
@@ -1813,6 +2081,7 @@ presetSel.addEventListener('change', () => {
   if (!p) return;
   stopSim();
   duplicating = null;
+  if (ic || !icMenu.hidden) cancelInitial();
   pushUndo();
   sfx('preset');
   design = p.build();
@@ -1941,6 +2210,7 @@ const hints: Record<Tool, string> = {
   mass: 'Click a joint to hang a 1 kg mass on it (click again to remove). Click on a gear to pin a weight to it, or in empty space for a free mass.',
   lockGear: 'Click a gear or wheel to lock it so it cannot turn (a braked wheel). Click again to unlock it.',
   motor: 'Click a gear or wheel to put a motor on it (1 N·m, 60 rpm no-load); set its torque in the inspector. Click again to remove it.',
+  initial: 'Click a part to set its initial state: pick one of its coordinates (or a rate) from the list, move the mouse to set it while everything else follows, and click to settle. Esc cancels.',
   pid: 'Click a motor (or a gear, which gets a motor) to put a PID controller on it, in place of a lever. Then click what it should measure (a joint, bar, rack, gear, wheel or propeller) and pick the quantity. Click the motor again to remove it.',
   propeller: 'Click the centre, then the edge of a blade: the blades turn out of the page about an axis square to that line, and push along it (the arrow). In empty space it is a free body; start on a joint to mount it there. Give it a motor (O) to spin it.',
   lever: 'Click a motor (or a gear, which gets a motor) to give it a control lever; its control appears at the bottom right. Drag the control up or down to set the torque, even while it runs. Click the motor again to remove the lever.',
@@ -1958,7 +2228,9 @@ function refreshControls() {
   clearBtn.disabled = !!sim;
   hintEl.textContent = sim
     ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
-    : duplicating
+    : ic
+        ? `Setting ${ic.label}: move the mouse${ic.rate ? ' to set the speed (the arrow shows the motion over half a second)' : ''}; the rest follows. Click to settle, Esc to cancel.`
+        : duplicating
         ? `Duplicating ${duplicating.frag.points.length} joint${duplicating.frag.points.length === 1 ? '' : 's'} and what is on them: move to where the copy should go and click to place it (Esc to cancel).`
         : pidPick
         ? `Now click what the PID controller on motor M${gearLabel(pidPick.gear)} should measure: a joint, bar, rack, gear, wheel or propeller (Esc to leave it without a sensor).`
@@ -2939,7 +3211,7 @@ function renderStatus() {
   }
   if (!sim) {
     const dof = derivation ? derivation.coords.length - derivation.constraints.length : 0;
-    statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''}${nWheels ? ` · <b>${nWheels}</b> wheel${nWheels === 1 ? '' : 's'}` : ''}${nProps ? ` · <b>${nProps}</b> propeller${nProps === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom`;
+    statusEl.innerHTML = `Editing · <b>${nBars}</b> bar${nBars === 1 ? '' : 's'}${nRacks ? ` · <b>${nRacks}</b> rack${nRacks === 1 ? '' : 's'}` : ''}${nSprings ? ` · <b>${nSprings}</b> spring${nSprings === 1 ? '' : 's'}` : ''}${nGears ? ` · <b>${nGears}</b> gear${nGears === 1 ? '' : 's'}` : ''}${nWheels ? ` · <b>${nWheels}</b> wheel${nWheels === 1 ? '' : 's'}` : ''}${nProps ? ` · <b>${nProps}</b> propeller${nProps === 1 ? '' : 's'}` : ''} · <b>${dof}</b> degree${dof === 1 ? '' : 's'} of freedom${hasInitialRates() ? ' · starts moving (initial velocities set)' : ''}`;
     return;
   }
   const { T, V } = sim.energy();
@@ -3043,6 +3315,8 @@ function frame(now: number) {
     groundSelected: !sim && design.ground ? groundSel : null,
     multi: sim ? null : liveMulti(),
     box: boxSel ? { from: boxSel.from, to: boxSel.to } : null,
+    arrows: sim ? null : initialArrows(),
+    cursorLabel: ic && !sim ? { at: mouseScreen, text: ic.readout } : null,
     ghost: duplicating && !sim ? (([dx, dy]) => ({ design: duplicating!.frag, dx, dy }))(duplicateOffset()) : null,
     railPreview:
       !sim && constrain && constrain.body !== undefined

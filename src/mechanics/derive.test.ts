@@ -3,6 +3,7 @@ import { deriveEquations } from './derive';
 import { anglesToJoins, cloneDesign, propellerInertia, type Design } from './model';
 import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
 import { motorCar, twinRotor } from '../ui/presets';
+import { PoseEditor } from './initial';
 
 const G = 9.81;
 
@@ -1419,6 +1420,57 @@ describe('propellers', () => {
     for (let i = 0; i < 1500; i++) expect(s.step(1e-3)).toBe(true);
     expect(s.q[0]).toBeGreaterThan(1); // swung up past the horizontal by the thrust, its axis turning with the arm
   }, 20000);
+});
+
+describe('setting the initial condition (PoseEditor)', () => {
+  const len = (p: Map<number, [number, number]>, a: number, b: number) => Math.hypot(p.get(b)![0] - p.get(a)![0], p.get(b)![1] - p.get(a)![1]);
+  const positions = (ed: PoseEditor) => {
+    const out = new Float64Array(2 * ed.sys.pointIndex.size);
+    ed.sys.positions(ed.q, out);
+    return new Map([...ed.sys.pointIndex].map(([id, i]) => [id, [out[2 * i], out[2 * i + 1]] as [number, number]]));
+  };
+
+  it("drives a four-bar's crank angle towards the mouse, the coupler and rocker following, every bar keeping its length", () => {
+    const d = fourBar();
+    const der = deriveEquations(d, { gravity: G });
+    const ed = new PoseEditor(new NumericSystem(der), der.coords.map((c) => c.initial), der.coords.map(() => 0));
+    const before = positions(ed);
+    const crank = der.coords.findIndex((c) => c.sym === 'th0');
+    const L = [len(before, 0, 1), len(before, 1, 2), len(before, 2, 3)];
+    // pull the crank tip (joint 1) round towards a point straight above its pivot
+    const target: [number, number] = [before.get(0)![0], before.get(0)![1] + 1];
+    ed.chasePosition(crank, { kind: 'point', id: 1 }, target, 0.3);
+    const after = positions(ed);
+    expect(after.get(1)![0]).toBeCloseTo(before.get(0)![0], 3); // the crank now points straight up (if the loop lets it)
+    expect([len(after, 0, 1), len(after, 1, 2), len(after, 2, 3)].map((x, i) => x - L[i]).every((e) => Math.abs(e) < 1e-9)).toBe(true);
+    const phi = new Float64Array(ed.sys.nc);
+    ed.sys.phi(ed.q, phi);
+    expect(Math.max(...phi.map(Math.abs))).toBeLessThan(1e-9);
+  });
+
+  it("sets the crank's rate, the other bars' rates following so the loop stays closed", () => {
+    const d = fourBar();
+    const der = deriveEquations(d, { gravity: G });
+    const sys = new NumericSystem(der);
+    const ed = new PoseEditor(sys, der.coords.map((c) => c.initial), der.coords.map(() => 0));
+    const crank = der.coords.findIndex((c) => c.sym === 'th0');
+    const p = ed.point({ kind: 'point', id: 1 })!;
+    // the mouse 0.1 m from the crank tip, square to the crank: 0.2 m/s over T = 0.5 s
+    const r = p.r;
+    const c0 = positions(ed).get(0)!;
+    const [ux, uy] = [-(r[1] - c0[1]), r[0] - c0[0]];
+    const u = Math.hypot(ux, uy);
+    const w = ed.chaseRate(crank, { kind: 'point', id: 1 }, [r[0] + (0.1 * ux) / u, r[1] + (0.1 * uy) / u], 0.5);
+    expect(w).toBeCloseTo(0.2 / u, 6); // v = ω r
+    const PhiQ = new Float64Array(sys.nc * sys.n);
+    sys.phiQ(ed.q, PhiQ);
+    for (let a = 0; a < sys.nc; a++) {
+      let s = 0;
+      for (let j = 0; j < sys.n; j++) s += PhiQ[a * sys.n + j] * ed.qd[j];
+      expect(Math.abs(s)).toBeLessThan(1e-9);
+    }
+    expect(ed.qd.some((v, j) => j !== crank && Math.abs(v) > 1e-3)).toBe(true); // the coupler and rocker turn too
+  });
 });
 
 describe('PID controllers', () => {

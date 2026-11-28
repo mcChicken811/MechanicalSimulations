@@ -86,6 +86,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 | Tool | Key | How to use it |
 |---|:-:|---|
 | Select | V | Click a part to edit it in the inspector (bottom right). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
+| Initial state | I | Click a part, then pick one of its coordinates (or a rate) from the list beside the mouse. Move the mouse to set it, with everything else following, and click to settle. Esc cancels. |
 | Draw bar | B | Drag, or click twice. Start or end on an existing joint to pin bars together. |
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Put its joints on rails (Slider, X) to make it slide. |
 | Draw spring | S | Drag between joints. An end in empty space is anchored to the ground. Set the stiffness and rest length in the inspector, and tick **Tension only** for a cable, ligament or tendon that goes slack when short. |
@@ -121,6 +122,18 @@ A **wheel** is a uniform disk like a gear, turning about its centre joint, with 
 Joining two bodies makes them one rigid body: they can no longer turn or move relative to each other. This works for any pair of bars, racks and gears, whether or not they touch. Examples are a crank arm fixed to a gear, a pinion fixed to a rack, or a bent lever made of two bars. Joined bodies are drawn in the same colour: the colour of the group's lowest-numbered bar, or of its lowest-numbered gear if the group has no bars. Joined bodies, joined directly or through others, are placed as one rigid body. The group gets a single rotation coordinate: the angle θ of its first bar, or the rotation φ of its first gear if it has no bars. Every joint of the group then sits at r_origin + Rot(θ)(u, v), with the offsets u and v taken from the drawing.
 
 So a group needs at most three coordinates and adds no constraints. Its other bars turn at θ plus a constant, and its gears turn with θ. Compared with joining bodies through constraints, the human hand example drops from 39 coordinates and 23 constraints to 16 coordinates and none, and it simulates about seven times faster.
+
+**Initial state.** A simulation starts from the drawing, at rest unless initial velocities are set. The Initial state tool (I) sets both without changing the mechanism's geometry:
+1. **Click a part:** a joint, a bar or rack, a gear, wheel or propeller. A list beside the mouse shows the coordinates the part moves with directly, for example the angles of the bars it hangs from or a free joint's x and y, with their current values. Below them it lists the same coordinates' rates (a propeller's spin rate included).
+2. **Pick one and move the mouse.**
+   - **A coordinate:** the part follows the mouse along the path that coordinate gives it, as closely as the mechanism allows. The other coordinates follow so that every constraint still holds (bar lengths, loops, meshes, rails), each changing as little as it can, so coordinates that aren't tied to the driven one stay put. A crank driven round a four-bar carries the coupler and rocker with it.
+   - **A rate:** the mouse sets the part's velocity, shown as an orange arrow of the motion over half a second. Teal arrows show every joint's velocity, the other rates following so the constraints still hold.
+3. **Click to settle,** or press Esc to cancel.
+   - **A new pose becomes the drawing.** Every joint moves, but every length stays the same, so it is the same mechanism in a different position. Slider ranges are shifted with their joints, and a propeller's blade line turns with its hub.
+   - **Rates are kept** with the design (the status bar says it starts moving), drawn as faint teal arrows while editing, and made consistent with the constraints when Play starts.
+   - **"Clear all initial velocities"** in the list sets every rate back to zero.
+
+Under the hood, the driven coordinate moves along the constraint manifold's tangent t = e_k − Φ_oᵀ(Φ_oΦ_oᵀ)⁻¹Φ_k, where Φ_o is the constraint jacobian without coordinate k. Each step is a Newton step towards the mouse, followed by a minimal-norm projection back onto Φ(q) = 0 with q_k held. At a limit of the motion, such as a toggle position, the part stops as close as it can get.
 
 **Selecting, copying and pasting groups.** In Select mode, drag on empty space to draw a box. This selects every joint inside it, every bar, rack and spring with both ends inside, and every gear whose centre is inside. Ctrl/⌘+A selects everything. Then:
 

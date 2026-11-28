@@ -619,6 +619,73 @@ table.params td {
   margin-top: 2px;
 }
 
+/* ---- the initial-state menu: the coordinates and rates of the clicked part ---- */
+#ic-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 190px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#ic-menu[hidden] {
+  display: none;
+}
+
+#ic-menu .sm-title {
+  padding: 4px 8px 6px;
+  font-weight: 600;
+}
+
+#ic-menu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font: inherit;
+  text-align: left;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+#ic-menu button span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#ic-menu button:hover {
+  background: var(--accent-soft);
+}
+
+#ic-menu .sm-cancel {
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 6px 6px;
+  margin-top: 2px;
+}
+
+#ic-menu .sm-sep {
+  padding: 6px 8px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+  margin-top: 2px;
+}
+
+#ic-menu button b {
+  font-weight: 600;
+  font-style: italic;
+  margin-right: 4px;
+}
+
+#ic-menu .sm-clear {
+  color: #b23a3a;
+}
+
 #levers .lever-name small {
   font-size: 9px;
   opacity: 0.8;
