@@ -193,6 +193,27 @@ Other controls:
 - The settings let you turn gravity on or off, add air drag, change how strongly a drag pulls, and change the playback speed. Untick **Show labels** to hide the names of joints, bars, springs and gears, which helps with big mechanisms like the 30-link ring chain. Tick **Follow the mechanism** to keep moving parts in view.
 - The status bar shows the time, the total energy E = T + V, and the constraint error max|Φ|. With no air drag and no friction, E should stay constant.
 
+### Measuring while it runs
+
+While the simulation runs or is paused, the inspector measures the selected part instead of showing its settings. Pause and click a part to measure it; click it again, or empty space, to let go. While running, pulling a part selects it too. Every value is live and given to three decimals.
+- **Bars, racks, gears, wheels and propellers** (rigid bodies):
+  - the centre of mass x_G, y_G, and the angle θ (a gear's turn φ, a propeller's hub yaw);
+  - their rates ẋ_G, ẏ_G and the angular velocity;
+  - momentum p_x, p_y = m v_G;
+  - angular momentum about the centre of mass, L_G = I ω, and about the origin, L_O = r_G × p + I ω;
+  - kinetic energy ½ m v_G² + ½ I ω², and gravitational potential energy m g y_G.
+
+  A propeller also shows its blade spin rate, and its kinetic energy is in its 3D form.
+- **Joints:** x, y, ẋ, ẏ and speed; for a joint carrying a mass, also its momentum, angular momentum about the origin, kinetic energy and potential energy.
+- **Springs:** length, rate of stretch, extension, tension (or push) and elastic energy.
+
+**Settings…** switches to the part's usual inspector, for values that can change while it runs, such as a motor's torque. **← Measurements** switches back.
+
+**Graphs.** Click a quantity to graph it against time; one quantity is graphed at a time. The simulation records its state every frame from the start, so the graph shows the whole run so far and keeps growing while it runs. Angles are unwrapped, so they run on past ±180°.
+- **Cursor line:** move the mouse over the graph for a vertical line at that time, a dot where it crosses the curve, and the time and value there.
+- **⤢ Enlarge:** moves the graph to the middle of the screen, much bigger; **⤡** shrinks it back, and **×** closes it.
+- **History length:** about the last 5 minutes are kept (20,000 frames). Reset clears the record.
+
 ### Equations panel
 
 The top-right panel updates as you edit. It shows the generalized coordinates and degrees of freedom, one equation of motion per coordinate, and the constraints. Collapsible sections list the kinetic and potential energy and every parameter with its value. For a big mechanism, deriving and typesetting can take a moment. The panel then fills with green to show progress, and the new equations appear when it is done. An equation too long to typeset quickly (over about 4 kB of LaTeX, as in the 30-link ring chain) shows a **Show** button instead.

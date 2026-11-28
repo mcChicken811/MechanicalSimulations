@@ -4,6 +4,7 @@ import { anglesToJoins, cloneDesign, propellerInertia, type Design } from './mod
 import { NumericSystem, Simulator, straightGroundSettings } from './simulate';
 import { motorCar, twinRotor } from '../ui/presets';
 import { PoseEditor } from './initial';
+import { measuresOf, StateAt } from '../ui/measure';
 
 const G = 9.81;
 
@@ -1420,6 +1421,58 @@ describe('propellers', () => {
     for (let i = 0; i < 1500; i++) expect(s.step(1e-3)).toBe(true);
     expect(s.q[0]).toBeGreaterThan(1); // swung up past the horizontal by the thrust, its axis turning with the arm
   }, 20000);
+});
+
+describe('measurements of a part (inspector while running)', () => {
+  const at = (sim: Simulator) => new StateAt(sim.sys, sim.q, sim.qd);
+  const val = (ms: ReturnType<typeof measuresOf>, key: string, s: StateAt) => ms.find((m) => m.key === key)!.value(s);
+
+  it("a swinging double pendulum: its bars' energies add up to the simulator's T and V", () => {
+    const d = doublePendulum();
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    for (let i = 0; i < 700; i++) sim.step(1e-3);
+    const s = at(sim);
+    const ms = d.links.map((l) => measuresOf(d, 'link', l.id, G));
+    const T = ms.reduce((acc, m) => acc + val(m, 'T', s), 0);
+    const V = ms.reduce((acc, m) => acc + val(m, 'V', s), 0);
+    const e = sim.energy();
+    expect(T).toBeCloseTo(e.T, 9);
+    // V is defined up to a constant: compare its change since the start
+    // the constant: V at the start measured the same way
+    const sim0 = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    const V0 = ms.reduce((acc, m) => acc + val(m, 'V', at(sim0)), 0);
+    expect(V - V0).toBeCloseTo(e.V - sim0.energy().V, 9);
+  });
+
+  it('a free spinning, drifting bar keeps its momentum and its angular momentum about G', () => {
+    const d: Design = { points: [{ id: 0, x: 0, y: 0, kind: 'free', mass: 0 }, { id: 1, x: 1, y: 0, kind: 'free', mass: 0 }], links: [{ id: 0, a: 0, b: 1, mass: 2 }], springs: [], gears: [], meshes: [], rackMeshes: [] };
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: 0 })));
+    sim.qd.set([0.3, -0.2, 2]); // x, y of joint 0 and the bar's angle rate
+    const ms = measuresOf(d, 'link', 0, 0);
+    const before = ['px', 'py', 'LG', 'LO', 'T'].map((k) => val(ms, k, at(sim)));
+    for (let i = 0; i < 2000; i++) sim.step(1e-3);
+    const after = ['px', 'py', 'LG', 'LO', 'T'].map((k) => val(ms, k, at(sim)));
+    after.forEach((v, i) => expect(v).toBeCloseTo(before[i], 6));
+    expect(val(ms, 'w', at(sim))).toBeCloseTo((2 * 180) / Math.PI, 6); // ω in °/s
+    expect(val(ms, 'LG', at(sim))).toBeCloseTo((2 * 1 * 1) / 12 * 2, 9); // I ω = m L²/12 · ω
+  });
+
+  it("a gear on a fixed axle: T = ½ I ω², and a spring's force and energy", () => {
+    const d: Design = {
+      points: [{ id: 0, x: 0, y: 0, kind: 'fixed', mass: 0 }, { id: 1, x: 0.5, y: 0, kind: 'fixed', mass: 0 }, { id: 2, x: 0.5, y: -0.6, kind: 'free', mass: 1 }],
+      links: [], springs: [{ id: 0, a: 1, b: 2, k: 50, rest: 0.5 }], meshes: [], rackMeshes: [],
+      gears: [{ id: 0, center: 0, radius: 0.2, teeth: 10, mass: 2, locked: false }],
+    };
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    const k = sim.sys.gearCoord.get(0)!;
+    sim.qd[k] = 3;
+    const s = at(sim);
+    expect(val(measuresOf(d, 'gear', 0, G), 'T', s)).toBeCloseTo(0.5 * (0.5 * 2 * 0.04) * 9, 9);
+    const sp = measuresOf(d, 'spring', 0, G);
+    expect(val(sp, 'ext', s)).toBeCloseTo(0.1, 9);
+    expect(val(sp, 'F', s)).toBeCloseTo(5, 9);
+    expect(val(sp, 'Ve', s)).toBeCloseTo(0.25, 9);
+  });
 });
 
 describe('setting the initial condition (PoseEditor)', () => {

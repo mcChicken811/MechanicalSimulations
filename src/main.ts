@@ -8,6 +8,7 @@ import { enableLongEquations, eomPanelSteps } from './ui/eomPanel';
 import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
+import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { dimensionAt, dimNormal, drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Selection, type Vec, type View } from './ui/render';
 
@@ -311,6 +312,8 @@ function startSim() {
   sim.friction = friction;
   sim.ground = groundSettings();
   applyInitialRates(sim);
+  resetHistory();
+  recordState();
   sim.setControllers(controllerSpecs());
   for (const c of sim.controllers)
     if (c.sign === 0) flash(`${gearName(design, c.motor)}'s motor cannot move what its PID controller measures here, so the controller does nothing. Set its pushing direction to Forward or Reverse to drive it anyway.`);
@@ -337,6 +340,9 @@ function startSim() {
 
 function stopSim() {
   sim = null;
+  resetHistory();
+  closeGraph();
+  inspectSettings = false;
   resetTrail();
   running = false;
   grab = null;
@@ -357,6 +363,7 @@ function togglePlay() {
 function rebuildSim() {
   derive();
   if (!sim || !derivation) return;
+  if (derivation.coords.length !== sim.q.length) resetHistory(); // a different mechanism: its history no longer applies
   const next = new Simulator(new NumericSystem(derivation));
   next.q.set(sim.q);
   next.qd.set(sim.qd);
@@ -1787,6 +1794,14 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
 
+  if (sim && !running) {
+    // paused: click a part to inspect it (again elsewhere, or on nothing, to let it go)
+    const hit = hitTest(w);
+    selection = hit && (hit.kind !== selection?.kind || hit.id !== selection?.id) ? hit : null; // the same part again lets it go
+    if (hit) sfx('select');
+    renderInspector();
+    return;
+  }
   if (sim) {
     const lv = leverAt(w);
     const pc = lv ? null : pidAt(w);
@@ -1812,7 +1827,11 @@ canvas.addEventListener('pointerdown', (e) => {
         grab = { a: pr.center, b: pr.center, s: 0 }; // pulled by its centre
         selection = { kind: 'gear', id: pr.id };
         renderInspector();
-      } else if (l && link && sim.sys.pointIndex.has(link.a)) grab = { a: link.a, b: link.b, s: l.s };
+      } else if (l && link && sim.sys.pointIndex.has(link.a)) {
+        grab = { a: link.a, b: link.b, s: l.s };
+        selection = { kind: 'link', id: link.id }; // and measure it
+        renderInspector();
+      }
       else if (spr) {
         selection = { kind: 'spring', id: spr.id };
         renderInspector();
@@ -2219,6 +2238,7 @@ stepBtn.addEventListener('click', () => {
     running = false;
   }
   advance(1 / 60);
+  recordState();
   refreshControls();
 });
 undoBtn.addEventListener('click', undo);
@@ -2502,7 +2522,9 @@ function refreshControls() {
   undoBtn.disabled = !!sim;
   clearBtn.disabled = !!sim;
   hintEl.textContent = sim
-    ? 'Drag a bar, joint or gear to pull it (red arrow = force). Click a spring to edit it live.'
+    ? running
+      ? 'Drag a bar, joint or gear to pull it (red arrow = force); it is measured in the inspector. Pause to pick parts to measure.'
+      : 'Paused: click a part to measure it (again, or on empty space, to let it go); click a quantity to graph it over time.'
     : ic
         ? ic.rate
           ? `Setting ${ic.label}: move the mouse to set the speed (the arrow shows the motion over half a second); the rest follows. Click to settle, Esc to cancel.`
@@ -3059,6 +3081,296 @@ function inspectorLever(g: DGear, lever: NonNullable<NonNullable<DGear['motor']>
 }
 
 function renderInspector() {
+  measureView = null;
+  if (sim && selection && (selection.kind === 'point' || selection.kind === 'link' || selection.kind === 'gear' || selection.kind === 'spring')) {
+    const key = `${selection.kind}:${selection.id}`;
+    if (key !== inspectedKey) inspectSettings = false; // a new part: its measurements first
+    inspectedKey = key;
+    if (!inspectSettings) {
+      renderLevers();
+      inspectorMeasure(selection.kind, selection.id);
+      return;
+    }
+    renderInspectorPanel();
+    inspectorEl.insertAdjacentHTML('afterbegin', '<div class="field"><span></span><span><button id="m-back">← Measurements</button></span></div>');
+    inspectorEl.querySelector('#m-back')!.addEventListener('click', () => {
+      inspectSettings = false;
+      renderInspector();
+    });
+    return;
+  }
+  renderInspectorPanel();
+}
+
+// ---- measuring while it runs: the inspector's measurements and their graphs over time ---------
+/** Whether the inspector shows a selected part's settings rather than its measurements, while running. */
+let inspectSettings = false;
+let inspectedKey = '';
+/** The measurements shown now, to update every frame. */
+let measureView: { kind: 'point' | 'link' | 'gear' | 'spring'; id: number; measures: Measure[] } | null = null;
+/** The state at every frame since the simulation started (at most HISTORY_MAX), for graphs. */
+const HISTORY_MAX = 20000;
+let history: { t: number[]; q: Float64Array[]; qd: Float64Array[] } = { t: [], q: [], qd: [] };
+
+function resetHistory() {
+  history = { t: [], q: [], qd: [] };
+  if (graph) graph.vals = [];
+}
+
+function recordState() {
+  if (!sim) return;
+  const h = history;
+  if (h.t.length && sim.t <= h.t[h.t.length - 1]) return;
+  h.t.push(sim.t);
+  h.q.push(sim.q.slice());
+  h.qd.push(sim.qd.slice());
+  if (h.t.length > HISTORY_MAX) {
+    const drop = 2000;
+    h.t.splice(0, drop);
+    h.q.splice(0, drop);
+    h.qd.splice(0, drop);
+    if (graph) graph.vals.splice(0, Math.min(drop, graph.vals.length));
+  }
+}
+
+const partTitle = (kind: string, id: number) =>
+  kind === 'point' ? `joint ${pointLabel(id)}` : kind === 'spring' ? `spring ${springLabel(id)}` : kind === 'gear' ? gearName(design, id) : bodyName(design, { kind: 'link', id });
+const g0 = () => (settings.gravity ? 9.81 : 0);
+
+/** The inspector while it runs: the selected part's physical quantities, each one a button for its graph. */
+function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number) {
+  const measures = measuresOf(design, kind, id, g0());
+  measureView = { kind, id, measures };
+  const title = partTitle(kind, id);
+  inspectorEl.innerHTML = `
+    <h4>${esc(title[0].toUpperCase() + title.slice(1))} <span class="muted">measured</span></h4>
+    <div class="m-list">${measures
+      .map(
+        (m) =>
+          `<button class="m-row${graph && graph.kind === kind && graph.id === id && graph.key === m.key ? ' on' : ''}" data-key="${m.key}" title="${esc(m.name)}: click to graph it over time"><span class="m-sym">${m.sym}</span><span class="m-name">${esc(m.name)}</span><span class="m-val" id="m-${m.key}">–</span><span class="m-unit">${m.unit}</span></button>`,
+      )
+      .join('')}</div>
+    <p class="muted">Click a quantity to graph it over time. ${running ? 'Pause to pick another part.' : 'Click another part to measure it, or empty space to let go.'} <button id="m-settings">Settings…</button></p>`;
+  inspectorEl.querySelectorAll<HTMLButtonElement>('.m-row').forEach((b) =>
+    b.addEventListener('click', () => {
+      const m = measures.find((x) => x.key === b.dataset.key)!;
+      openGraph(kind, id, m);
+      inspectorEl.querySelectorAll('.m-row').forEach((x) => x.classList.toggle('on', x === b));
+    }),
+  );
+  inspectorEl.querySelector('#m-settings')!.addEventListener('click', () => {
+    inspectSettings = true;
+    renderInspector();
+  });
+  updateMeasures();
+}
+
+/** Refresh the measurements shown (every frame while running). */
+function updateMeasures() {
+  if (!sim || !measureView) return;
+  const s = new StateAt(sim.sys, sim.q, sim.qd);
+  for (const m of measureView.measures) {
+    const el = inspectorEl.querySelector(`#m-${m.key}`);
+    if (el) el.textContent = fmt3(m.value(s));
+  }
+}
+
+const fmt3 = (v: number) => (Number.isFinite(v) ? (Object.is(+v.toFixed(3), -0) ? '0.000' : v.toFixed(3)) : '–');
+
+// the graph panel: one quantity at a time, real time, with a cursor line showing the value at a time
+const graphEl = document.createElement('div');
+graphEl.id = 'graph';
+graphEl.className = 'panel';
+graphEl.hidden = true;
+graphEl.innerHTML = `<header><span class="g-title"></span><span class="g-now"></span><button class="g-big" title="Enlarge">⤢</button><button class="g-close" title="Close">×</button></header><canvas></canvas>`;
+document.body.append(graphEl);
+const graphCanvas = graphEl.querySelector('canvas')!;
+let graph: { kind: 'point' | 'link' | 'gear' | 'spring'; id: number; key: string; m: Measure; vals: number[]; big: boolean; hoverX: number | null } | null = null;
+
+function openGraph(kind: 'point' | 'link' | 'gear' | 'spring', id: number, m: Measure) {
+  graph = { kind, id, key: m.key, m, vals: [], big: graph?.big ?? false, hoverX: null };
+  graphEl.hidden = false;
+  graphEl.classList.toggle('big', graph.big);
+  graphEl.querySelector('.g-big')!.textContent = graph.big ? '⤡' : '⤢';
+  graphEl.querySelector('.g-title')!.innerHTML = `<b>${m.sym}</b> ${esc(m.name)} <span class="muted">· ${esc(partTitle(kind, id))}</span>`;
+  sfx('select');
+}
+
+function closeGraph() {
+  graph = null;
+  graphEl.hidden = true;
+  inspectorEl.querySelectorAll('.m-row.on').forEach((x) => x.classList.remove('on'));
+}
+
+graphEl.querySelector('.g-close')!.addEventListener('click', closeGraph);
+graphEl.querySelector('.g-big')!.addEventListener('click', () => {
+  if (!graph) return;
+  graph.big = !graph.big;
+  graphEl.classList.toggle('big', graph.big);
+  graphEl.querySelector('.g-big')!.textContent = graph.big ? '⤡' : '⤢';
+  graphEl.querySelector<HTMLButtonElement>('.g-big')!.title = graph.big ? 'Shrink' : 'Enlarge';
+});
+graphCanvas.addEventListener('pointermove', (e) => {
+  if (graph) graph.hoverX = e.offsetX;
+});
+graphCanvas.addEventListener('pointerleave', () => {
+  if (graph) graph.hoverX = null;
+});
+
+/** Bring the graph's values up to date with the history, and draw it (every frame while open). */
+function updateGraph() {
+  if (!graph || !sim) return;
+  const { m } = graph;
+  const h = history;
+  for (let i = graph.vals.length; i < h.t.length; i++) graph.vals.push(m.value(new StateAt(sim.sys, h.q[i], h.qd[i])));
+  const vals = m.angle ? unwrapDegrees(graph.vals) : graph.vals;
+  graphEl.querySelector('.g-now')!.textContent = vals.length ? `${fmt3(vals[vals.length - 1])} ${m.unit}` : '';
+  // where it sits: above the inspector, or beside it if the inspector is too tall
+  if (!graph.big) {
+    const top = inspectorEl.getBoundingClientRect().top;
+    if (top > 300) {
+      graphEl.style.right = '12px';
+      graphEl.style.bottom = `${window.innerHeight - top + 10}px`;
+    } else {
+      graphEl.style.right = '284px';
+      graphEl.style.bottom = `${leverDock.hidden ? 12 : leverDock.getBoundingClientRect().height + 24}px`;
+    }
+  } else {
+    graphEl.style.right = '';
+    graphEl.style.bottom = '';
+  }
+  drawGraph(graphCanvas, h.t, vals, m, graph.hoverX);
+}
+
+/** A round step for about `n` ticks across `span`. */
+function niceStep(span: number, n: number): number {
+  const raw = span / n;
+  const p = 10 ** Math.floor(Math.log10(raw || 1));
+  const f = raw / p;
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+}
+
+/** The graph: value against time, with gridlines and labels, and a cursor line where the mouse is. */
+function drawGraph(cv: HTMLCanvasElement, t: number[], vals: number[], m: Measure, hoverX: number | null) {
+  const dpr = window.devicePixelRatio || 1;
+  const [W, H] = [cv.clientWidth, cv.clientHeight];
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) [cv.width, cv.height] = [Math.round(W * dpr), Math.round(H * dpr)];
+  const c = cv.getContext('2d')!;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+  const [L, R, T, B] = [58, 10, 8, 22];
+  const n = Math.min(t.length, vals.length);
+  if (n < 1) return;
+  const [t0, t1] = [t[0], Math.max(t[n - 1], t[0] + 1e-6)];
+  let [lo, hi] = [Infinity, -Infinity];
+  for (let i = 0; i < n; i++) if (Number.isFinite(vals[i])) [lo, hi] = [Math.min(lo, vals[i]), Math.max(hi, vals[i])];
+  if (!Number.isFinite(lo)) return;
+  if (hi - lo < 1e-9) [lo, hi] = [lo - 1e-3 - Math.abs(lo) * 0.01, hi + 1e-3 + Math.abs(hi) * 0.01];
+  const pad = (hi - lo) * 0.08;
+  [lo, hi] = [lo - pad, hi + pad];
+  const X = (tt: number) => L + ((tt - t0) / (t1 - t0)) * (W - L - R);
+  const Y = (v: number) => T + ((hi - v) / (hi - lo)) * (H - T - B);
+  // gridlines and labels
+  c.font = '10px system-ui, sans-serif';
+  c.strokeStyle = '#e8e8e2';
+  c.fillStyle = '#7b7e86';
+  c.lineWidth = 1;
+  const ys = niceStep(hi - lo, 4);
+  c.textAlign = 'right';
+  c.textBaseline = 'middle';
+  for (let v = Math.ceil(lo / ys) * ys; v <= hi; v += ys) {
+    const y = Math.round(Y(v)) + 0.5;
+    c.beginPath();
+    c.moveTo(L, y);
+    c.lineTo(W - R, y);
+    c.stroke();
+    c.fillText(+v.toPrecision(6) === 0 ? '0' : `${+v.toPrecision(4)}`, L - 5, y);
+  }
+  const xs = niceStep(t1 - t0, Math.max(2, Math.floor((W - L - R) / 70)));
+  c.textAlign = 'center';
+  c.textBaseline = 'top';
+  for (let tt = Math.ceil(t0 / xs) * xs; tt <= t1; tt += xs) {
+    const x = Math.round(X(tt)) + 0.5;
+    c.beginPath();
+    c.moveTo(x, T);
+    c.lineTo(x, H - B);
+    c.stroke();
+    c.fillText(`${+tt.toPrecision(4)} s`, x, H - B + 4);
+  }
+  if (lo < 0 && hi > 0) {
+    c.strokeStyle = '#c9c9c0';
+    c.beginPath();
+    c.moveTo(L, Math.round(Y(0)) + 0.5);
+    c.lineTo(W - R, Math.round(Y(0)) + 0.5);
+    c.stroke();
+  }
+  // the curve: at most two points per pixel column (its lowest and highest), so long histories stay fast
+  c.strokeStyle = '#3b6ea8';
+  c.lineWidth = 1.6;
+  c.beginPath();
+  let started = false;
+  const cols = Math.max(1, Math.floor(W - L - R));
+  const per = Math.max(1, Math.floor(n / (2 * cols)));
+  for (let i = 0; i < n; i += per) {
+    let [imin, imax] = [i, i];
+    for (let j = i; j < Math.min(n, i + per); j++) {
+      if (vals[j] < vals[imin]) imin = j;
+      if (vals[j] > vals[imax]) imax = j;
+    }
+    for (const j of imin < imax ? [imin, imax] : [imax, imin]) {
+      if (!Number.isFinite(vals[j])) continue;
+      if (!started) c.moveTo(X(t[j]), Y(vals[j]));
+      else c.lineTo(X(t[j]), Y(vals[j]));
+      started = true;
+    }
+  }
+  c.stroke();
+  // the cursor line: the value at the time under the mouse
+  let k = n - 1;
+  if (hoverX !== null && hoverX >= L && hoverX <= W - R) {
+    const tt = t0 + ((hoverX - L) / (W - L - R)) * (t1 - t0);
+    let [a, b] = [0, n - 1];
+    while (b - a > 1) {
+      const mid = (a + b) >> 1;
+      if (t[mid] < tt) a = mid;
+      else b = mid;
+    }
+    k = Math.abs(t[a] - tt) < Math.abs(t[b] - tt) ? a : b;
+    const x = X(t[k]);
+    c.strokeStyle = '#e07b39';
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(x, T);
+    c.lineTo(x, H - B);
+    c.stroke();
+  }
+  if (Number.isFinite(vals[k])) {
+    const [x, y] = [X(t[k]), Y(vals[k])];
+    c.fillStyle = '#e07b39';
+    c.beginPath();
+    c.arc(x, y, 3.5, 0, Math.PI * 2);
+    c.fill();
+    if (hoverX !== null) {
+      const text = `t = ${t[k].toFixed(3)} s   ${fmt3(vals[k])} ${m.unit}`;
+      c.font = '600 11px system-ui, sans-serif';
+      const w = c.measureText(text).width + 12;
+      const bx = Math.min(Math.max(x + 8, L), W - R - w);
+      const by = Math.max(T, Math.min(y - 26, H - B - 22));
+      c.fillStyle = 'rgba(255,255,255,0.94)';
+      c.strokeStyle = '#e07b39';
+      c.beginPath();
+      c.roundRect(bx, by, w, 20, 5);
+      c.fill();
+      c.stroke();
+      c.fillStyle = '#2b2d31';
+      c.textAlign = 'left';
+      c.textBaseline = 'middle';
+      c.fillText(text, bx + 6, by + 10);
+    }
+  }
+}
+
+function renderInspectorPanel() {
   const disabled = sim ? 'disabled' : '';
   renderLevers();
   if (selection?.kind === 'lever') {
@@ -3552,9 +3864,14 @@ function frame(now: number) {
   if (target !== trail.id) resetTrail(target);
   if (sim && running) {
     advance(dt * settings.speed);
+    recordState();
     if (settings.follow) followMechanism();
   }
   sound.update(sim && running ? machineState(sim) : null);
+  if (sim) {
+    updateMeasures();
+    updateGraph();
+  }
   if (ic && !sim) pullInitial(dt);
   if (selection?.kind === 'pid' && sim) {
     const live = inspectorEl.querySelector('#i-plive');
