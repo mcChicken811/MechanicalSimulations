@@ -133,7 +133,9 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
   - For a layer placed with the view centred on c₀ at s₀ px/m, a point p of it is drawn at centre + (p − c₀)·s₀·f − (c − c₀)·s/z, with f = (s/s₀)^(1/z), for the view now centred on c at s px/m. That reduces to the drawing's own map at z = 1 and to a fixed place on the screen at ∞.
 - **Scenes:** blue sky with clouds, a city skyline, a night sky, a sunset over hills, mountains, a blueprint and graph paper. They are drawn by the app, the same every time, in layers at the distances their parts would be.
   - The sky stays put (∞); clouds are far (14–20); the city's far buildings are at 6 and its near ones at 3; the mountain ranges are at 10, 6 and 4, with a meadow at 2; the sunset's hills are at 9, 5 and 2.5.
-  - Panning shows them slide past each other. They repeat sideways and run on below, so the view never runs out of them.
+  - **Their own space:** each layer at a distance is a tile 1200 × 800 units, placed in the world like an image at that distance. It is centred on the origin, one unit being one pixel at a zoom of 170 px/m. So the scenes zoom with the view as well as pan, each layer by its own distance: zoom out 19× and the near buildings shrink to about 37% and the far ones to about 61%, while the sky stays as it is. They're re-drawn sharper when zoomed in.
+  - **Endless:** panning shows the layers slide past each other. They repeat sideways and run on below, so the view never runs out of them.
+  - **Strength:** the layers are put together first, near ones hiding what is behind them, and the whole background is then shown at its strength.
 - **Custom…** opens the **background editor**, where you build your own over a base scene.
   - **Add image…** (PNG, JPEG, SVG and other picture files) places an image across the middle of the view, at distance 1.
   - On the drawing, drag an image to move it and its corner handle to resize it (its shape is kept).

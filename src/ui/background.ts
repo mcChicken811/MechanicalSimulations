@@ -13,8 +13,9 @@
  *     screen = centre + (p − c₀) s₀ f − (c − c₀) s / z,   f = (s/s₀)^(1/z),
  * for the view now centred on c at s px/m: for z = 1 that is the drawing's own map, for z = ∞
  * the place it was put on the screen. The scenes' layers are at the distances their parts would
- * be (clouds far, near buildings close), repeating sideways and running on below, so panning
- * never runs out of them.
+ * be (clouds far, near buildings close), each a tile in the scene's own space placed in the world
+ * the same way (so they zoom with the view as well as pan, by their distance), repeating sideways
+ * and running on below, so the view never runs out of them.
  *
  * The state is plain data (the images as data URLs), saved with projects.
  */
@@ -99,7 +100,8 @@ function hills(c: CanvasRenderingContext2D, w: number, h: number, base: number, 
 function cloudStrip(c: CanvasRenderingContext2D, w: number, h: number, seed: number, count: number, top: number, spread: number, tint?: string) {
   const rnd = seeded(seed);
   for (let i = 0; i < count; i++) {
-    const [x, y, size] = [((i + 0.3 + 0.5 * rnd()) / count) * w, h * (top + spread * rnd()), 110 + 120 * rnd()];
+    const size = 110 + 120 * rnd();
+    const [x, y] = [((i + 0.3 + 0.5 * rnd()) / count) * w, Math.max(size * 0.45, h * (top + spread * rnd()))]; // all of it inside its tile
     for (const dx of [-w, 0, w]) cloud(c, x + dx, y, size, seeded(seed * 31 + i), tint); // across the seam too
   }
 }
@@ -282,6 +284,22 @@ function range(c: CanvasRenderingContext2D, w: number, h: number, seed: number, 
   }
 }
 
+/**
+ * The scenes' own space: each layer at a distance is a tile TILE_W × TILE_H units across,
+ * repeating sideways, placed in the world as an image would be at that distance, centred on the
+ * world's origin at a zoom of SCENE_SCALE px per metre: one unit is one pixel at that zoom.
+ */
+const TILE_W = 1200;
+const TILE_H = 800;
+const SCENE_SCALE = 170;
+/** The most canvas px across a tile is drawn with (re-drawn sharper when zoomed in, within this). */
+const MAX_TILE_PX = 2400;
+
+/** A scene tile at distance z, as an image layer: where it lies in the world, for layerRect. */
+function sceneTile(z: number): ImageLayer {
+  return { id: '', name: '', image: '', aspect: TILE_H / TILE_W, depth: z, ref: { cx: 0, cy: 0, s: SCENE_SCALE }, rect: { x: -TILE_W / 2 / SCENE_SCALE, y: TILE_H / 2 / SCENE_SCALE, w: TILE_W / SCENE_SCALE } };
+}
+
 /** The scenes: id, name, their usual strength, and how many layers deep. */
 export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length }));
 
@@ -341,6 +359,7 @@ export class Backdrop {
   state: BackgroundState = { ...NO_BACKGROUND };
   private images = new Map<string, HTMLImageElement>();
   private cache = new Map<string, HTMLCanvasElement>();
+  private layered: HTMLCanvasElement | null = null;
 
   /** Set the background (images load in the background; until then they do not show). */
   set(state: BackgroundState) {
@@ -373,23 +392,21 @@ export class Backdrop {
     return s.kind === 'none' ? '' : (SCENE_DEFS[s.kind]?.name ?? '');
   }
 
-  /** A scene layer drawn for this screen size: w wide (it repeats), the height and half again below (it runs on). */
-  private sceneCanvas(id: string, i: number, w: number, h: number): HTMLCanvasElement {
-    const dpr = window.devicePixelRatio || 1;
-    const key = `${id}:${i}:${w}x${h}@${dpr}`;
+  /**
+   * A scene layer drawn: a fixed one at the screen's size; one at a distance as its tile in the
+   * scene's own space (TILE_W × TILE_H units) at `res` canvas px per unit.
+   */
+  private sceneCanvas(id: string, i: number, w: number, h: number, res: number): HTMLCanvasElement {
+    const key = `${id}:${i}:${w}x${h}@${res}`;
     let cv = this.cache.get(key);
     if (cv) return cv;
     if (this.cache.size > 40) this.cache.clear();
     const layer = SCENE_DEFS[id].layers[i];
     cv = document.createElement('canvas');
-    [cv.width, cv.height] = [Math.round(w * dpr), Math.round(h * 1.5 * dpr)];
+    [cv.width, cv.height] = [Math.round(w * res), Math.round(h * res)];
     const c = cv.getContext('2d')!;
-    c.scale(dpr, dpr);
+    c.scale(res, res);
     layer.paint(c, w, h);
-    if (layer.below) {
-      c.fillStyle = layer.below;
-      c.fillRect(0, h - 1, w, h * 0.5 + 1);
-    }
     this.cache.set(key, cv);
     return cv;
   }
@@ -397,21 +414,28 @@ export class Backdrop {
   /** Draw it over the plain paper (w × h CSS px), for view v: the layers far to near. */
   draw(ctx: CanvasRenderingContext2D, w: number, h: number, v: View) {
     const s = this.state;
+    const out = this.composite(w, h); // the layers at full strength, then the whole at its strength
     const sceneId = s.kind === 'custom' ? s.base : s.kind;
     const scene = SCENE_DEFS[sceneId];
     const items: { depth: number; draw: () => void }[] = [];
-    const [cx, cy] = toWorld(v, [w / 2, h / 2]);
+    const dpr = window.devicePixelRatio || 1;
     scene?.layers.forEach((layer, i) => {
       const z = layer.depth ?? Infinity;
       items.push({
         depth: z,
         draw: () => {
-          const cv = this.sceneCanvas(sceneId, i, w, h);
-          if (!Number.isFinite(z)) return ctx.drawImage(cv, 0, 0, w, h * 1.5);
-          // it moves 1/z as far as the view: across (repeating), and up and down within what it has
-          const dx = -(((cx * v.scale) / z) % w);
-          const dy = Math.max(-h * 0.45, Math.min(h * 0.6, (cy * v.scale) / z));
-          for (const x of [dx - w, dx, dx + w]) if (x < w && x + w > 0) ctx.drawImage(cv, x, dy, w, h * 1.5);
+          if (!Number.isFinite(z)) return out.drawImage(this.sceneCanvas(sceneId, i, w, h, dpr), 0, 0, w, h); // infinitely far: the screen
+          // in the scene's own space: its tile placed in the world like an image at that distance
+          // (so it pans by 1/z and zooms by (s/s₀)^(1/z)), repeating across, its ground running on below
+          const r = layerRect(sceneTile(z), v, w, h);
+          const want = (r.w / TILE_W) * dpr; // canvas px per unit it is shown at
+          const res = Math.min(want > 1.4 ? 2 : 1, MAX_TILE_PX / TILE_W) * Math.min(dpr, 2);
+          const cv = this.sceneCanvas(sceneId, i, TILE_W, TILE_H, res);
+          for (let x = r.x - Math.ceil(r.x / r.w) * r.w; x < w; x += r.w) out.drawImage(cv, x, r.y, r.w + 0.6, r.h); // (a hair over: no seams)
+          if (layer.below && r.y + r.h < h) {
+            out.fillStyle = layer.below;
+            out.fillRect(0, r.y + r.h - 0.5, w, h - (r.y + r.h) + 0.5);
+          }
         },
       });
     });
@@ -423,16 +447,30 @@ export class Backdrop {
           depth: l.depth ?? Infinity,
           draw: () => {
             const r = layerRect(l, v, w, h);
-            ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(img, r.x, r.y, r.w, r.h);
+            out.imageSmoothingQuality = 'high';
+            out.drawImage(img, r.x, r.y, r.w, r.h);
           },
         });
       }
     if (!items.length) return;
+    // far to near, each over the ones behind at full strength (a near layer hides what is behind
+    // it); a scene's layers before the images at the same distance, the images in their order
+    items.map((it, k) => ({ ...it, k })).sort((a, b) => b.depth - a.depth || a.k - b.k).forEach((it) => it.draw());
     ctx.save();
     ctx.globalAlpha = Math.min(1, Math.max(0, s.opacity));
-    // far to near; a scene's layers before the images at the same distance, the images in their order
-    items.map((it, k) => ({ ...it, k })).sort((a, b) => b.depth - a.depth || a.k - b.k).forEach((it) => it.draw());
+    ctx.drawImage(out.canvas, 0, 0, w, h);
     ctx.restore();
+  }
+
+  /** The canvas the layers are put together on, cleared, at the screen's size (sharp at its pixel density). */
+  private composite(w: number, h: number): CanvasRenderingContext2D {
+    const dpr = window.devicePixelRatio || 1;
+    this.layered ??= document.createElement('canvas');
+    const cv = this.layered;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) [cv.width, cv.height] = [Math.round(w * dpr), Math.round(h * dpr)];
+    const c = cv.getContext('2d')!;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    return c;
   }
 }
