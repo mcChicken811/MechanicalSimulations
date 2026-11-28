@@ -829,3 +829,24 @@ body.scrubbing * {
   min-height: 0;
   cursor: crosshair;
 }
+
+/* the status bar's energy figures: buttons for their graphs */
+#status .st-q {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  margin: 0 -4px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+#status .st-q:hover {
+  background: var(--accent-soft);
+}
+
+#status .st-q.on {
+  background: #e3edf8;
+  box-shadow: inset 0 -2px 0 var(--primary);
+}

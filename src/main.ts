@@ -3110,10 +3110,22 @@ let inspectedKey = '';
 let measureView: { kind: 'point' | 'link' | 'gear' | 'spring'; id: number; measures: Measure[] } | null = null;
 /** The state at every frame since the simulation started (at most HISTORY_MAX), for graphs. */
 const HISTORY_MAX = 20000;
-let history: { t: number[]; q: Float64Array[]; qd: Float64Array[] } = { t: [], q: [], qd: [] };
+/** The state at every frame, and the energy figures on the status bar, which are not functions of the state (heat and work add up over time). */
+interface History {
+  t: number[];
+  q: Float64Array[];
+  qd: Float64Array[];
+  /** E = T + V, heat W, motor work W_m, air work W_a. */
+  e: number[];
+  w: number[];
+  wm: number[];
+  wa: number[];
+}
+const emptyHistory = (): History => ({ t: [], q: [], qd: [], e: [], w: [], wm: [], wa: [] });
+let history: History = emptyHistory();
 
 function resetHistory() {
-  history = { t: [], q: [], qd: [] };
+  history = emptyHistory();
   if (graph) graph.vals = [];
 }
 
@@ -3124,17 +3136,20 @@ function recordState() {
   h.t.push(sim.t);
   h.q.push(sim.q.slice());
   h.qd.push(sim.qd.slice());
+  const { T, V } = sim.energy();
+  h.e.push(T + V);
+  h.w.push(sim.dissipated);
+  h.wm.push(sim.motorWork);
+  h.wa.push(sim.airWork);
   if (h.t.length > HISTORY_MAX) {
     const drop = 2000;
-    h.t.splice(0, drop);
-    h.q.splice(0, drop);
-    h.qd.splice(0, drop);
+    for (const a of [h.t, h.q, h.qd, h.e, h.w, h.wm, h.wa]) a.splice(0, drop);
     if (graph) graph.vals.splice(0, Math.min(drop, graph.vals.length));
   }
 }
 
 const partTitle = (kind: string, id: number) =>
-  kind === 'point' ? `joint ${pointLabel(id)}` : kind === 'spring' ? `spring ${springLabel(id)}` : kind === 'gear' ? gearName(design, id) : bodyName(design, { kind: 'link', id });
+  kind === 'system' ? 'the whole mechanism' : kind === 'point' ? `joint ${pointLabel(id)}` : kind === 'spring' ? `spring ${springLabel(id)}` : kind === 'gear' ? gearName(design, id) : bodyName(design, { kind: 'link', id });
 const g0 = () => (settings.gravity ? 9.81 : 0);
 
 /** The inspector while it runs: the selected part's physical quantities, each one a button for its graph. */
@@ -3211,11 +3226,14 @@ interface GraphLayout {
   W: number;
   H: number;
 }
+type GraphKind = 'point' | 'link' | 'gear' | 'spring' | 'system';
 let graph: {
-  kind: 'point' | 'link' | 'gear' | 'spring';
+  kind: GraphKind;
   id: number;
   key: string;
   m: Measure;
+  /** The value at history index i. */
+  at: (i: number) => number;
   vals: number[];
   big: boolean;
   hoverX: number | null;
@@ -3225,8 +3243,33 @@ let graph: {
 } | null = null;
 const GRAPH_SPAN = 10; // s shown by default: the most recent 10 seconds
 
-function openGraph(kind: 'point' | 'link' | 'gear' | 'spring', id: number, m: Measure) {
-  graph = { kind, id, key: m.key, m, vals: [], big: graph?.big ?? false, hoverX: null, view: { span: GRAPH_SPAN, end: null, yAuto: true, lo: 0, hi: 1 }, layout: null, drag: null };
+/** The energy figures on the status bar, each one a quantity to graph (over the recorded history). */
+function energySeries(key: string): { m: Measure; at: (i: number) => number } | null {
+  const h = () => history;
+  const none = () => NaN;
+  const make = (sym: string, name: string, at: (i: number) => number) => ({ m: { key, sym, name, unit: 'J', value: none }, at });
+  switch (key) {
+    case 'E':
+      return make('E', 'total energy T + V', (i) => h().e[i]);
+    case 'W':
+      return make('W', 'heat (energy lost to friction and impacts)', (i) => h().w[i]);
+    case 'Wm':
+      return make('W<sub>m</sub>', 'motor work', (i) => h().wm[i]);
+    case 'Wa':
+      return make('W<sub>a</sub>', 'air work', (i) => h().wa[i]);
+    case 'budget': {
+      // named as the status bar shows it: only the terms this mechanism has
+      const d = sim?.sys.derivation;
+      const sym = `E${friction.enabled || (sim?.dissipated ?? 0) > 0 ? ' + W' : ''}${d?.motors.length ? ' − W<sub>m</sub>' : ''}${d?.propellers.length ? ' − W<sub>a</sub>' : ''}`;
+      return make(sym, 'energy budget (constant if all is accounted for)', (i) => h().e[i] + h().w[i] - h().wm[i] - h().wa[i]);
+    }
+  }
+  return null;
+}
+
+function openGraph(kind: GraphKind, id: number, m: Measure, at?: (i: number) => number) {
+  const value = at ?? ((i: number) => (sim ? m.value(new StateAt(sim.sys, history.q[i], history.qd[i])) : NaN));
+  graph = { kind, id, key: m.key, m, at: value, vals: [], big: graph?.big ?? false, hoverX: null, view: { span: GRAPH_SPAN, end: null, yAuto: true, lo: 0, hi: 1 }, layout: null, drag: null };
   graphEl.hidden = false;
   graphEl.classList.toggle('big', graph.big);
   graphEl.querySelector('.g-big')!.textContent = graph.big ? '⤡' : '⤢';
@@ -3348,7 +3391,7 @@ function updateGraph() {
   if (!graph || !sim) return;
   const { m } = graph;
   const h = history;
-  for (let i = graph.vals.length; i < h.t.length; i++) graph.vals.push(m.value(new StateAt(sim.sys, h.q[i], h.qd[i])));
+  for (let i = graph.vals.length; i < h.t.length; i++) graph.vals.push(graph.at(i));
   const vals = m.angle ? unwrapDegrees(graph.vals) : graph.vals;
   graphEl.querySelector('.g-now')!.textContent = vals.length ? `${fmt3(vals[vals.length - 1])} ${m.unit}` : '';
   // where it sits: above the inspector, or beside it if the inspector is too tall
@@ -3938,13 +3981,28 @@ function heatStatus(s: Simulator): string {
   const air = s.sys.derivation.propellers.length > 0;
   const heat = friction.enabled || s.dissipated > 0;
   return (
-    (heat ? ` · heat W = <b>${s.dissipated.toFixed(3)} J</b>` : '') +
-    (motors ? ` · motor work W<sub>m</sub> = <b>${s.motorWork.toFixed(3)} J</b>` : '') +
-    (air ? ` · air work W<sub>a</sub> = <b>${s.airWork.toFixed(3)} J</b>` : '') +
-    ` · E${heat ? ' + W' : ''}${motors ? ' − W<sub>m</sub>' : ''}${air ? ' − W<sub>a</sub>' : ''} = ${(T + V + s.dissipated - s.motorWork - s.airWork).toFixed(4)} J` +
+    (heat ? ` · ${statQ('W', `heat W = <b>${s.dissipated.toFixed(3)} J</b>`)}` : '') +
+    (motors ? ` · ${statQ('Wm', `motor work W<sub>m</sub> = <b>${s.motorWork.toFixed(3)} J</b>`)}` : '') +
+    (air ? ` · ${statQ('Wa', `air work W<sub>a</sub> = <b>${s.airWork.toFixed(3)} J</b>`)}` : '') +
+    ` · ${statQ('budget', `E${heat ? ' + W' : ''}${motors ? ' − W<sub>m</sub>' : ''}${air ? ' − W<sub>a</sub>' : ''} = ${(T + V + s.dissipated - s.motorWork - s.airWork).toFixed(4)} J`)}` +
     (hottest > 0.01 ? ` · hottest: ${where} +${hottest.toFixed(1)} K` : '')
   );
 }
+
+/** An energy figure on the status bar, a button for its graph (highlighted while graphed). */
+const statQ = (key: string, html: string) => `<button class="st-q${graph?.kind === 'system' && graph.key === key ? ' on' : ''}" data-q="${key}" title="Graph it over time">${html}</button>`;
+// the status bar is redrawn every frame, so its buttons are caught as they are pressed
+statusEl.addEventListener('pointerdown', (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>('[data-q]');
+  const sr = b && energySeries(b.dataset.q!);
+  if (!sr || !sim) return;
+  e.preventDefault();
+  if (graph?.kind === 'system' && graph.key === sr.m.key) closeGraph();
+  else {
+    openGraph('system', 0, sr.m, sr.at);
+    inspectorEl.querySelectorAll('.m-row.on').forEach((x) => x.classList.remove('on'));
+  }
+});
 
 function renderStatus() {
   const nBars = design.links.filter((l) => !l.rack).length;
@@ -3966,7 +4024,7 @@ function renderStatus() {
   const F = Math.hypot(...grabPull);
   const phi = sim.constraintError();
   statusEl.innerHTML =
-    `${running ? 'Running' : 'Paused'} · t = <b>${sim.t.toFixed(2)} s</b> · E = T + V = <b>${(T + V).toFixed(4)} J</b>` +
+    `${running ? 'Running' : 'Paused'} · t = <b>${sim.t.toFixed(2)} s</b> · ${statQ('E', `E = T + V = <b>${(T + V).toFixed(4)} J</b>`)}` +
     (sim.sys.nc ? ` · max|Φ| = ${phi.toExponential(1)}` : '') +
     (grab ? ` · |F| = <b>${F.toFixed(1)} N</b>` : '') +
     (sim.ground ? ` · ${sim.contactCount()} touching the ground` : '') +
