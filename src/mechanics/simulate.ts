@@ -408,6 +408,8 @@ export interface Controller extends ControllerSpec {
  * point at fraction s along a joint pair (the mouse pull on a bar, found by its ends).
  */
 export interface PointLoad {
+  /** What it is: ground contact (or a terrain peak), propeller air, or the mouse pull. */
+  type: 'contact' | 'air' | 'pull';
   at: [number, number];
   F: [number, number];
   on: { kind: 'node'; id: number } | { kind: 'link'; id: number } | { kind: 'gear'; id: number } | { kind: 'seg'; a: number; b: number };
@@ -859,7 +861,7 @@ export class Simulator {
     sys.jacobians(q, jac);
     let power = 0;
     // one touching point: Jn, Jt filled; its state is created when it first touches
-    const push = (gap: number, along: number, rolling: boolean, state: () => ContactState | undefined | null, start: (st: ContactState) => void, where?: () => PointLoad & { n: [number, number]; t: [number, number] }) => {
+    const push = (gap: number, along: number, rolling: boolean, state: () => ContactState | undefined | null, start: (st: ContactState) => void, where?: () => Omit<PointLoad, 'type'> & { n: [number, number]; t: [number, number] }) => {
       let st = state();
       if (!st) {
         // a new contact: the effective masses it pushes against, along n and along t
@@ -880,7 +882,7 @@ export class Simulator {
       power += loss;
       if (this.capture && where) {
         const w = where();
-        this.capture.points.push({ at: w.at, on: w.on, F: [Fn * w.n[0] + Ft * w.t[0], Fn * w.n[1] + Ft * w.t[1]] });
+        this.capture.points.push({ type: 'contact', at: w.at, on: w.on, F: [Fn * w.n[0] + Ft * w.t[0], Fn * w.n[1] + Ft * w.t[1]] });
       }
     };
     candidates.forEach((c, ci) => {
@@ -977,7 +979,7 @@ export class Simulator {
         Ft = Math.max(-lim, Math.min(lim, Ft));
         for (let m = 0; m < n; m++) f[m] += Jn[m] * Fn + Jt[m] * Ft;
         power += vn * (kk * delta - Fn) - Ft * vt;
-        this.capture?.points.push({ at: [ax + s * dx, ay + s * dy], on: { kind: 'link', id: link }, F: [Fn * nx + Ft * tx, Fn * ny + Ft * ty] });
+        this.capture?.points.push({ type: 'contact', at: [ax + s * dx, ay + s * dy], on: { kind: 'link', id: link }, F: [Fn * nx + Ft * tx, Fn * ny + Ft * ty] });
       });
     }
     for (const key of [...peakContacts.keys()]) if (!live.has(key)) peakContacts.delete(key);
@@ -1253,7 +1255,7 @@ export class Simulator {
       const Fx = T * nx + H * ex;
       const Fy = T * ny + H * ey;
       for (let m = 0; m < n; m++) f[m] += jac[i * 2 * n + m] * Fx + jac[i * 2 * n + n + m] * Fy;
-      this.capture?.points.push({ at: [pos[2 * i], pos[2 * i + 1]], on: { kind: 'gear', id: pr.id }, F: [Fx, Fy] });
+      this.capture?.points.push({ type: 'air', at: [pos[2 * i], pos[2 * i + 1]], on: { kind: 'gear', id: pr.id }, F: [Fx, Fy] });
       if (pr.spin >= 0) f[pr.spin] += Q;
       power += Fx * vx + Fy * vy + Q * w;
       if (stage <= 0) this.thrust.set(pr.id, T);
@@ -1374,7 +1376,7 @@ export class Simulator {
     const Fy = g.stiffness * (g.target[1] - ry) - c * vy;
     this.appliedForce = [Fx, Fy];
     for (let j = 0; j < n; j++) f[j] += J(0, j) * Fx + J(1, j) * Fy;
-    this.capture?.points.push({ at: [rx, ry], F: [Fx, Fy], on: g.gear ? { kind: 'gear', id: g.gear.id } : g.a === g.b ? { kind: 'node', id: g.a } : { kind: 'seg', a: g.a, b: g.b } });
+    this.capture?.points.push({ type: 'pull', at: [rx, ry], F: [Fx, Fy], on: g.gear ? { kind: 'gear', id: g.gear.id } : g.a === g.b ? { kind: 'node', id: g.a } : { kind: 'seg', a: g.a, b: g.b } });
   }
 
   /** One classical 4th-order Runge–Kutta step of size h on y = (q, q̇). */

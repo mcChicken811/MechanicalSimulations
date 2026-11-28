@@ -210,13 +210,25 @@ While the simulation runs or is paused, the inspector measures the selected part
 **Joint forces.** The measurements also show the forces in the joints, worked out from the motion by inverse dynamics.
 - **For a bar, rack, gear, wheel or propeller:** the force at each of its connections, as its size and its direction (°). That covers its joints, a slider pressing on a rail on it, gear teeth, a rack's teeth and welds to bodies it is joined with. It also shows the couple of a weld or of a locked gear.
 - **For a joint:** the force each body puts on it, and its support's reaction (the ground, or a rail).
-- **Arrows:** the forces are drawn as purple arrows from where they act, sized to the largest, with their size in newtons; couples are curled arrows.
+- **Every other load** on the part is listed and drawn too, where it acts:
+  - weight, at the centre of mass;
+  - air drag (with Air drag on): −c m v_G at the centre of mass and the couple −c I ω, which is what the simulation's mass-proportional drag amounts to;
+  - pin friction couples, and rail friction;
+  - ground contact, where it touches (a wheel at the bottom of its rim);
+  - springs, at their ends;
+  - a motor's torque on its gear, and its reaction on the housing;
+  - slider end stops;
+  - propeller air;
+  - your pull.
+
+  Several loads of one kind on a part, such as two contact points, are added up in the list. The list updates when a load comes or goes, for example when a wheel lands.
+- **Arrows:** joint forces are drawn as purple arrows from where they act; the loads use their own colours: weight green, drag blue, friction red, contact brown, springs grey, motor blue, your pull red. All are sized to the largest, with their size in newtons; couples are curled arrows.
 - **Graphs:** every force is a quantity like any other: graph it over time, or put it in a phase plot.
 
 *How it works.* The simulation's own Lagrange multipliers exist only for the constraints that close loops, because most joints are built into the coordinates. So the forces are found afterwards from q, q̇ and q̈, which are recorded every frame along with the simulator's point loads:
 - **Every body** obeys m a_G = ΣF and I_G α = ΣM_G; a two-bladed propeller also includes its changing yaw inertia.
 - **Every joint** (a massless pin or a point mass) obeys ΣF = m a.
-- **Known loads:** gravity, springs, motor torques (and their reaction on the housing), pin and rail friction, ground contact, slider stops, propeller air and the mouse pull.
+- **Known loads:** gravity, air drag, springs, motor torques (and their reaction on the housing), pin and rail friction, ground contact, slider stops, propeller air and the mouse pull.
 - **Unknowns:**
 
   | Connection | Unknowns | Where and which way |

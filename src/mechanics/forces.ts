@@ -45,8 +45,23 @@ export interface ForceItem {
   M?: number;
 }
 
+/** A known load on a body or a joint, where it acts: weight, a spring, a motor, friction, air drag, ground contact, a slider stop, propeller air, the mouse pull. */
+export interface LoadItem {
+  type: 'weight' | 'spring' | 'motor' | 'friction' | 'drag' | 'contact' | 'stop' | 'air' | 'pull';
+  /** Stable across states, for graphs (several of one type on a part are listed apart, e.g. two springs). */
+  key: string;
+  label: string;
+  body: DBodyRef | null;
+  node?: number;
+  at: Vec;
+  F: Vec;
+  M?: number;
+}
+
 export interface ForceResult {
   items: ForceItem[];
+  /** The known loads on every body and joint. */
+  loads: LoadItem[];
   /** RMS of the Newton–Euler equations' residual (N, N·m). */
   residual: number;
   /** Redundant supports: the split between them is the minimum-norm one, not the only one. */
@@ -55,6 +70,8 @@ export interface ForceResult {
 
 export interface ForceSettings {
   gravity: number;
+  /** Air drag c (1/s): −c m v at each centre of mass, −c I ω about it (the simulator's −c M q̇). */
+  damping?: number;
   friction: { enabled: boolean; pin: number; rail: number } | null;
 }
 
@@ -130,6 +147,9 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     aG: Vec;
     /** I α (+ İ ω): the moment needed about G. */
     Ia: number;
+    /** Inertia about G, and the velocity of G (for air drag). */
+    I: number;
+    vG: Vec;
     w: number;
     nodes: Set<number>;
     /** The body's turn since the drawing (for rails on it). */
@@ -159,6 +179,8 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
       G: [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2],
       aG: [(aa[0] + ab[0]) / 2, (aa[1] + ab[1]) / 2],
       Ia: ((l.mass * L2) / 12) * alpha,
+      I: (l.mass * L2) / 12,
+      vG: [(va[0] + vb[0]) / 2, (va[1] + vb[1]) / 2],
       w,
       nodes: new Set([l.a, l.b]),
       turn: Math.atan2(dd[1], dd[0]) - Math.atan2(b0.y - a0.y, b0.x - a0.x),
@@ -203,16 +225,16 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
       const [phi, phid] = pr && pr.spin >= 0 ? [q[pr.spin], qd[pr.spin]] : [0, 0];
       const I = I2 * Math.sin(phi) ** 2 + I3 * Math.cos(phi) ** 2;
       const Idot = (I2 - I3) * Math.sin(2 * phi) * phid;
-      addBody({ ref: { kind: 'gear', id: gr.id }, key: `gear:${gr.id}`, m: gr.mass + (gr.motor ? (gr.motor.mass ?? 0.5) : 0), G: c, aG: A(gr.center), Ia: I * alpha + Idot * w, w, nodes, turn: gearTurn(gr.id) });
+      addBody({ ref: { kind: 'gear', id: gr.id }, key: `gear:${gr.id}`, m: gr.mass + (gr.motor ? (gr.motor.mass ?? 0.5) : 0), G: c, aG: A(gr.center), Ia: I * alpha + Idot * w, I, vG: V(gr.center), w, nodes, turn: gearTurn(gr.id) });
       continue;
     }
-    addBody({ ref: { kind: 'gear', id: gr.id }, key: `gear:${gr.id}`, m: gr.mass, G: c, aG: A(gr.center), Ia: 0.5 * gr.mass * gr.radius ** 2 * alpha, w, nodes, turn: gearTurn(gr.id) });
+    addBody({ ref: { kind: 'gear', id: gr.id }, key: `gear:${gr.id}`, m: gr.mass, G: c, aG: A(gr.center), Ia: 0.5 * gr.mass * gr.radius ** 2 * alpha, I: 0.5 * gr.mass * gr.radius ** 2, vG: V(gr.center), w, nodes, turn: gearTurn(gr.id) });
     // its motor's housing: a body unless mounted on the ground (and not joined to anything)
     if (gr.motor && (gr.motor.mounted === false || joinedHousing(gr.id))) {
       const mM = gr.motor.mass ?? 0.5;
       const [wM, aM] = housingRates(gr.id);
       housings.add(gr.id);
-      addBody({ ref: { kind: 'motor', id: gr.id }, key: `motor:${gr.id}`, m: mM, G: c, aG: A(gr.center), Ia: 0.5 * mM * motorHousingRadius(gr) ** 2 * aM, w: wM, nodes: new Set([gr.center]), turn: 0 });
+      addBody({ ref: { kind: 'motor', id: gr.id }, key: `motor:${gr.id}`, m: mM, G: c, aG: A(gr.center), Ia: 0.5 * mM * motorHousingRadius(gr) ** 2 * aM, I: 0.5 * mM * motorHousingRadius(gr) ** 2, vG: V(gr.center), w: wM, nodes: new Set([gr.center]), turn: 0 });
     }
   }
   const nodeIds = [...sys.pointIndex.keys()];
@@ -223,7 +245,7 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
   const b = new Float64Array(rows);
   bodies.forEach((B, k) => {
     b[3 * k] = B.m * B.aG[0];
-    b[3 * k + 1] = B.m * B.aG[1] + B.m * g; // gravity, −m g, known
+    b[3 * k + 1] = B.m * B.aG[1];
     b[3 * k + 2] = B.Ia;
   });
   for (const id of nodeIds) {
@@ -232,20 +254,44 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     const m = p?.mass ?? 0;
     const a = A(id);
     b[r] = m * a[0];
-    b[r + 1] = m * a[1] + m * g;
+    b[r + 1] = m * a[1];
   }
-  /** A known force on body k at point `at` (subtracted from the right-hand side). */
-  const knownOnBody = (k: number, at: Vec, F: Vec, M = 0) => {
+  const applied: LoadItem[] = [];
+  type Meta = { type: LoadItem['type']; key: string; label: string };
+  /** A known force (and couple) on body k at point `at`: off the right-hand side, and listed. */
+  const knownOnBody = (k: number, at: Vec, F: Vec, M: number, meta: Meta) => {
     b[3 * k] -= F[0];
     b[3 * k + 1] -= F[1];
     b[3 * k + 2] -= cross(sub(at, bodies[k].G), F) + M;
+    applied.push({ ...meta, body: bodies[k].ref, at, F, ...(M ? { M } : {}) });
   };
-  const knownOnNode = (id: number, F: Vec) => {
+  const knownOnNode = (id: number, F: Vec, meta: Meta) => {
     const r = nodeRow.get(id);
     if (r === undefined) return;
     b[r] -= F[0];
     b[r + 1] -= F[1];
+    applied.push({ ...meta, body: null, node: id, at: P(id)!, F });
   };
+  // weight, at each centre of mass (and on each point mass)
+  bodies.forEach((B, k) => {
+    if (g && B.m) knownOnBody(k, B.G, [0, -B.m * g], 0, { type: 'weight', key: 'weight', label: 'weight' });
+  });
+  for (const id of nodeIds) {
+    const m = d.points.find((x) => x.id === id)?.mass ?? 0;
+    if (g && m) knownOnNode(id, [0, -m * g], { type: 'weight', key: 'weight', label: 'weight' });
+  }
+  // air drag: the simulator's −c M q̇ is −c m v_G at each centre of mass and −c I ω about it
+  const c = settings.damping ?? 0;
+  if (c > 0) {
+    bodies.forEach((B, k) => knownOnBody(k, B.G, [-c * B.m * B.vG[0], -c * B.m * B.vG[1]], -c * B.I * B.w, { type: 'drag', key: 'drag', label: 'air drag' }));
+    for (const id of nodeIds) {
+      const m = d.points.find((x) => x.id === id)?.mass ?? 0;
+      if (m) {
+        const v = V(id);
+        knownOnNode(id, [-c * m * v[0], -c * m * v[1]], { type: 'drag', key: 'drag', label: 'air drag' });
+      }
+    }
+  }
   // springs, pulling their ends together (or apart)
   for (const sp of d.springs) {
     const [pa, pb] = [P(sp.a), P(sp.b)];
@@ -255,8 +301,9 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     let F = sp.k * (L - sp.rest);
     if (sp.tensionOnly && F < 0) F = 0;
     const u: Vec = [dd[0] / L, dd[1] / L];
-    knownOnNode(sp.a, [F * u[0], F * u[1]]);
-    knownOnNode(sp.b, [-F * u[0], -F * u[1]]);
+    const meta = { type: 'spring' as const, key: `spring:${sp.id}`, label: `spring ${sp.id}` };
+    knownOnNode(sp.a, [F * u[0], F * u[1]], meta);
+    knownOnNode(sp.b, [-F * u[0], -F * u[1]], meta);
   }
   // motors: +τ on the gear, −τ on its housing (a mounted one passes it to the ground)
   const paramIndex = new Map(der.params.map((p, i) => [p.sym, i]));
@@ -267,9 +314,9 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     for (const t of mo.terms) rho += t.k * qd[t.coord];
     const tau = sys.params[paramIndex.get(mo.tau)!] - (mo.b ? sys.params[paramIndex.get(mo.b)!] * rho : 0);
     const kg = bodyIndex.get(`gear:${gr.id}`);
-    if (kg !== undefined) knownOnBody(kg, bodies[kg].G, [0, 0], tau);
+    if (kg !== undefined) knownOnBody(kg, bodies[kg].G, [0, 0], tau, { type: 'motor', key: 'motor', label: 'motor torque' });
     const kh = bodyIndex.get(`motor:${gr.id}`);
-    if (kh !== undefined) knownOnBody(kh, bodies[kh].G, [0, 0], -tau);
+    if (kh !== undefined) knownOnBody(kh, bodies[kh].G, [0, 0], -tau, { type: 'motor', key: 'motor', label: 'motor torque (reaction)' });
   }
   // friction: pin torques between the bodies meeting at a joint; drag along ground rails
   if (settings.friction?.enabled) {
@@ -284,28 +331,30 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
         for (let i = 0; i < parts.length; i++)
           for (let j = i + 1; j < parts.length; j++) {
             const T = fr.pin * (parts[i].w - parts[j].w);
-            if (parts[i].k !== null) knownOnBody(parts[i].k!, bodies[parts[i].k!].G, [0, 0], -T);
-            if (parts[j].k !== null) knownOnBody(parts[j].k!, bodies[parts[j].k!].G, [0, 0], T);
+            const meta = { type: 'friction' as const, key: `friction@${jt.id}`, label: 'pin friction' };
+            if (parts[i].k !== null) knownOnBody(parts[i].k!, P(jt.id)!, [0, 0], -T, meta);
+            if (parts[j].k !== null) knownOnBody(parts[j].k!, P(jt.id)!, [0, 0], T, meta);
           }
       if (jt.rail !== null && fr.rail > 0) {
         const t: Vec = [Math.cos(jt.rail), Math.sin(jt.rail)];
         const v = V(jt.id);
         const f = -fr.rail * (v[0] * t[0] + v[1] * t[1]);
-        knownOnNode(jt.id, [f * t[0], f * t[1]]);
+        knownOnNode(jt.id, [f * t[0], f * t[1]], { type: 'friction', key: 'friction', label: 'rail friction' });
       }
     }
   }
   // the simulator's point loads: contact, air, the mouse pull
   const linkByEnds = (a: number, c: number) => d.links.find((l) => (l.a === a && l.b === c) || (l.a === c && l.b === a));
   for (const pl of loads.points) {
-    if (pl.on.kind === 'node') knownOnNode(pl.on.id, pl.F);
+    const meta = { type: pl.type, key: pl.type, label: pl.type === 'contact' ? 'ground contact' : pl.type === 'air' ? 'propeller air' : 'your pull' };
+    if (pl.on.kind === 'node') knownOnNode(pl.on.id, pl.F, meta);
     else {
       const ref: DBodyRef | undefined = pl.on.kind === 'seg' ? (() => {
         const l = linkByEnds((pl.on as { a: number }).a, (pl.on as { b: number }).b);
         return l ? ({ kind: 'link', id: l.id } as DBodyRef) : undefined;
       })() : { kind: pl.on.kind, id: pl.on.id };
       const k = ref ? bodyIndex.get(bodyKey(ref)) : undefined;
-      if (k !== undefined) knownOnBody(k, pl.at, pl.F);
+      if (k !== undefined) knownOnBody(k, pl.at, pl.F, 0, meta);
     }
   }
 
@@ -369,8 +418,9 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     // slider stops push along the rail (and back on the body it is on)
     for (const st of loads.stops)
       if (st.joint === id) {
-        knownOnNode(id, [st.along * t[0], st.along * t[1]]);
-        if (onBody !== undefined) knownOnBody(onBody, at, [-st.along * t[0], -st.along * t[1]]);
+        const meta = { type: 'stop' as const, key: 'stop', label: 'end stop' };
+        knownOnNode(id, [st.along * t[0], st.along * t[1]], meta);
+        if (onBody !== undefined) knownOnBody(onBody, at, [-st.along * t[0], -st.along * t[1]], 0, meta);
       }
     const c = col([...forceOnNode(id, nrm), ...(onBody !== undefined ? forceOnBody(onBody, at, nrm, -1) : [])]);
     readers.push((x) => ({ key: `rail@${id}`, label: onBody !== undefined ? `rail on ${name(bodies[onBody].ref)}` : 'ground rail', body: null, node: id, at, F: [x[c] * nrm[0], x[c] * nrm[1]] }));
@@ -482,7 +532,7 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     for (let i = 0; i < U; i++) s += dense[i][r] * x[i];
     res += s * s;
   }
-  return { items: readers.map((rd) => rd(x)), residual: Math.sqrt(res / Math.max(rows, 1)), indeterminate };
+  return { items: readers.map((rd) => rd(x)), loads: applied, residual: Math.sqrt(res / Math.max(rows, 1)), indeterminate };
 }
 
 /** Whether a symmetric matrix has a pivot below tol (Gaussian elimination with partial pivoting). */

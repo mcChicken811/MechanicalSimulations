@@ -105,6 +105,49 @@ describe('joint forces (inverse dynamics)', () => {
     expect(r.residual).toBeLessThan(1e-6); // still a valid split
   });
 
+  it('lists the loads where they act: weight at the centre of mass, air drag against the motion', () => {
+    const d = rod();
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    sim.damping = 0.8;
+    for (let i = 0; i < 300; i++) sim.step(1e-3);
+    const { qdd, loads } = sim.snapshot();
+    const r = jointForces(d, sim.sys, sim.q, sim.qd, qdd, loads, { gravity: G, friction: null, damping: 0.8 });
+    expect(r.residual).toBeLessThan(1e-9); // the drag is accounted for
+    const w = r.loads.find((x) => x.type === 'weight' && x.body?.id === 0)!;
+    const p = sim.jointPositions();
+    expect(w.F[1]).toBeCloseTo(-2 * G, 12);
+    expect(w.at[0]).toBeCloseTo((p.get(0)![0] + p.get(1)![0]) / 2, 12); // at the middle of the rod
+    const drag = r.loads.find((x) => x.type === 'drag')!;
+    const th = sim.q[0];
+    const v = [-Math.sin(th) * sim.qd[0] * 0.5, Math.cos(th) * sim.qd[0] * 0.5]; // the centre's velocity
+    expect(drag.F[0]).toBeCloseTo(-0.8 * 2 * v[0], 9);
+    expect(drag.F[1]).toBeCloseTo(-0.8 * 2 * v[1], 9);
+    expect(drag.M).toBeCloseTo(-0.8 * (2 / 12) * sim.qd[0], 9); // −c I ω
+    // all forces on the rod add up to m a_G: pivot + weight + drag
+    const pin = item(r, 'pin:link:0@0').F;
+    const sum = [pin[0] + w.F[0] + drag.F[0], pin[1] + w.F[1] + drag.F[1]];
+    const aG = [0, 0];
+    const L = 1;
+    aG[0] = 0.5 * L * (-Math.sin(th) * qdd[0] - Math.cos(th) * sim.qd[0] ** 2);
+    aG[1] = 0.5 * L * (Math.cos(th) * qdd[0] - Math.sin(th) * sim.qd[0] ** 2);
+    expect(sum[0]).toBeCloseTo(2 * aG[0], 6);
+    expect(sum[1]).toBeCloseTo(2 * aG[1], 6);
+  });
+
+  it('a wheel resting on the floor: ground contact holds up its weight', () => {
+    const d: Design = { points: [{ id: 0, x: 0, y: 0.2, kind: 'free', mass: 0 }], links: [], springs: [], meshes: [], rackMeshes: [], gears: [{ id: 0, center: 0, radius: 0.2, teeth: 10, mass: 3, locked: false, wheel: true }] };
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    sim.ground = { points: [[-5, 0], [5, 0]], restitution: 0, friction: 0.8 };
+    for (let i = 0; i < 1500; i++) sim.step(1e-3);
+    const { qdd, loads } = sim.snapshot();
+    const r = jointForces(d, sim.sys, sim.q, sim.qd, qdd, loads, { gravity: G, friction: null });
+    const c = r.loads.filter((x) => x.type === 'contact' && x.body?.kind === 'gear');
+    expect(c.length).toBe(1);
+    expect(c[0].F[1]).toBeCloseTo(3 * G, 3);
+    expect(c[0].at[1]).toBeCloseTo(0, 3); // at the bottom of the rim
+    expect(r.residual).toBeLessThan(1e-6);
+  });
+
   it('accounts for the motion of every example (residual near zero, friction off)', () => {
     for (const p of presets) {
       const d = p.build();

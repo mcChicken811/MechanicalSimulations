@@ -9,7 +9,7 @@ import { presets } from './ui/presets';
 import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
-import { jointForces, type ForceItem, type ForceResult } from './mechanics/forces';
+import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
 import { dimensionAt, dimNormal, drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
 
@@ -3116,7 +3116,7 @@ function renderInspector() {
 let inspectSettings = false;
 let inspectedKey = '';
 /** The measurements shown now, to update every frame. */
-let measureView: { kind: 'point' | 'link' | 'gear' | 'spring'; id: number; measures: Measure[] } | null = null;
+let measureView: { kind: 'point' | 'link' | 'gear' | 'spring'; id: number; measures: Measure[]; sig: string } | null = null;
 /** The state at every frame since the simulation started (at most HISTORY_MAX), for graphs. */
 const HISTORY_MAX = 20000;
 /** The state at every frame, and the energy figures on the status bar, which are not functions of the state (heat and work add up over time). */
@@ -3179,6 +3179,7 @@ function forcesAt(i: number): ForceResult | null {
     r = jointForces(design, sim.sys, history.q[i], history.qd[i], history.qdd[i], history.loads[i], {
       gravity: gp ? sys0(gp.sym) : 0,
       friction: friction.enabled ? { enabled: true, pin: friction.pin, rail: friction.rail } : null,
+      damping: sim.damping,
     });
     if (forceCache.size > 4000) forceCache.clear();
     forceCache.set(i, r);
@@ -3265,6 +3266,67 @@ function isSharedWeld(key: string): boolean {
   return nodesOf(j.b).some((x) => a.includes(x));
 }
 
+/** How each kind of load is drawn and named: colour, symbol, name. */
+const LOAD_STYLE: Record<LoadItem['type'], { color: string; sym: string; name: string }> = {
+  weight: { color: '#2f7a45', sym: 'W', name: 'weight' },
+  drag: { color: '#3c9cc4', sym: 'F<sub>d</sub>', name: 'air drag' },
+  friction: { color: '#c0392b', sym: 'F<sub>μ</sub>', name: 'friction' },
+  contact: { color: '#a35a17', sym: 'F<sub>c</sub>', name: 'ground contact' },
+  spring: { color: '#5b6b7d', sym: 'F<sub>k</sub>', name: 'spring' },
+  motor: { color: '#3b6ea8', sym: 'τ', name: 'motor torque' },
+  stop: { color: '#7a5c2e', sym: 'F<sub>s</sub>', name: 'end stop' },
+  air: { color: '#2f9e8f', sym: 'F<sub>a</sub>', name: 'propeller air' },
+  pull: { color: '#d64545', sym: 'F<sub>p</sub>', name: 'your pull' },
+};
+
+/** The loads on the part being measured (on a joint: those acting on the joint itself). */
+const loadsOn = (r: ForceResult, kind: string, id: number) => r.loads.filter((it) => (kind === 'point' ? it.body === null && it.node === id : it.body?.kind === kind && it.body.id === id));
+
+/** A load's row name: its kind, and which one (a spring's id, a friction's joint). */
+function loadName(it: LoadItem): string {
+  const st = LOAD_STYLE[it.type];
+  if (it.type === 'spring') return `spring ${springLabel(Number(it.key.split(':')[1]))}`;
+  if (it.type === 'friction' && it.key.includes('@')) return `pin friction at ${pointLabel(Number(it.key.split('@')[1]))}`;
+  return it.label || st.name;
+}
+
+/**
+ * The known loads on a part, as quantities: one per kind (and per spring or friction joint),
+ * several of a kind added up (two contact points: their total), size and direction, or the
+ * couple for torques and pin friction.
+ */
+function loadMeasures(kind: 'point' | 'link' | 'gear' | 'spring', id: number): Measure[] {
+  if (kind === 'spring') return [];
+  const now = forcesNow();
+  if (!now) return [];
+  const keys = [...new Map(loadsOn(now, kind, id).map((it) => [it.key, it])).values()];
+  const total = (r: ForceResult | null, key: string): { F: Vec; M: number; n: number } => {
+    const out = { F: [0, 0] as Vec, M: 0, n: 0 };
+    for (const it of r ? loadsOn(r, kind, id) : []) if (it.key === key) [out.F, out.M, out.n] = [[out.F[0] + it.F[0], out.F[1] + it.F[1]], out.M + (it.M ?? 0), out.n + 1];
+    return out;
+  };
+  const out: Measure[] = [];
+  for (const it of keys) {
+    const st = LOAD_STYLE[it.type];
+    const name = loadName(it);
+    const couple = it.type === 'motor' || (it.type === 'friction' && it.key.includes('@'));
+    if (!couple) {
+      out.push({ key: `L:${it.key}:mag`, sym: `|${st.sym}|`, name: `${name}: size`, unit: 'N', value: () => Math.hypot(...total(forcesNow(), it.key).F), atHistory: (i) => Math.hypot(...total(forcesAt(i), it.key).F) });
+      out.push({ key: `L:${it.key}:dir`, sym: `∠${st.sym}`, name: `${name}: direction`, unit: '°', angle: true, value: () => (Math.atan2(total(forcesNow(), it.key).F[1], total(forcesNow(), it.key).F[0]) * 180) / Math.PI, atHistory: (i) => (Math.atan2(total(forcesAt(i), it.key).F[1], total(forcesAt(i), it.key).F[0]) * 180) / Math.PI });
+    }
+    if (couple || it.type === 'drag')
+      out.push({ key: `L:${it.key}:M`, sym: it.type === 'motor' ? 'τ' : it.type === 'drag' ? 'M<sub>d</sub>' : 'M<sub>μ</sub>', name: `${name}: couple`, unit: 'N·m', value: () => total(forcesNow(), it.key).M, atHistory: (i) => total(forcesAt(i), it.key).M });
+  }
+  return out;
+}
+
+/** Which forces and loads act on the measured part now (the panel is rebuilt when this changes). */
+function forceSignature(kind: string, id: number): string {
+  const now = forcesNow();
+  if (!now || kind === 'spring') return '';
+  return [...new Set(loadsOn(now, kind, id).map((it) => it.key))].sort().join(',');
+}
+
 /** Arrows for the joint forces on the part being measured, scaled so the largest is about 70 px. */
 function forceArrowsNow(): Scene['forceArrows'] {
   if (!sim || !measureView || inspectSettings) return null;
@@ -3278,8 +3340,14 @@ function forceArrowsNow(): Scene['forceArrows'] {
     .map((it) => {
       const s = onJoint && it.key.startsWith('pin:') ? -1 : 1;
       const F: Vec = [s * it.F[0], s * it.F[1]];
-      return { at: it.at, F, M: it.M, label: `${Math.hypot(...F).toFixed(2)} N` };
+      return { at: it.at, F, M: it.M, label: `${Math.hypot(...F).toFixed(2)} N` } as { at: Vec; F: Vec; M?: number; label: string; color?: string };
     });
+  // and every other load on it, where it acts, in its own colour
+  for (const it of loadsOn(now, kind, id)) {
+    const st = LOAD_STYLE[it.type];
+    const short = st.sym.replace(/<sub>(.*?)<\/sub>/g, '$1').replace(/<[^>]+>/g, '');
+    items.push({ at: it.at, F: it.F, M: it.M, label: `${short} ${Math.hypot(...it.F).toFixed(2)} N`, color: st.color });
+  }
   const big = Math.max(1e-9, ...items.map((x) => Math.hypot(...x.F)));
   return { items, pxPerN: 70 / big };
 }
@@ -3290,10 +3358,10 @@ const g0 = () => (settings.gravity ? 9.81 : 0);
 
 /** The inspector while it runs: the selected part's physical quantities, each one a button for its graph. */
 function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number) {
-  const forces = forceMeasures(kind, id);
+  const forces = [...forceMeasures(kind, id), ...loadMeasures(kind, id)];
   const measures = [...measuresOf(design, kind, id, g0()), ...forces];
   const now = forcesNow();
-  measureView = { kind, id, measures };
+  measureView = { kind, id, measures, sig: forceSignature(kind, id) };
   const title = partTitle(kind, id);
   inspectorEl.innerHTML = `
     <h4>${esc(title[0].toUpperCase() + title.slice(1))} <span class="muted">measured</span></h4>
@@ -3305,7 +3373,7 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
       .join('')}</div>
     ${
       forces.length && now
-        ? `<p class="muted m-note">Joint forces (purple arrows) by inverse dynamics, Newton–Euler for every body; model residual ${now.residual.toExponential(1)}.${now.indeterminate ? ' <b>Redundant supports:</b> the mechanism is over-constrained, so how the load splits between them is not fixed by a rigid model; this is the even (minimum-norm) split.' : ''}${friction.enabled && design.meshes.length ? ' Gear-mesh friction is left out of the forces.' : ''}</p>`
+        ? `<p class="muted m-note">Forces on it, drawn where they act: joint forces (purple) by inverse dynamics, Newton–Euler for every body, and its loads in their own colours (weight green, drag blue, friction red, contact brown, springs grey, motor blue, your pull red); model residual ${now.residual.toExponential(1)}.${now.indeterminate ? ' <b>Redundant supports:</b> the mechanism is over-constrained, so how the load splits between them is not fixed by a rigid model; this is the even (minimum-norm) split.' : ''}${friction.enabled && design.meshes.length ? ' Gear-mesh friction is left out of the forces.' : ''}</p>`
         : ''
     }
     <p class="muted">Click a quantity to graph it over time; shift-click others (here, or on other parts) for a phase plot. ${running ? 'Pause to pick another part.' : 'Click another part to measure it, or empty space to let go.'} <button id="m-settings">Settings…</button></p>`;
@@ -3326,6 +3394,11 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
 /** Refresh the measurements shown (every frame while running). */
 function updateMeasures() {
   if (!sim || !measureView) return;
+  if (forceSignature(measureView.kind, measureView.id) !== measureView.sig) {
+    // a load came or went (a wheel landed, the pull let go): list what acts now
+    inspectorMeasure(measureView.kind, measureView.id);
+    return;
+  }
   const s = new StateAt(sim.sys, sim.q, sim.qd);
   for (const m of measureView.measures) {
     const el = inspectorEl.querySelector(`#${CSS.escape(`m-${m.key}`)}`);

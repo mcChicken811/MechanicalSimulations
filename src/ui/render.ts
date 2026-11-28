@@ -46,7 +46,7 @@ export interface Scene {
    * Joint forces on the selected part (while measuring): each force drawn from where it acts,
    * pxPerN pixels per newton, with its size; a couple as a curled arrow.
    */
-  forceArrows?: { items: { at: Vec; F: Vec; M?: number; label: string }[]; pxPerN: number } | null;
+  forceArrows?: { items: { at: Vec; F: Vec; M?: number; label: string; color?: string }[]; pxPerN: number } | null;
   /** Arrows in the world (initial velocities): from, to, colour. */
   arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
   /** Dimensions to show, to this many decimals (null: hidden). */
@@ -1247,10 +1247,10 @@ function drawDimensions(ctx: CanvasRenderingContext2D, v: View, s: Scene, digits
 
 /** Joint forces on a part: an arrow from where each acts, its size beside the tip; couples as a curled arrow. */
 function drawForceArrows(ctx: CanvasRenderingContext2D, v: View, fa: NonNullable<Scene['forceArrows']>) {
-  const col = '#8e3fb0';
   ctx.save();
   ctx.font = '600 10.5px system-ui, sans-serif';
   for (const it of fa.items) {
+    const col = it.color ?? '#8e3fb0';
     const p = toScreen(v, it.at);
     const mag = Math.hypot(it.F[0], it.F[1]);
     if (mag * fa.pxPerN > 3) {
@@ -1278,7 +1278,7 @@ function drawForceArrows(ctx: CanvasRenderingContext2D, v: View, fa: NonNullable
       ctx.fillStyle = col;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
-      haloText(ctx, `${it.M.toFixed(3)} N·m`, p[0] + r + 3, p[1] - r);
+      haloText(ctx, `${it.label.replace(/[\d.−-]+ N$/, '')}${it.M.toFixed(3)} N·m`, p[0] + r + 3, p[1] - r);
     }
   }
   ctx.restore();
