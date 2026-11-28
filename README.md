@@ -144,6 +144,17 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
   - **Done** or Esc leaves the editor. **Edit background…** in the block opens it again.
   - **Large pictures** are scaled down to at most 2048 px across, so they fit in the browser and in project files; SVGs are kept as they are. If the images are still too big for the browser to keep between visits, it says so; they stay for now and are saved in projects.
 - **Strength** sets how strongly the background shows behind the mechanism. Each scene starts at a strength that keeps the mechanism easy to read.
+- **Animate** (on by default) brings the scenes to life:
+  - **The time of day:** in the sky, city and mountain scenes it turns.
+    - The sky's colours move through night, dawn, day and dusk, from keyframes across 24 hours.
+    - The sun and moon cross the sky on arcs, and stars fade in at night and twinkle.
+    - The scenery and clouds are lit warm at dawn and dusk and darkened at night. The darkening covers the scenery only, never the sky, which is drawn behind it.
+    - The city's windows light up as it gets dark.
+    - **Time of day** shows the clock and can be dragged; **A day lasts** sets the speed (1 minute to 30, or still).
+  - **Clouds** drift at their own distances.
+  - **Shooting stars** cross the night sky now and then.
+  - **Birds** (sky, city, mountains, sunset) fly in a flock by Reynolds' boids rules (1987). Each bird keeps clear of those too close (separation), heads the way its neighbours head (alignment) and towards their middle (cohesion). A soft pull keeps it in the sky's band, it wanders a little, and its speed stays between a glide and a dash. They fly at distance 5 in the scene's space, so they pan and zoom with parallax, wrap round the view sideways, and beat their wings as they go. They settle at night.
+  - **Saved:** the animation's settings and the time of day reached are saved with the background, in projects, the gallery and the browser.
 
 **Integrators.** The *Simulation* block chooses how the equations of motion are stepped in time, and the step. Each choice shows its order and cost, and the status bar names it.
 

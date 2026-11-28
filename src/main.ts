@@ -12,7 +12,7 @@ import { Palette, type Command } from './ui/palette';
 import { autoHide, type AutoHide } from './ui/autohide';
 import { Messages } from './ui/messages';
 import { Gallery, MY_PROJECTS, type GalleryItem } from './ui/gallery';
-import { Backdrop, NO_BACKGROUND, SCENES, type BackgroundState, type ImageLayer } from './ui/background';
+import { Backdrop, clockText, DEFAULT_ANIM, NO_BACKGROUND, SCENES, type BackgroundState, type ImageLayer } from './ui/background';
 import { BackgroundEditor } from './ui/bgeditor';
 import { askDialog } from './ui/dialog';
 import { DESIGN_FORMAT, PROJECT_FORMAT, fileName, pickJson, readFile, saveJson, type ProjectFile } from './ui/files';
@@ -2349,7 +2349,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---- Save & load: designs (the drawing) and projects (the drawing and every setting), see ui/files.ts ----
 /** Side-panel controls that are part of the design (the ground) or of the beam colouring (saved with it): not saved as settings. */
-const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity']);
+const NOT_SETTINGS = new Set(['ground', 'ground-e', 'ground-mu', 'beam-scale', 'bg-kind', 'bg-opacity', 'bg-animate', 'bg-time', 'bg-day', 'bg-birds']);
 
 /** The side panel's settings, by control id: ticked or not, or the value. */
 function captureControls(): Record<string, boolean | string> {
@@ -2402,7 +2402,7 @@ async function saveDesign(): Promise<boolean> {
 
 /** The project as it is now: the drawing, the side panel's settings, the beam colouring, the view. */
 function buildProject(): ProjectFile {
-  return { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: cloneDesign(persistable()), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view }, background: { ...backdrop.state } };
+  return { format: PROJECT_FORMAT, version: 1, savedAt: new Date().toISOString(), design: cloneDesign(persistable()), controls: captureControls(), beamColour: { ...beamColour, fixed: { ...beamColour.fixed } }, view: { ...view }, background: backgroundNow() };
 }
 
 async function saveProject(): Promise<boolean> {
@@ -2536,14 +2536,21 @@ function validBackground(raw: unknown): BackgroundState | null {
   const b = raw as Partial<BackgroundState> & { image?: string; mode?: string; rect?: { x: number; y: number; w: number } };
   const scene = (id: unknown) => (SCENES.some((x) => x.id === id) ? (id as string) : 'none');
   const opacity = Number.isFinite(b.opacity) ? Math.min(1, Math.max(0.05, b.opacity!)) : 0.7;
+  const a = (b.anim ?? {}) as Partial<BackgroundState['anim']>;
+  const anim = {
+    on: typeof a.on === 'boolean' ? a.on : DEFAULT_ANIM.on,
+    dayLength: Number.isFinite(a.dayLength) && a.dayLength! >= 0 ? a.dayLength! : DEFAULT_ANIM.dayLength,
+    hour: Number.isFinite(a.hour) ? ((a.hour! % 24) + 24) % 24 : DEFAULT_ANIM.hour,
+    birds: typeof a.birds === 'boolean' ? a.birds : DEFAULT_ANIM.birds,
+  };
   const okLayer = (l: ImageLayer) =>
     l && typeof l.image === 'string' && l.image.startsWith('data:image/') && Number.isFinite(l.aspect) && l.aspect >= 0 && (l.depth === null || (Number.isFinite(l.depth) && l.depth >= 1)) && l.ref && [l.ref.cx, l.ref.cy, l.ref.s].every(Number.isFinite) && l.ref.s > 0 && l.rect && [l.rect.x, l.rect.y, l.rect.w].every(Number.isFinite) && l.rect.w > 0;
   // the earlier single image, placed in the drawing: a custom background with it at distance 1
   if (b.kind === 'image' && typeof b.image === 'string' && b.image.startsWith('data:image/') && b.rect)
-    return { kind: 'custom', base: 'none', opacity, layers: [{ id: 'img', name: 'image', image: b.image, aspect: 0, depth: 1, ref: { cx: 0, cy: 0, s: 100 }, rect: { ...b.rect } }] }; // its shape: from the image, once loaded
+    return { kind: 'custom', base: 'none', opacity, anim, layers: [{ id: 'img', name: 'image', image: b.image, aspect: 0, depth: 1, ref: { cx: 0, cy: 0, s: 100 }, rect: { ...b.rect } }] }; // its shape: from the image, once loaded
   const layers = Array.isArray(b.layers) ? b.layers.filter(okLayer).map((l) => ({ ...l, name: String(l.name ?? 'image'), id: String(l.id ?? Math.random()) })) : [];
   const kind = b.kind === 'custom' ? 'custom' : scene(b.kind);
-  return { kind, base: scene(b.base), layers, opacity };
+  return { kind, base: scene(b.base), layers, opacity, anim };
 }
 
 /** Show the background and its controls, and keep it in the browser unless `passing` (an image too big for that stays for now, and in saved projects). */
@@ -2551,16 +2558,53 @@ function setBackground(b: BackgroundState, passing = false) {
   backdrop.set(b);
   bgKind.value = b.kind;
   $<HTMLElement>('#bg-edit-row').hidden = b.kind !== 'custom';
+  // the animation's controls, as far as the scene has them
+  const sc = SCENES.find((x) => x.id === (b.kind === 'custom' ? b.base : b.kind));
+  $<HTMLElement>('#bg-animate-row').hidden = !sc?.alive;
+  $<HTMLInputElement>('#bg-animate').checked = b.anim.on;
+  $<HTMLElement>('#bg-time-row').hidden = !sc?.cycle || !b.anim.on;
+  $<HTMLElement>('#bg-day-row').hidden = !sc?.cycle || !b.anim.on;
+  $<HTMLElement>('#bg-birds-row').hidden = !sc?.birds || !b.anim.on;
+  $<HTMLInputElement>('#bg-birds').checked = b.anim.birds;
+  const day = $<HTMLSelectElement>('#bg-day');
+  if (![...day.options].some((o) => Number(o.value) === b.anim.dayLength)) day.append(new Option(`${b.anim.dayLength} s`, String(b.anim.dayLength)));
+  day.value = [...day.options].find((o) => Number(o.value) === b.anim.dayLength)!.value;
+  showBackgroundTime();
   bgOpacity.value = String(b.opacity);
   $<HTMLOutputElement>('#bg-opacity-out').textContent = `${Math.round(b.opacity * 100)}%`;
   if (passing) return;
   try {
-    localStorage.setItem(BACKGROUND_KEY, JSON.stringify(b));
+    localStorage.setItem(BACKGROUND_KEY, JSON.stringify(backgroundNow()));
   } catch {
     localStorage.removeItem(BACKGROUND_KEY);
     messages.notify('The background images are too big to keep in the browser between visits: they show now, and are kept in projects you save.', 'warn');
   }
 }
+
+/** The background as it is now, to keep: with the time of day it has reached. */
+function backgroundNow(): BackgroundState {
+  const b = backdrop.state;
+  return { ...b, anim: { ...b.anim, hour: +backdrop.hour.toFixed(3) } };
+}
+
+/** The time-of-day slider and its clock, following the day as it turns (unless being dragged). */
+/** Whether the time-of-day slider is held (it follows the day only when let go). */
+let timeHeld = false;
+function showBackgroundTime() {
+  const slider = $<HTMLInputElement>('#bg-time');
+  const h = backdrop.hour;
+  if (!timeHeld) slider.value = h.toFixed(2);
+  const text = clockText(h);
+  const out = $<HTMLOutputElement>('#bg-time-out');
+  if (out.textContent !== text) out.textContent = text;
+}
+$<HTMLInputElement>('#bg-animate').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, on: (e.target as HTMLInputElement).checked } }));
+$<HTMLInputElement>('#bg-birds').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, birds: (e.target as HTMLInputElement).checked } }));
+$<HTMLSelectElement>('#bg-day').addEventListener('change', (e) => setBackground({ ...backgroundNow(), anim: { ...backgroundNow().anim, dayLength: Number((e.target as HTMLSelectElement).value) } }));
+$<HTMLInputElement>('#bg-time').addEventListener('pointerdown', () => (timeHeld = true));
+window.addEventListener('pointerup', () => (timeHeld = false));
+$<HTMLInputElement>('#bg-time').addEventListener('input', (e) => setBackground({ ...backdrop.state, anim: { ...backdrop.state.anim, hour: Number((e.target as HTMLInputElement).value) } }, true));
+$<HTMLInputElement>('#bg-time').addEventListener('change', (e) => setBackground({ ...backdrop.state, anim: { ...backdrop.state.anim, hour: Number((e.target as HTMLInputElement).value) } }));
 
 /** Background edit mode (ui/bgeditor.ts): its panel, and the drawing's presses and keys while it is on. */
 const bgEditor = new BackgroundEditor({
@@ -2986,7 +3030,8 @@ function blockSummaries() {
   const colour = beamColour.q === 'off' ? '' : { N: 'tension', V: 'shear', M: 'bending', w: 'deflection' }[beamColour.q];
   put('sum-beams', [colour, deflect.on && 'deflection drawn', breaking.on && `break ≥ ${breaking.at} N·m`].filter(Boolean).join(' · '));
   put('sum-physics', [friction.enabled && 'friction', design.ground && 'ground'].filter(Boolean).join(' · '));
-  put('sum-background', backdrop.name);
+  put('sum-background', `${backdrop.name}${backdrop.state.anim.on && SCENES.find((x) => x.id === (backdrop.state.kind === 'custom' ? backdrop.state.base : backdrop.state.kind))?.cycle ? ` · ${clockText(backdrop.hour)}` : ''}`);
+  if (!$<HTMLElement>('#bg-time-row').hidden) showBackgroundTime();
 }
 
 function setTool(t: Tool) {

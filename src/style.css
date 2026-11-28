@@ -1726,3 +1726,10 @@ body.scrubbing * {
   margin: 4px 0;
   font-size: 12px;
 }
+
+#bg-time-row[hidden],
+#bg-day-row[hidden],
+#bg-birds-row[hidden],
+#bg-animate-row[hidden] {
+  display: none;
+}

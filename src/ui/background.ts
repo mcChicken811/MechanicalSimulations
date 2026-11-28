@@ -36,6 +36,22 @@ export interface ImageLayer {
   rect: { x: number; y: number; w: number };
 }
 
+/**
+ * The background brought to life: the time of day turning (the sky, the sun and moon, stars,
+ * the scenery lit warm at dawn and dusk and dark at night, windows lit after dark), clouds
+ * drifting, birds flocking, shooting stars at night.
+ */
+export interface BackgroundAnim {
+  on: boolean;
+  /** How long a day lasts (s); 0: the time stands still. */
+  dayLength: number;
+  /** The time of day (hours, 0–24) when it was set. */
+  hour: number;
+  birds: boolean;
+}
+
+export const DEFAULT_ANIM: BackgroundAnim = { on: true, dayLength: 300, hour: 10, birds: true };
+
 export interface BackgroundState {
   /** 'none', a scene's id, or 'custom' (the scene `base` with the `layers` over it). */
   kind: string;
@@ -43,9 +59,126 @@ export interface BackgroundState {
   layers: ImageLayer[];
   /** How strongly it shows, 0–1. */
   opacity: number;
+  anim: BackgroundAnim;
 }
 
-export const NO_BACKGROUND: BackgroundState = { kind: 'none', base: 'none', layers: [], opacity: 0.7 };
+export const NO_BACKGROUND: BackgroundState = { kind: 'none', base: 'none', layers: [], opacity: 0.7, anim: { ...DEFAULT_ANIM } };
+
+// ---- the time of day: the sky's colours, the sun and moon, how dark and how warm it is ----
+/** The sky through the day: hour → colours at the top, the middle and the horizon. */
+const SKY_KEYS: [number, string, string, string][] = [
+  [0, '#08122b', '#13234a', '#1f3462'],
+  [4.5, '#0d1a3c', '#1d2d5c', '#34477a'],
+  [5.8, '#2d3a6e', '#6a5f93', '#e48b6a'],
+  [6.8, '#5f8fcf', '#a8c3e3', '#fbcf9a'],
+  [8.5, '#4f9be3', '#9fcff3', '#e3f2fb'],
+  [12, '#4796e2', '#99ccf3', '#e6f4fc'],
+  [16.5, '#5592d6', '#a2cbec', '#f4e0bc'],
+  [18, '#5e6fb0', '#c98fa0', '#f59a62'],
+  [19.2, '#2b2f63', '#6b4f7f', '#c0647a'],
+  [20.5, '#0f1a3e', '#1d2b58', '#2f3e6c'],
+  [24, '#08122b', '#13234a', '#1f3462'],
+];
+
+const hex = (c: string) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+const mix = (a: string, b: string, t: number) => {
+  const [x, y] = [hex(a), hex(b)];
+  return `rgb(${x.map((v, i) => Math.round(v + (y[i] - v) * t)).join(',')})`;
+};
+
+/** The sky's three colours at an hour. */
+function skyAt(hour: number): [string, string, string] {
+  const h = ((hour % 24) + 24) % 24;
+  let k = 0;
+  while (k < SKY_KEYS.length - 2 && SKY_KEYS[k + 1][0] <= h) k++;
+  const [a, b] = [SKY_KEYS[k], SKY_KEYS[k + 1]];
+  const t = (h - a[0]) / (b[0] - a[0] || 1);
+  const ease = t * t * (3 - 2 * t);
+  return [mix(a[1], b[1], ease), mix(a[2], b[2], ease), mix(a[3], b[3], ease)];
+}
+
+const ramp = (x: number, a: number, b: number) => Math.min(1, Math.max(0, (x - a) / (b - a)));
+/** How dark it is, 0 (day) to 1 (night). */
+export function darkness(hour: number): number {
+  const h = ((hour % 24) + 24) % 24;
+  return h < 12 ? 1 - ramp(h, 5, 7.2) : ramp(h, 17.6, 20.4);
+}
+/** How warm the light is (dawn and dusk), 0–1. */
+function warmth(hour: number): number {
+  const h = ((hour % 24) + 24) % 24;
+  return Math.max(Math.exp(-(((h - 6.4) / 0.8) ** 2)), Math.exp(-(((h - 18.4) / 0.9) ** 2)));
+}
+
+/** Time of day in words: 10:30. */
+export const clockText = (hour: number) => {
+  const h = ((hour % 24) + 24) % 24;
+  return `${Math.floor(h)}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
+};
+
+// ---- birds: a flock by Reynolds' boids rules, in the scene's space at a distance ----
+interface Bird {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  flap: number;
+  size: number;
+}
+
+/**
+ * A flock: each bird steers by what its neighbours do (Reynolds 1987). It keeps clear of those
+ * too close (separation), heads the way those near it head (alignment) and towards their middle
+ * (cohesion), stays in the sky's band of the scene and in view (sideways, it wraps round what is
+ * seen), and wanders a little; its speed kept between a glide and a dash.
+ */
+class Flock {
+  birds: Bird[] = [];
+  private rnd = seeded(77);
+
+  spawn(n: number, u0: number, u1: number) {
+    const cx = (u0 + u1) / 2;
+    this.birds = Array.from({ length: n }, () => ({ x: cx + (this.rnd() - 0.5) * 220, y: 150 + this.rnd() * 120, vx: 45 + this.rnd() * 20, vy: (this.rnd() - 0.5) * 10, flap: this.rnd() * 6.28, size: 0.8 + this.rnd() * 0.5 }));
+  }
+
+  /** One step of dt s; u0…u1 the units in view across, the sky's band top…bottom down. */
+  step(dt: number, u0: number, u1: number, top: number, bottom: number) {
+    const B = this.birds;
+    const [SEP, ALIGN, COH] = [24, 70, 95];
+    for (const b of B) {
+      let [sx, sy, ax, ay, cx, cy, na, nc] = [0, 0, 0, 0, 0, 0, 0, 0];
+      for (const o of B) {
+        if (o === b) continue;
+        const [dx, dy] = [o.x - b.x, o.y - b.y];
+        const d = Math.hypot(dx, dy);
+        if (d < SEP && d > 0) [sx, sy] = [sx - dx / d / d, sy - dy / d / d];
+        if (d < ALIGN) [ax, ay, na] = [ax + o.vx, ay + o.vy, na + 1];
+        if (d < COH) [cx, cy, nc] = [cx + o.x, cy + o.y, nc + 1];
+      }
+      let [fx, fy] = [sx * 1800, sy * 1800]; // separation
+      if (na) [fx, fy] = [fx + (ax / na - b.vx) * 0.9, fy + (ay / na - b.vy) * 0.9]; // alignment
+      if (nc) [fx, fy] = [fx + (cx / nc - b.x) * 0.35, fy + (cy / nc - b.y) * 0.35]; // cohesion
+      // stay in the sky's band (a soft wall), and wander
+      if (b.y < top) fy += (top - b.y) * 2;
+      if (b.y > bottom) fy -= (b.y - bottom) * 2;
+      fx += (this.rnd() - 0.5) * 30;
+      fy += (this.rnd() - 0.5) * 30;
+      b.vx += fx * dt;
+      b.vy += fy * dt;
+      const v = Math.hypot(b.vx, b.vy) || 1;
+      const k = v > 85 ? 85 / v : v < 38 ? 38 / v : 1;
+      [b.vx, b.vy] = [b.vx * k, b.vy * k * (1 - 1.5 * dt)]; // (birds fly level more than not)
+    }
+    for (const b of B) {
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.flap += dt * (9 + Math.abs(b.vy) * 0.1);
+      // round the view sideways: out on one side, in on the other
+      const span = u1 - u0 + 160;
+      if (b.x > u1 + 80) b.x -= span;
+      if (b.x < u0 - 80) b.x += span;
+    }
+  }
+}
 
 /** A small seeded random generator (mulberry32): the same scene every time. */
 function seeded(seed: number) {
@@ -111,26 +244,45 @@ interface SceneLayer {
   depth: number | null;
   paint: (c: CanvasRenderingContext2D, w: number, h: number) => void;
   below?: string;
+  /** The sky itself: when the day turns (animated), the moving sky is drawn in its place. */
+  sky?: boolean;
+  /** Drifting (animated): units per second, sideways. */
+  drift?: number;
+  /** Drawn over the layer by night (animated), as bright as it is dark: lit windows. */
+  glow?: (c: CanvasRenderingContext2D, w: number, h: number) => void;
 }
 
-const SCENE_DEFS: Record<string, { name: string; strength: number; layers: SceneLayer[] }> = {
+interface SceneDef {
+  name: string;
+  strength: number;
+  layers: SceneLayer[];
+  /** Animated: whether its sky turns with the time of day, and whether birds fly in it. */
+  cycle?: boolean;
+  birds?: boolean;
+}
+
+const SCENE_DEFS: Record<string, SceneDef> = {
   sky: {
     name: 'Blue sky with clouds',
     strength: 0.75,
+    cycle: true,
+    birds: true,
     layers: [
-      { depth: null, paint: (c, w, h) => ((c.fillStyle = vertical(c, h, [[0, '#5aa5e6'], [0.55, '#a9d4f5'], [1, '#eaf6fd']])), c.fillRect(0, 0, w, h)) },
-      { depth: 14, paint: (c, w, h) => cloudStrip(c, w, h, 7, Math.max(3, Math.round(w / 420)), 0.12, 0.25) },
-      { depth: 6, paint: (c, w, h) => cloudStrip(c, w, h, 9, Math.max(3, Math.round(w / 380)), 0.38, 0.3) },
+      { depth: null, sky: true, paint: (c, w, h) => ((c.fillStyle = vertical(c, h, [[0, '#5aa5e6'], [0.55, '#a9d4f5'], [1, '#eaf6fd']])), c.fillRect(0, 0, w, h)) },
+      { depth: 14, drift: 5, paint: (c, w, h) => cloudStrip(c, w, h, 7, Math.max(3, Math.round(w / 420)), 0.12, 0.25) },
+      { depth: 6, drift: 9, paint: (c, w, h) => cloudStrip(c, w, h, 9, Math.max(3, Math.round(w / 380)), 0.38, 0.3) },
     ],
   },
   city: {
     name: 'City skyline',
     strength: 0.7,
+    cycle: true,
+    birds: true,
     layers: [
-      { depth: null, paint: (c, w, h) => ((c.fillStyle = vertical(c, h, [[0, '#8fbbe6'], [0.6, '#d9e6f2'], [1, '#f6e3c8']])), c.fillRect(0, 0, w, h)) },
-      { depth: 16, paint: (c, w, h) => cloudStrip(c, w, h, 11, 2, 0.12, 0.12) },
-      { depth: 6, paint: (c, w, h) => buildings(c, w, h, 21, '#b4c3d4', 0.42, false), below: '#b4c3d4' },
-      { depth: 3, paint: (c, w, h) => buildings(c, w, h, 22, '#73859c', 0.55, true), below: '#73859c' },
+      { depth: null, sky: true, paint: (c, w, h) => ((c.fillStyle = vertical(c, h, [[0, '#8fbbe6'], [0.6, '#d9e6f2'], [1, '#f6e3c8']])), c.fillRect(0, 0, w, h)) },
+      { depth: 16, drift: 6, paint: (c, w, h) => cloudStrip(c, w, h, 11, 2, 0.12, 0.12) },
+      { depth: 6, paint: (c, w, h) => buildings(c, w, h, 21, '#b4c3d4', 0.42, false), below: '#b4c3d4', glow: (c, w, h) => buildings(c, w, h, 21, '#b4c3d4', 0.42, false, true) },
+      { depth: 3, paint: (c, w, h) => buildings(c, w, h, 22, '#73859c', 0.55, true), below: '#73859c', glow: (c, w, h) => buildings(c, w, h, 22, '#73859c', 0.55, true, true) },
     ],
   },
   night: {
@@ -169,6 +321,7 @@ const SCENE_DEFS: Record<string, { name: string; strength: number; layers: Scene
   sunset: {
     name: 'Sunset over hills',
     strength: 0.7,
+    birds: true,
     layers: [
       {
         depth: null,
@@ -187,7 +340,7 @@ const SCENE_DEFS: Record<string, { name: string; strength: number; layers: Scene
           c.fill();
         },
       },
-      { depth: 18, paint: (c, w, h) => cloudStrip(c, w, h, 5, 2, 0.22, 0.12, '255,214,190') },
+      { depth: 18, drift: 5, paint: (c, w, h) => cloudStrip(c, w, h, 5, 2, 0.22, 0.12, '255,214,190') },
       { depth: 9, paint: (c, w, h) => hills(c, w, h, 0.8, 0.1, '#d9876e', seeded(51)), below: '#d9876e' },
       { depth: 5, paint: (c, w, h) => hills(c, w, h, 0.88, 0.09, '#a8607c', seeded(52)), below: '#a8607c' },
       { depth: 2.5, paint: (c, w, h) => hills(c, w, h, 0.96, 0.07, '#6e4a72', seeded(53)), below: '#6e4a72' },
@@ -196,9 +349,11 @@ const SCENE_DEFS: Record<string, { name: string; strength: number; layers: Scene
   mountains: {
     name: 'Mountains',
     strength: 0.7,
+    cycle: true,
+    birds: true,
     layers: [
-      { depth: null, paint: (c, w, h) => ((c.fillStyle = vertical(c, h, [[0, '#7fb2e0'], [0.6, '#cfe3f3'], [1, '#eef5ea']])), c.fillRect(0, 0, w, h)) },
-      { depth: 20, paint: (c, w, h) => cloudStrip(c, w, h, 3, 2, 0.1, 0.15) },
+      { depth: null, sky: true, paint: (c, w, h) => ((c.fillStyle = vertical(c, h, [[0, '#7fb2e0'], [0.6, '#cfe3f3'], [1, '#eef5ea']])), c.fillRect(0, 0, w, h)) },
+      { depth: 20, drift: 4, paint: (c, w, h) => cloudStrip(c, w, h, 3, 2, 0.1, 0.15) },
       { depth: 10, paint: (c, w, h) => range(c, w, h, 31, '#9fb3c8', 0.3, 0.7, 0), below: '#9fb3c8' },
       { depth: 6, paint: (c, w, h) => range(c, w, h, 32, '#7a92ac', 0.42, 0.8, 1), below: '#7a92ac' },
       { depth: 4, paint: (c, w, h) => range(c, w, h, 33, '#5b7389', 0.6, 0.9, 2), below: '#5b7389' },
@@ -231,22 +386,31 @@ function grid(c: CanvasRenderingContext2D, w: number, h: number, fill: string, i
 }
 
 /** A row of buildings across w (repeating), rising from the bottom to as high as `top` (fraction of h). */
-function buildings(c: CanvasRenderingContext2D, w: number, h: number, seed: number, color: string, top: number, lit: boolean) {
+function buildings(c: CanvasRenderingContext2D, w: number, h: number, seed: number, color: string, top: number, lit: boolean, glowOnly = false) {
+  // (glowOnly: just the windows lit at night, in the same places: the same random draws, nothing else painted)
   const rnd = seeded(seed);
+  const night = seeded(seed + 1000); // which windows are lit at night
   let x = 0;
   while (x < w) {
     const bw = Math.min(40 + rnd() * 70, w - x);
     const bh = h * (1 - top) * (0.35 + 0.65 * rnd());
     const y = h - bh;
     c.fillStyle = color;
-    c.fillRect(x, y, bw, bh);
-    if (rnd() < 0.3) c.fillRect(x + bw * 0.4, y - 18, 3, 18);
-    if (lit)
-      for (let wy = y + 10; wy < h - 12; wy += 16)
-        for (let wx = x + 7; wx < x + bw - 10; wx += 13) {
-          c.fillStyle = rnd() < 0.35 ? 'rgba(255,233,160,0.85)' : 'rgba(225,232,240,0.45)';
+    if (!glowOnly) c.fillRect(x, y, bw, bh);
+    if (rnd() < 0.3 && !glowOnly) c.fillRect(x + bw * 0.4, y - 18, 3, 18);
+    for (let wy = y + 10; wy < h - 12; wy += lit ? 16 : 22)
+      for (let wx = x + 7; wx < x + bw - 10; wx += lit ? 13 : 17) {
+        const day = lit ? rnd() : 1;
+        if (glowOnly) {
+          if (night() < (lit ? 0.45 : 0.25)) {
+            c.fillStyle = lit ? 'rgba(255,214,120,0.95)' : 'rgba(255,220,150,0.7)';
+            c.fillRect(wx, wy, lit ? 6 : 4, lit ? 8 : 5);
+          }
+        } else if (lit) {
+          c.fillStyle = day < 0.35 ? 'rgba(255,233,160,0.85)' : 'rgba(225,232,240,0.45)';
           c.fillRect(wx, wy, 6, 8);
         }
+      }
     x += bw + 2 + rnd() * 10;
   }
 }
@@ -292,6 +456,8 @@ function range(c: CanvasRenderingContext2D, w: number, h: number, seed: number, 
 const TILE_W = 1200;
 const TILE_H = 800;
 const SCENE_SCALE = 170;
+/** The birds' distance: in front of the far scenery, behind the near. */
+const BIRD_DEPTH = 5;
 /** The most canvas px across a tile is drawn with (re-drawn sharper when zoomed in, within this). */
 const MAX_TILE_PX = 2400;
 
@@ -301,7 +467,7 @@ function sceneTile(z: number): ImageLayer {
 }
 
 /** The scenes: id, name, their usual strength, and how many layers deep. */
-export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length }));
+export const SCENES = Object.entries(SCENE_DEFS).map(([id, s]) => ({ id, name: s.name, strength: s.strength, layers: s.layers.length, cycle: !!s.cycle, birds: !!s.birds, alive: !!s.cycle || !!s.birds || s.layers.some((l) => l.drift) || id === 'night' }));
 
 /**
  * An image file for a layer, as a data URL: an SVG as it is; a picture scaled down to at most
@@ -360,10 +526,19 @@ export class Backdrop {
   private images = new Map<string, HTMLImageElement>();
   private cache = new Map<string, HTMLCanvasElement>();
   private layered: HTMLCanvasElement | null = null;
+  /** The time of day: what it was at `at` (ms), running on at the day's length. */
+  private clock = { at: performance.now(), hour: DEFAULT_ANIM.hour, dayLength: DEFAULT_ANIM.dayLength };
+  private flock = new Flock();
+  private lastDraw = performance.now();
+  private meteor: { x: number; y: number; vx: number; vy: number; life: number } | null = null;
+  private meteorClock = 3;
 
   /** Set the background (images load in the background; until then they do not show). */
   set(state: BackgroundState) {
-    this.state = { ...state, layers: state.layers.map((l) => ({ ...l, ref: { ...l.ref }, rect: { ...l.rect } })) };
+    const anim = { ...DEFAULT_ANIM, ...state.anim };
+    // a new time of day, or day length: the clock starts from it
+    if (anim.hour !== this.state.anim?.hour || anim.dayLength !== this.clock.dayLength || !this.state.anim) this.clock = { at: performance.now(), hour: anim.hour, dayLength: anim.dayLength };
+    this.state = { ...state, anim, layers: state.layers.map((l) => ({ ...l, ref: { ...l.ref }, rect: { ...l.rect } })) };
     for (const l of this.state.layers) {
       const fix = (img: HTMLImageElement) => {
         // a layer whose shape was not known (an older save): from the image itself
@@ -396,31 +571,40 @@ export class Backdrop {
    * A scene layer drawn: a fixed one at the screen's size; one at a distance as its tile in the
    * scene's own space (TILE_W × TILE_H units) at `res` canvas px per unit.
    */
-  private sceneCanvas(id: string, i: number, w: number, h: number, res: number): HTMLCanvasElement {
+  private sceneCanvas(id: string, i: number, w: number, h: number, res: number, painter?: SceneLayer['paint']): HTMLCanvasElement {
     const key = `${id}:${i}:${w}x${h}@${res}`;
     let cv = this.cache.get(key);
     if (cv) return cv;
     if (this.cache.size > 40) this.cache.clear();
-    const layer = SCENE_DEFS[id].layers[i];
     cv = document.createElement('canvas');
     [cv.width, cv.height] = [Math.round(w * res), Math.round(h * res)];
     const c = cv.getContext('2d')!;
     c.scale(res, res);
-    layer.paint(c, w, h);
+    (painter ?? SCENE_DEFS[id].layers[i].paint)(c, w, h);
     this.cache.set(key, cv);
     return cv;
   }
 
-  /** Draw it over the plain paper (w × h CSS px), for view v: the layers far to near. */
+  /** Draw it over the plain paper (w × h CSS px), for view v: the layers far to near, living if animated. */
   draw(ctx: CanvasRenderingContext2D, w: number, h: number, v: View) {
     const s = this.state;
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0, (now - this.lastDraw) / 1000));
+    this.lastDraw = now;
     const out = this.composite(w, h); // the layers at full strength, then the whole at its strength
     const sceneId = s.kind === 'custom' ? s.base : s.kind;
     const scene = SCENE_DEFS[sceneId];
+    const anim = s.anim.on && !!scene;
+    const turning = anim && !!scene?.cycle; // its sky follows the time of day
+    const hour = this.hour;
+    const dark = turning ? darkness(hour) : sceneId === 'night' ? 1 : 0;
     const items: { depth: number; draw: () => void }[] = [];
+    const glows: (() => void)[] = [];
     const dpr = window.devicePixelRatio || 1;
+    const secs = now / 1000;
     scene?.layers.forEach((layer, i) => {
       const z = layer.depth ?? Infinity;
+      if (turning && layer.sky) return; // the moving sky is drawn instead (behind everything, below)
       items.push({
         depth: z,
         draw: () => {
@@ -428,13 +612,25 @@ export class Backdrop {
           // in the scene's own space: its tile placed in the world like an image at that distance
           // (so it pans by 1/z and zooms by (s/s₀)^(1/z)), repeating across, its ground running on below
           const r = layerRect(sceneTile(z), v, w, h);
-          const want = (r.w / TILE_W) * dpr; // canvas px per unit it is shown at
+          const unit = r.w / TILE_W;
+          if (anim && layer.drift) r.x += ((secs * layer.drift) % TILE_W) * unit; // drifting along
+          const want = unit * dpr; // canvas px per unit it is shown at
           const res = Math.min(want > 1.4 ? 2 : 1, MAX_TILE_PX / TILE_W) * Math.min(dpr, 2);
           const cv = this.sceneCanvas(sceneId, i, TILE_W, TILE_H, res);
-          for (let x = r.x - Math.ceil(r.x / r.w) * r.w; x < w; x += r.w) out.drawImage(cv, x, r.y, r.w + 0.6, r.h); // (a hair over: no seams)
+          const x0 = r.x - Math.ceil(r.x / r.w) * r.w;
+          for (let x = x0; x < w; x += r.w) out.drawImage(cv, x, r.y, r.w + 0.6, r.h); // (a hair over: no seams)
           if (layer.below && r.y + r.h < h) {
             out.fillStyle = layer.below;
             out.fillRect(0, r.y + r.h - 0.5, w, h - (r.y + r.h) + 0.5);
+          }
+          // lit windows: over the night's darkening, as bright as it is dark
+          if (anim && layer.glow && dark > 0.02) {
+            const gl = this.sceneCanvas(`${sceneId}`, -1 - i, TILE_W, TILE_H, res, layer.glow);
+            glows.push(() => {
+              out.globalAlpha = dark;
+              for (let x = x0; x < w; x += r.w) out.drawImage(gl, x, r.y, r.w + 0.6, r.h);
+              out.globalAlpha = 1;
+            });
           }
         },
       });
@@ -452,14 +648,176 @@ export class Backdrop {
           },
         });
       }
-    if (!items.length) return;
+    if (!items.length && !turning) return;
     // far to near, each over the ones behind at full strength (a near layer hides what is behind
     // it); a scene's layers before the images at the same distance, the images in their order
     items.map((it, k) => ({ ...it, k })).sort((a, b) => b.depth - a.depth || a.k - b.k).forEach((it) => it.draw());
+    if (turning) {
+      // the light: warm at dawn and dusk, dark at night, on the scenery only (what is drawn so far)
+      out.save();
+      out.globalCompositeOperation = 'source-atop';
+      const warm = warmth(hour);
+      if (warm > 0.01) (out.fillStyle = `rgba(255,128,70,${0.2 * warm})`), out.fillRect(0, 0, w, h);
+      if (dark > 0.01) (out.fillStyle = `rgba(14,22,58,${0.62 * dark})`), out.fillRect(0, 0, w, h);
+      out.restore();
+    }
+    for (const g of glows) g();
+    // birds by day, flying at their distance in the scene's space
+    if (anim && scene?.birds && s.anim.birds && dark < 0.9) this.drawBirds(out, v, w, h, dt, 1 - dark);
+    // shooting stars and twinkling at night
+    if (anim && dark > 0.3) this.drawNightSky(out, w, h, dt, dark, turning);
+    if (turning) {
+      // the sky, behind everything (each drawn behind the one before): the sun or moon, stars, then the sky itself
+      out.save();
+      out.globalCompositeOperation = 'destination-over';
+      this.drawSunMoon(out, w, h, hour);
+      if (dark > 0.02) {
+        out.globalAlpha = dark;
+        out.drawImage(this.starCanvas(w, h), 0, 0, w, h);
+        out.globalAlpha = 1;
+      }
+      const [top, mid, low] = skyAt(hour);
+      out.fillStyle = vertical(out, h, [[0, top], [0.55, mid], [1, low]]);
+      out.fillRect(0, 0, w, h);
+      out.restore();
+    }
     ctx.save();
     ctx.globalAlpha = Math.min(1, Math.max(0, s.opacity));
     ctx.drawImage(out.canvas, 0, 0, w, h);
     ctx.restore();
+  }
+
+  /** The sun by day and the moon by night, each along its arc across the sky (with a glow). */
+  private drawSunMoon(c: CanvasRenderingContext2D, w: number, h: number, hour: number) {
+    const H = ((hour % 24) + 24) % 24;
+    const arc = (t: number) => [w * (0.08 + 0.84 * t), h * 0.78 - Math.sin(Math.PI * t) * h * 0.62] as const;
+    const sunT = (H - 5.6) / 13.4; // up from 5:36 to 19:00
+    if (sunT > 0 && sunT < 1) {
+      const [x, y] = arc(sunT);
+      const r = Math.min(w, h) * 0.045;
+      const low = 1 - Math.sin(Math.PI * sunT); // redder near the horizon
+      const glow = c.createRadialGradient(x, y, r * 0.6, x, y, r * 5);
+      glow.addColorStop(0, `rgba(255,${Math.round(230 - 60 * low)},${Math.round(160 - 80 * low)},0.55)`);
+      glow.addColorStop(1, 'rgba(255,220,150,0)');
+      c.fillStyle = `rgb(255,${Math.round(244 - 70 * low)},${Math.round(200 - 110 * low)})`;
+      c.beginPath();
+      c.arc(x, y, r, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = glow;
+      c.fillRect(x - r * 5, y - r * 5, r * 10, r * 10);
+    }
+    const moonT = (((H - 18.6 + 24) % 24) / 11.4); // up from 18:36 to 6:00
+    if (moonT > 0 && moonT < 1) {
+      const [x, y] = arc(moonT);
+      const r = Math.min(w, h) * 0.035;
+      c.fillStyle = '#f4efd6';
+      c.beginPath();
+      c.arc(x, y, r, 0, Math.PI * 2);
+      c.fill();
+      const glow = c.createRadialGradient(x, y, r, x, y, r * 4);
+      glow.addColorStop(0, 'rgba(255,250,220,0.22)');
+      glow.addColorStop(1, 'rgba(255,250,220,0)');
+      c.fillStyle = glow;
+      c.fillRect(x - r * 4, y - r * 4, r * 8, r * 8);
+    }
+  }
+
+  /** The stars of a turning sky, drawn once per screen size (shown as dark as it is). */
+  private starCanvas(w: number, h: number): HTMLCanvasElement {
+    const dpr = window.devicePixelRatio || 1;
+    const key = `stars:${w}x${h}@${dpr}`;
+    let cv = this.cache.get(key);
+    if (cv) return cv;
+    cv = document.createElement('canvas');
+    [cv.width, cv.height] = [Math.round(w * dpr), Math.round(h * dpr)];
+    const c = cv.getContext('2d')!;
+    c.scale(dpr, dpr);
+    const rnd = seeded(29);
+    for (let i = 0; i < (w * h) / 2400; i++) {
+      c.fillStyle = `rgba(255,255,240,${0.35 + 0.65 * rnd()})`;
+      c.beginPath();
+      c.arc(rnd() * w, rnd() * h * 0.8, 0.4 + 1.1 * rnd() ** 3, 0, Math.PI * 2);
+      c.fill();
+    }
+    this.cache.set(key, cv);
+    return cv;
+  }
+
+  /** Twinkling stars and, now and then, a shooting star (screen space, as the night sky). */
+  private drawNightSky(c: CanvasRenderingContext2D, w: number, h: number, dt: number, dark: number, turning: boolean) {
+    const t = performance.now() / 1000;
+    const rnd = seeded(41);
+    c.save();
+    // a few stars that twinkle (over the still ones), in front of the sky but behind the scenery's
+    // (drawn behind what is there when the sky turns, else on the night scene's own sky)
+    c.globalCompositeOperation = turning ? 'destination-over' : 'source-over';
+    for (let i = 0; i < 40; i++) {
+      const [x, y, f, ph] = [rnd() * w, rnd() * h * 0.6, 1 + rnd() * 3, rnd() * 6.28];
+      const a = dark * (0.5 + 0.5 * Math.sin(t * f + ph)) ** 3;
+      if (a < 0.05) continue;
+      c.fillStyle = `rgba(255,255,235,${a})`;
+      c.beginPath();
+      c.arc(x, y, 1.6, 0, Math.PI * 2);
+      c.fill();
+    }
+    // shooting stars: one every few seconds, a streak across the upper sky
+    this.meteorClock -= dt;
+    if (this.meteorClock <= 0 && !this.meteor) {
+      this.meteor = { x: Math.random() * w * 0.8 + w * 0.1, y: Math.random() * h * 0.3, vx: (Math.random() < 0.5 ? -1 : 1) * (500 + Math.random() * 300), vy: 180 + Math.random() * 120, life: 0.9 };
+      this.meteorClock = 4 + Math.random() * 8;
+    }
+    const m = this.meteor;
+    if (m) {
+      m.life -= dt;
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+      const a = Math.max(0, m.life / 0.9) * dark;
+      const g = c.createLinearGradient(m.x, m.y, m.x - m.vx * 0.18, m.y - m.vy * 0.18);
+      g.addColorStop(0, `rgba(255,255,240,${a})`);
+      g.addColorStop(1, 'rgba(255,255,240,0)');
+      c.strokeStyle = g;
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(m.x, m.y);
+      c.lineTo(m.x - m.vx * 0.18, m.y - m.vy * 0.18);
+      c.stroke();
+      if (m.life <= 0) this.meteor = null;
+    }
+    c.restore();
+  }
+
+  /** The flock, stepped and drawn at its distance (BIRD_DEPTH) in the scene's space: wings beating as they fly. */
+  private drawBirds(c: CanvasRenderingContext2D, v: View, w: number, h: number, dt: number, light: number) {
+    const r = layerRect(sceneTile(BIRD_DEPTH), v, w, h);
+    const unit = r.w / TILE_W;
+    // the units in view across, and the sky's band of the tile
+    const [u0, u1] = [(0 - r.x) / unit, (w - r.x) / unit];
+    if (!this.flock.birds.length || this.flock.birds.every((b) => b.x < u0 - 400 || b.x > u1 + 400)) this.flock.spawn(16, u0, u1);
+    this.flock.step(dt, u0, u1, TILE_H * 0.1, TILE_H * 0.42);
+    c.save();
+    c.strokeStyle = `rgba(38,42,52,${0.85 * light})`;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.lineWidth = Math.max(1, 1.6 * unit);
+    for (const b of this.flock.birds) {
+      const [x, y] = [r.x + b.x * unit, r.y + b.y * unit];
+      const span = 8 * b.size * unit;
+      const lift = Math.sin(b.flap) * span * 0.55; // wings up and down
+      const dir = Math.sign(b.vx) || 1;
+      c.beginPath();
+      c.moveTo(x - span, y - lift);
+      c.quadraticCurveTo(x - span * 0.45, y - lift * 0.2 - span * 0.15, x + dir * span * 0.08, y);
+      c.quadraticCurveTo(x + span * 0.45, y - lift * 0.2 - span * 0.15, x + span, y - lift);
+      c.stroke();
+    }
+    c.restore();
+  }
+
+  /** The time of day now (hours, 0–24). */
+  get hour(): number {
+    const a = this.state.anim;
+    const passed = a.on && a.dayLength > 0 ? ((performance.now() - this.clock.at) / 1000 / a.dayLength) * 24 : 0;
+    return (((this.clock.hour + passed) % 24) + 24) % 24;
   }
 
   /** The canvas the layers are put together on, cleared, at the screen's size (sharp at its pixel density). */
