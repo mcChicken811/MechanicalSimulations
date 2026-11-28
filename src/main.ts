@@ -458,32 +458,87 @@ function segmentAt(w: Vec, segments: readonly { id: number; a: number; b: number
 const linkAt = (w: Vec) => segmentAt(w, design.links);
 const springAt = (w: Vec) => segmentAt(w, design.springs);
 
-/** The motor whose lever (its knob or stick, drawn on the housing) is under w. */
-function leverAt(w: Vec): DGear | null {
+/** The motors whose lever (its knob or stick, drawn on the housing) is under w. */
+function leversAt(w: Vec): DGear[] {
   const sp = toScreen(view, w);
-  for (const g of design.gears) {
-    if (!leverOf(g.motor) || !design.points.some((p) => p.id === g.center)) continue;
+  return design.gears.filter((g) => {
+    if (!leverOf(g.motor) || !design.points.some((p) => p.id === g.center)) return false;
     const { base, knob, radius } = leverGeometry(view, pos(g.center), motorTurnNow(g), g);
-    if (Math.hypot(sp[0] - knob[0], sp[1] - knob[1]) < radius + 4 || segmentDistance(sp, base, knob).d < 5) return g;
-  }
-  return null;
+    return Math.hypot(sp[0] - knob[0], sp[1] - knob[1]) < radius + 4 || segmentDistance(sp, base, knob).d < 5;
+  });
 }
+const leverAt = (w: Vec): DGear | null => leversAt(w)[0] ?? null;
 
 /** The turn of what a motor's lever and PID box ride on: its housing, or a propeller's hub. */
 const motorTurnNow = (g: DGear) => (g.propeller ? gearAngleNow(g.id) : motorAngleNow(g.id));
 
-/** The motor whose PID controller box is under w. */
-function pidAt(w: Vec): DGear | null {
+/** The motors whose PID controller box is under w. */
+function pidsAt(w: Vec): DGear[] {
   const sp = toScreen(view, w);
-  for (const g of design.gears) {
-    if (!g.motor?.pid || !design.points.some((p) => p.id === g.center)) continue;
+  return design.gears.filter((g) => {
+    if (!g.motor?.pid || !design.points.some((p) => p.id === g.center)) return false;
     const P = pidGeometry(view, pos(g.center), motorTurnNow(g), g);
     const [dx, dy] = [sp[0] - P.c[0], sp[1] - P.c[1]];
     const [u, v] = [dx * Math.cos(P.rot) + dy * Math.sin(P.rot), -dx * Math.sin(P.rot) + dy * Math.cos(P.rot)];
-    if (Math.abs(u) <= P.w / 2 + 3 && Math.abs(v) <= P.h / 2 + 3) return g;
-  }
-  return null;
+    return Math.abs(u) <= P.w / 2 + 3 && Math.abs(v) <= P.h / 2 + 3;
+  });
 }
+const pidAt = (w: Vec): DGear | null => pidsAt(w)[0] ?? null;
+
+/** Every part within `tol` pixels of w along a list of segments, nearest first. */
+function segmentsAt(w: Vec, segments: readonly { id: number; a: number; b: number }[], tol = 9): number[] {
+  return segments
+    .map((l) => ({ id: l.id, d: segmentDistance(w, pos(l.a), pos(l.b)).d }))
+    .filter((x) => x.d < tol / view.scale)
+    .sort((a, b) => a.d - b.d)
+    .map((x) => x.id);
+}
+
+/**
+ * Everything selectable under w, from the top layer down (the order hitTest picks in): levers,
+ * PID boxes, joints, bars and racks, springs, then propellers, gears and motor housings (which
+ * select their gear), each kind nearest or smallest first; the ground last, as 'ground'.
+ */
+function hitAll(w: Vec): (Selection | 'ground')[] {
+  const out: (Selection | 'ground')[] = [];
+  const add = (s: Selection) => {
+    if (!out.some((x) => x !== 'ground' && x.kind === s.kind && x.id === s.id)) out.push(s);
+  };
+  leversAt(w).forEach((g) => add({ kind: 'lever', id: g.id }));
+  pidsAt(w).forEach((g) => add({ kind: 'pid', id: g.id }));
+  design.points
+    .map((p) => ({ id: p.id, d: Math.hypot(pos(p.id)[0] - w[0], pos(p.id)[1] - w[1]) }))
+    .filter((x) => x.d < 11 / view.scale)
+    .sort((a, b) => a.d - b.d)
+    .forEach((x) => add({ kind: 'point', id: x.id }));
+  segmentsAt(w, design.links).forEach((id) => add({ kind: 'link', id }));
+  segmentsAt(w, design.springs).forEach((id) => add({ kind: 'spring', id }));
+  [...propellersAt(w), ...gearsAt(w), ...housingsAt(w)].forEach((g) => add({ kind: 'gear', id: g.id }));
+  if (design.ground && groundDistance(w) < 8) out.push('ground');
+  return out;
+}
+
+/** A selectable's name, for the hint while cycling. */
+function pickName(x: Selection | 'ground'): string {
+  if (x === 'ground') return 'the ground';
+  switch (x.kind) {
+    case 'point':
+      return `joint ${pointLabel(x.id)}`;
+    case 'link':
+      return bodyName(design, { kind: 'link', id: x.id });
+    case 'spring':
+      return `spring ${springLabel(x.id)}`;
+    case 'gear':
+      return gearName(design, x.id);
+    case 'lever':
+      return `lever L${gearLabel(x.id)}`;
+    case 'pid':
+      return `the PID controller on motor M${gearLabel(x.id)}`;
+  }
+}
+
+/** Where the last select-mode click landed, and what was under it, to cycle through on clicking there again. */
+let lastPick: { at: Vec; under: string } | null = null;
 
 function hitTest(w: Vec): Selection | null {
   const lv = leverAt(w); // small, and drawn on top
@@ -501,15 +556,17 @@ function hitTest(w: Vec): Selection | null {
 }
 
 /** The gear whose pitch disk contains w (the smallest one when several do). */
-function gearAt(w: Vec): DGear | null {
-  let best: DGear | null = null;
-  for (const g of design.gears) {
-    if (g.propeller || !design.points.some((p) => p.id === g.center)) continue; // a propeller is picked by its blades (propellerAt)
-    const c = pos(g.center);
-    if (Math.hypot(w[0] - c[0], w[1] - c[1]) < g.radius && (!best || g.radius < best.radius)) best = g;
-  }
-  return best;
+/** The gears whose pitch disk contains w, smallest first. */
+function gearsAt(w: Vec): DGear[] {
+  return design.gears
+    .filter((g) => {
+      if (g.propeller || !design.points.some((p) => p.id === g.center)) return false; // a propeller is picked by its blades (propellerAt)
+      const c = pos(g.center);
+      return Math.hypot(w[0] - c[0], w[1] - c[1]) < g.radius;
+    })
+    .sort((a, b) => a.radius - b.radius);
 }
+const gearAt = (w: Vec): DGear | null => gearsAt(w)[0] ?? null;
 
 const gearAngleNow = (id: number) => (sim ? (simGearAngles.get(id) ?? 0) : (icPose?.gearAngles.get(id) ?? 0));
 const motorAngleNow = (id: number) => (sim ? (simMotorAngles.get(id) ?? 0) : (icPose?.motorAngles.get(id) ?? 0));
@@ -519,7 +576,8 @@ const motorAngleNow = (id: number) => (sim ? (simMotorAngles.get(id) ?? 0) : (ic
  * The propeller under w: near its blade line (the rotor disk, edge-on), its hub, or its motor
  * below the hub.
  */
-function propellerAt(w: Vec): DGear | null {
+function propellersAt(w: Vec): DGear[] {
+  const out: DGear[] = [];
   for (const g of design.gears) {
     if (!g.propeller || !design.points.some((p) => p.id === g.center)) continue;
     const c = pos(g.center);
@@ -529,24 +587,24 @@ function propellerAt(w: Vec): DGear | null {
     const [u, v] = [dx * e[0] + dy * e[1], dx * n[0] + dy * n[1]];
     const tol = 8 / view.scale;
     const R = g.radius;
-    if (Math.abs(u) <= R + tol && Math.abs(v) <= Math.max(0.12 * R, tol)) return g;
-    if (g.motor && Math.abs(u) <= 0.13 * R + tol && v <= 0 && v >= -0.5 * R - tol) return g;
+    if ((Math.abs(u) <= R + tol && Math.abs(v) <= Math.max(0.12 * R, tol)) || (g.motor && Math.abs(u) <= 0.13 * R + tol && v <= 0 && v >= -0.5 * R - tol)) out.push(g);
   }
-  return null;
+  return out;
 }
+const propellerAt = (w: Vec): DGear | null => propellersAt(w)[0] ?? null;
 
-function housingAt(w: Vec): DGear | null {
-  for (const g of design.gears) {
-    if (!g.motor || g.propeller || !design.points.some((p) => p.id === g.center)) continue;
+function housingsAt(w: Vec): DGear[] {
+  return design.gears.filter((g) => {
+    if (!g.motor || g.propeller || !design.points.some((p) => p.id === g.center)) return false;
     const c = pos(g.center);
     const r = motorHousingRadius(g);
     const t = -motorAngleNow(g.id);
     const [dx, dy] = [w[0] - c[0], w[1] - c[1]];
     const [u, v] = [dx * Math.cos(t) - dy * Math.sin(t), dx * Math.sin(t) + dy * Math.cos(t)];
-    if (u >= -0.9 * r && u <= 2.6 * r && Math.abs(v) <= 0.9 * r) return g;
-  }
-  return null;
+    return u >= -0.9 * r && u <= 2.6 * r && Math.abs(v) <= 0.9 * r;
+  });
 }
+const housingAt = (w: Vec): DGear | null => housingsAt(w)[0] ?? null;
 
 /** World position of the point at offset (u, v) in a gear's frame. */
 function gearPoint(g: DGear, u: number, v: number): Vec {
@@ -999,6 +1057,8 @@ canvas.addEventListener('dblclick', (e) => {
   if (!g || sim || tool !== 'select') return;
   const w = toWorld(view, screenOf(e as unknown as PointerEvent));
   if (groundDistance(w) > 9) return;
+  // only on bare ground: double clicks over parts are clicks cycling through what is there
+  if (hitAll(w).some((x) => x !== 'ground')) return;
   pushUndo();
   const x = +w[0].toFixed(3);
   const p: [number, number] = [x, +groundHeight(g, x).toFixed(4)];
@@ -1696,18 +1756,27 @@ canvas.addEventListener('pointerdown', (e) => {
         renderInspector();
         break;
       }
-      const hit = hitTest(w);
-      if (!hit && design.ground && groundDistance(w) < 8) {
+      // clicking again in the same place steps down through everything under it, then wraps
+      const under = hitAll(w);
+      const key = under.map((x) => (x === 'ground' ? 'ground' : `${x.kind}:${x.id}`)).join(',');
+      const again = lastPick !== null && lastPick.under === key && Math.hypot(sp[0] - lastPick.at[0], sp[1] - lastPick.at[1]) < 6;
+      lastPick = { at: sp, under: key };
+      const current = groundSel && !selection ? under.indexOf('ground') : under.findIndex((x) => x !== 'ground' && x.kind === selection?.kind && x.id === selection.id);
+      const choice = under.length === 0 ? null : again && current >= 0 && under.length > 1 ? under[(current + 1) % under.length] : under[0];
+      if (choice && under.length > 1) flash(`${pickName(choice)}: ${under.indexOf(choice) + 1} of ${under.length} here (click again in the same spot for the next).`);
+      if (choice === 'ground') {
         // the ground itself: select it, showing its waypoints
         selection = null;
         multi = null;
         groundSel = { waypoint: null };
+        sfx('select');
         renderInspector();
         break;
       }
+      const hit = choice;
       groundSel = null;
       const group = liveMulti();
-      if (hit && group && inParts(group, hit)) {
+      if (hit && group && inParts(group, hit) && !again) {
         // drag the whole group
         dragging = { id: -1, pushed: false, group: { start: w, applied: [0, 0] } };
         break;

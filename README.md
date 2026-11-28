@@ -85,7 +85,7 @@ Pick a tool in the left toolbar (or press its key) and click or drag on the canv
 
 | Tool | Key | How to use it |
 |---|:-:|---|
-| Select | V | Click a part to edit it in the inspector (bottom right). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
+| Select | V | Click a part to edit it in the inspector (bottom right). Where parts overlap, clicking again in the same spot steps through everything there, from the top down, then wraps (the hint names what is picked, say "bar 1: 2 of 3 here"). Drag joints to reshape the mechanism. Drag on empty space to draw a selection box. |
 | Initial state | I | Click a part, then pick one of its coordinates (or a rate) from the list beside the mouse. Move the mouse to set it, with everything else following, and click to settle. Esc cancels. |
 | Draw bar | B | Drag, or click twice. Start or end on an existing joint to pin bars together. |
 | Draw rack | K | Drag to draw a rack, a toothed bar. If it passes along a gear, it snaps tangent and meshes with it. Put its joints on rails (Slider, X) to make it slide. |
