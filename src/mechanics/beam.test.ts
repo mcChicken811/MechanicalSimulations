@@ -66,6 +66,39 @@ describe('internal forces along a bar', () => {
     expect(Math.abs(bd.M[bd.M.length - 1])).toBeLessThan(1e-6);
   });
 
+  it('inertia alone: a bar spinning about a pivot with no gravity is in tension m ω² (L² − s²) / (2L), and does not bend', () => {
+    const d = rod();
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: 0 })));
+    const w = 3;
+    sim.qd[0] = w;
+    const { qdd, loads } = sim.snapshot();
+    const r = jointForces(d, sim.sys, sim.q, sim.qd, qdd, loads, { gravity: 0, friction: null });
+    const bd = barDiagram(r, 0, { gravity: 0 })!;
+    const [m, L] = [2, 1];
+    for (const s of [0.001, 0.25, 0.5, 0.75, 0.999]) {
+      expect(valueAt(bd, bd.N, s)).toBeCloseTo((m * w * w * (L * L - s * s)) / (2 * L), 3); // stations every L/120: linear in between
+      expect(Math.abs(valueAt(bd, bd.V, s))).toBeLessThan(1e-6);
+      expect(Math.abs(valueAt(bd, bd.M, s))).toBeLessThan(1e-6);
+    }
+    // without the inertia term the axial force would be the pivot force all along, m ω² L / 2
+    expect(valueAt(bd, bd.N, 0.75)).toBeLessThan(0.5 * ((m * w * w * L) / 2));
+  });
+
+  it('inertia and weight: a rod let go level bends as M = (m g s / 4)(1 − s/L)², largest m g L / 27 at L/3', () => {
+    const d = rod();
+    const sim = new Simulator(new NumericSystem(deriveEquations(d, { gravity: G })));
+    const { qdd, loads } = sim.snapshot();
+    const r = jointForces(d, sim.sys, sim.q, sim.qd, qdd, loads, { gravity: G, friction: null });
+    const bd = barDiagram(r, 0, { gravity: G })!;
+    const [m, L] = [2, 1];
+    for (const s of [0.1, 1 / 3, 0.5, 0.8]) expect(valueAt(bd, bd.M, s)).toBeCloseTo(((m * G * s) / 4) * (1 - s / L) ** 2, 6);
+    const pk = peak(bd.M);
+    expect(pk.v).toBeCloseTo((m * G * L) / 27, 3);
+    expect(bd.s[pk.i]).toBeCloseTo(L / 3, 2);
+    // shear: V = m g / 4 − μ g s + (3 μ g / 4L) s² (the falling bar's inertia relieves its weight towards the tip)
+    for (const s of [0.2, 0.5, 0.9]) expect(valueAt(bd, bd.V, s)).toBeCloseTo((m * G) / 4 - (m / L) * G * s + ((3 * m * G) / (4 * L * L)) * s * s, 6);
+  });
+
   it('every bar of every preset: the diagram closes (the forces balance the motion)', () => {
     let checked = 0;
     for (const p of presets) {
