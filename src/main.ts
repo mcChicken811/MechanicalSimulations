@@ -10,8 +10,9 @@ import { PoseEditor, type MaterialPoint } from './mechanics/initial';
 import { enableScrubbing } from './ui/scrub';
 import { measuresOf, StateAt, unwrapDegrees, type Measure } from './ui/measure';
 import { jointForces, type ForceItem, type ForceResult, type LoadItem } from './mechanics/forces';
+import { barDiagram, peak, valueAt, type BeamDiagram } from './mechanics/beam';
 import { SoundEngine, type Cue, type MachineState } from './ui/sound';
-import { dimensionAt, dimNormal, drawScene, gridStep, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
+import { dimensionAt, dimNormal, drawScene, gridStep, stressColor, leverGeometry, pidGeometry, segmentDistance, toScreen, toWorld, type Scene, type Selection, type Vec, type View } from './ui/render';
 
 type Tool = 'select' | 'initial' | 'dimension' | 'bar' | 'rack' | 'spring' | 'gear' | 'wheel' | 'propeller' | 'mass' | 'lockGear' | 'motor' | 'lever' | 'pid' | 'join' | 'pin' | 'slider' | 'free' | 'delete';
 /** What a part being drawn will mesh with, and where. */
@@ -3140,6 +3141,8 @@ let history: History = emptyHistory();
 function resetHistory() {
   history = emptyHistory();
   forceCache.clear();
+  beamCache = null;
+  if (graph?.beam) [graph.beam.lo, graph.beam.hi] = [0, 0];
   if (graph) for (const x of [graph, ...graph.extra]) x.vals = [];
 }
 
@@ -3175,9 +3178,8 @@ function forcesAt(i: number): ForceResult | null {
   if (!sim || i < 0 || i >= history.t.length) return null;
   let r = forceCache.get(i);
   if (!r) {
-    const gp = sim.sys.derivation.params.find((p) => p.sym === 'g');
     r = jointForces(design, sim.sys, history.q[i], history.qd[i], history.qdd[i], history.loads[i], {
-      gravity: gp ? sys0(gp.sym) : 0,
+      gravity: forceGravity(),
       friction: friction.enabled ? { enabled: true, pin: friction.pin, rail: friction.rail } : null,
       damping: sim.damping,
     });
@@ -3185,6 +3187,11 @@ function forcesAt(i: number): ForceResult | null {
     forceCache.set(i, r);
   }
   return r;
+}
+/** The gravity the simulation runs with (m/s², 0 when off). */
+function forceGravity(): number {
+  const gp = sim?.sys.derivation.params.find((p) => p.sym === 'g');
+  return gp ? sys0(gp.sym) : 0;
 }
 /** A parameter's value in the running simulation. */
 const sys0 = (sym: string) => {
@@ -3352,6 +3359,63 @@ function forceArrowsNow(): Scene['forceArrows'] {
   return { items, pxPerN: 70 / big };
 }
 
+// ---- a bar's internal forces: axial force, shear and bending moment along it (mechanics/beam.ts) ----
+type BeamQ = 'N' | 'V' | 'M';
+const BEAM_Q: Record<BeamQ, { sym: string; name: string; unit: string }> = {
+  N: { sym: 'N', name: 'axial force (+ tension)', unit: 'N' },
+  V: { sym: 'V', name: 'shear force', unit: 'N' },
+  M: { sym: 'M', name: 'bending moment', unit: 'N·m' },
+};
+let beamCache: { t: number; link: number; d: BeamDiagram | null } | null = null;
+
+/** Bar `link`'s internal forces now (the latest recorded frame), cached for the frame. */
+function beamNow(link: number): BeamDiagram | null {
+  const t = history.t.length ? history.t[history.t.length - 1] : NaN;
+  if (beamCache && beamCache.t === t && beamCache.link === link) return beamCache.d;
+  const r = forcesNow();
+  const d = r && sim ? barDiagram(r, link, { gravity: forceGravity(), damping: sim.damping }) : null;
+  beamCache = { t, link, d };
+  return d;
+}
+
+/** The internal forces as rows of the inspector: each one's largest value along the bar (with its sign). */
+function beamMeasures(link: number): Measure[] {
+  return (['N', 'V', 'M'] as BeamQ[]).map((q) => ({
+    key: `B:${q}`,
+    sym: BEAM_Q[q].sym,
+    name: `${BEAM_Q[q].name}: largest along it`,
+    unit: BEAM_Q[q].unit,
+    value: () => {
+      const d = beamNow(link);
+      return d ? peak(d[q]).v : NaN;
+    },
+  }));
+}
+
+/** Show a bar's diagram in the graph panel (it replaces what is there: no phase plots with it). */
+function openBeam(link: number, q: BeamQ) {
+  openGraph('link', link, beamMeasures(link).find((x) => x.key === `B:${q}`)!, () => NaN);
+  graph!.beam = { link, q, lo: 0, hi: 0, hoverS: null };
+  setGraphTitle();
+}
+
+/** The size that is red on the bar: the largest seen since the diagram opened, or the value axis's reach if set by hand. */
+function beamScale(): number {
+  const g = graph!;
+  const [lo, hi] = g.view.yAuto ? [g.beam!.lo, g.beam!.hi] : [g.view.lo, g.view.hi];
+  return Math.max(Math.abs(lo), Math.abs(hi), 1e-9);
+}
+
+/** The bar shown in the graph panel coloured by the size of its diagram, green (none) through yellow to red. */
+function beamShadeNow(): Scene['beamShade'] {
+  const bm = graph?.beam;
+  if (!sim || !bm) return null;
+  const d = beamNow(bm.link);
+  if (!d) return null;
+  const scale = beamScale();
+  return { link: bm.link, s: d.s.map((x) => x / d.L), f: d[bm.q].map((v) => (Number.isFinite(v) ? Math.min(1, Math.abs(v) / scale) : 0)), marker: bm.hoverS === null ? null : bm.hoverS / d.L };
+}
+
 const partTitle = (kind: string, id: number) =>
   kind === 'system' ? 'the whole mechanism' : kind === 'point' ? `joint ${pointLabel(id)}` : kind === 'spring' ? `spring ${springLabel(id)}` : kind === 'gear' ? gearName(design, id) : bodyName(design, { kind: 'link', id });
 const g0 = () => (settings.gravity ? 9.81 : 0);
@@ -3361,16 +3425,22 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
   const forces = [...forceMeasures(kind, id), ...loadMeasures(kind, id)];
   const measures = [...measuresOf(design, kind, id, g0()), ...forces];
   const now = forcesNow();
-  measureView = { kind, id, measures, sig: forceSignature(kind, id) };
+  const beams = kind === 'link' && now ? beamMeasures(id) : [];
+  measureView = { kind, id, measures: [...measures, ...beams], sig: forceSignature(kind, id) };
   const title = partTitle(kind, id);
+  const link = kind === 'link' ? design.links.find((l) => l.id === id) : undefined;
+  const row = (m: Measure, beam: boolean) =>
+    `<button class="m-row${beam ? ' m-beam' : ''}${isGraphed(kind, id, m.key) ? ' on' : ''}" data-key="${m.key}" title="${esc(m.name)}: ${beam ? 'click to show it along the bar, and colour the bar by its size' : 'click to graph it over time; shift-click to add it to a phase plot'}"><span class="m-sym">${m.sym}</span><span class="m-name">${esc(m.name)}</span><span class="m-val" id="m-${m.key}">–</span><span class="m-unit">${m.unit}</span></button>`;
   inspectorEl.innerHTML = `
     <h4>${esc(title[0].toUpperCase() + title.slice(1))} <span class="muted">measured</span></h4>
-    <div class="m-list">${measures
-      .map(
-        (m) =>
-          `<button class="m-row${isGraphed(kind, id, m.key) ? ' on' : ''}" data-key="${m.key}" title="${esc(m.name)}: click to graph it over time; shift-click to add it to a phase plot"><span class="m-sym">${m.sym}</span><span class="m-name">${esc(m.name)}</span><span class="m-val" id="m-${m.key}">–</span><span class="m-unit">${m.unit}</span></button>`,
-      )
-      .join('')}</div>
+    <div class="m-list">${measures.map((m) => row(m, false)).join('')}</div>
+    ${
+      beams.length && link
+        ? `<h5 class="m-head">Internal forces along it</h5>
+    <div class="m-list">${beams.map((m) => row(m, true)).join('')}</div>
+    <p class="muted m-note">Click one for its diagram along the bar, from ${esc(pointLabel(link.a))} to ${esc(pointLabel(link.b))}, with the bar coloured by its size (green, yellow, red at the largest so far). N &gt; 0 pulls the bar apart; V and M by the beam convention with ${esc(pointLabel(link.a))} on the left (M &gt; 0 sags). Its weight, drag and inertia are spread along it.</p>`
+        : ''
+    }
     ${
       forces.length && now
         ? `<p class="muted m-note">Forces on it, drawn where they act: joint forces (purple) by inverse dynamics, Newton–Euler for every body, and its loads in their own colours (weight green, drag blue, friction red, contact brown, springs grey, motor blue, your pull red); model residual ${now.residual.toExponential(1)}.${now.indeterminate ? ' <b>Redundant supports:</b> the mechanism is over-constrained, so how the load splits between them is not fixed by a rigid model; this is the even (minimum-norm) split.' : ''}${friction.enabled && design.meshes.length ? ' Gear-mesh friction is left out of the forces.' : ''}</p>`
@@ -3379,6 +3449,10 @@ function inspectorMeasure(kind: 'point' | 'link' | 'gear' | 'spring', id: number
     <p class="muted">Click a quantity to graph it over time; shift-click others (here, or on other parts) for a phase plot. ${running ? 'Pause to pick another part.' : 'Click another part to measure it, or empty space to let go.'} <button id="m-settings">Settings…</button></p>`;
   inspectorEl.querySelectorAll<HTMLButtonElement>('.m-row').forEach((b) =>
     b.addEventListener('click', (e) => {
+      if (b.classList.contains('m-beam')) {
+        openBeam(id, b.dataset.key!.slice(2) as BeamQ); // a diagram along the bar, never part of a phase plot
+        return;
+      }
       const m = measures.find((x) => x.key === b.dataset.key)!;
       if (e.shiftKey) addSeries(kind, id, m);
       else openGraph(kind, id, m);
@@ -3470,6 +3544,12 @@ let graph: {
   view: GraphView;
   layout: GraphLayout | null;
   drag: { mode: 'pan' | 'y'; x: number; y: number; end: number; lo: number; hi: number } | null;
+  /**
+   * A bar's internal force along it instead of a quantity over time: which bar and force, the
+   * range of values seen since it opened (the value axis, and the bar's colour scale), and the
+   * place along it under the mouse (m from its end A).
+   */
+  beam?: { link: number; q: BeamQ; lo: number; hi: number; hoverS: number | null };
 } | null = null;
 const GRAPH_SPAN = 10; // s shown by default: the most recent 10 seconds
 
@@ -3525,6 +3605,12 @@ function markGraphed() {
 /** The graph's title: the quantity, or for a phase plot each quantity in order (x, y, z). */
 function setGraphTitle() {
   if (!graph) return;
+  if (graph.beam) {
+    const l = design.links.find((x) => x.id === graph!.beam!.link);
+    const q = BEAM_Q[graph.beam.q];
+    graphEl.querySelector('.g-title')!.innerHTML = `<b>${q.sym}</b> ${esc(q.name)} <span class="muted">· along ${esc(partTitle('link', graph.beam.link))}${l ? `, ${esc(pointLabel(l.a))} → ${esc(pointLabel(l.b))}` : ''}</span>`;
+    return;
+  }
   const parts = [graph, ...graph.extra];
   const where = (x: Series) => esc(partTitle(x.kind, x.id));
   graphEl.querySelector('.g-title')!.innerHTML =
@@ -3539,7 +3625,8 @@ function setGraphTitle() {
  * the third.
  */
 function addSeries(kind: GraphKind, id: number, m: Measure, at?: (i: number) => number) {
-  if (!graph) {
+  if (!graph || graph.beam) {
+    // a bar's diagram makes no phase plot: the quantity replaces it
     openGraph(kind, id, m, at);
     return;
   }
@@ -3608,6 +3695,7 @@ graphCanvas.addEventListener(
     e.preventDefault();
     if (g.extra.length) return; // a phase plot has no time axis to scroll
     const zone = graphZone(e.offsetX, e.offsetY);
+    if (g.beam && zone !== 'y') return; // a bar's diagram: its length is fixed, only the values zoom
     const f = Math.exp((e.deltaY || e.deltaX) * 0.0025);
     if (zone === 'y') {
       // zoom the value scale about the value under the mouse
@@ -3645,7 +3733,7 @@ graphCanvas.addEventListener('pointerdown', (e) => {
   }
   if (!l) return;
   const zone = graphZone(e.offsetX, e.offsetY);
-  if (!zone) return;
+  if (!zone || (g.beam && zone !== 'y')) return;
   graphCanvas.setPointerCapture(e.pointerId);
   // the plot or the time axis: drag to move through time; the value axis: drag to slide the values
   g.drag = { mode: zone === 'y' ? 'y' : 'pan', x: e.offsetX, y: e.offsetY, end: l.b, lo: l.lo, hi: l.hi };
@@ -3664,7 +3752,7 @@ graphCanvas.addEventListener('pointermove', (e) => {
   }
   const l = g.layout;
   const zone = graphZone(e.offsetX, e.offsetY);
-  graphCanvas.style.cursor = g.drag ? (g.drag.mode === 'y' ? 'ns-resize' : 'grabbing') : zone === 'y' ? 'ns-resize' : zone === 'x' ? 'ew-resize' : 'crosshair';
+  graphCanvas.style.cursor = g.drag ? (g.drag.mode === 'y' ? 'ns-resize' : 'grabbing') : zone === 'y' ? 'ns-resize' : zone === 'x' && !g.beam ? 'ew-resize' : 'crosshair';
   if (!g.drag || !l) return;
   const pw = l.W - l.L - l.R;
   if (g.drag.mode === 'pan') setGraphEnd(g.drag.end - ((e.offsetX - g.drag.x) / pw) * (l.b - l.a)); // the plot moves with the mouse
@@ -3692,6 +3780,12 @@ graphCanvas.addEventListener('dblclick', (e) => {
     return;
   }
   const zone = graphZone(e.offsetX, e.offsetY);
+  if (g.beam) {
+    // a bar's diagram: the value axis (and the colour scale) start again from what it carries now
+    g.view.yAuto = true;
+    [g.beam.lo, g.beam.hi] = [0, 0];
+    return;
+  }
   // double-click: the value axis fits the values again; the time axis (or the plot) comes back to the current time
   if (zone === 'y' || zone === 'plot') g.view.yAuto = true;
   if (zone === 'x' || zone === 'plot') g.view = { ...g.view, end: null };
@@ -3700,6 +3794,11 @@ graphCanvas.addEventListener('dblclick', (e) => {
 /** Bring the graph's values up to date with the history, and draw it (every frame while open). */
 function updateGraph() {
   if (!graph || !sim) return;
+  placeGraph();
+  if (graph.beam) {
+    updateBeamGraph();
+    return;
+  }
   const { m } = graph;
   const h = history;
   for (const x of [graph, ...graph.extra]) for (let i = x.vals.length; i < h.t.length; i++) x.vals.push(x.at(i));
@@ -3708,7 +3807,15 @@ function updateGraph() {
   graphEl.querySelector('.g-now')!.textContent = all
     .map((x) => (x.vals.length ? `${(x.m.fmt ?? fmt3)(x.vals[x.vals.length - 1])}${x.m.unit ? ` ${x.m.unit}` : ''}` : ''))
     .join(', ');
-  // where it sits: above the inspector, or beside it if the inspector is too tall
+  if (graph.extra.length) {
+    graph.layout = null;
+    drawPhase(graphCanvas, h.t, all, graph.rot, graph.hoverX, graph.hoverY);
+  } else graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX);
+}
+
+/** The graph panel's place: above the inspector, or beside it if the inspector is too tall. */
+function placeGraph() {
+  if (!graph) return;
   if (!graph.big) {
     const top = inspectorEl.getBoundingClientRect().top;
     if (top > 300) {
@@ -3722,10 +3829,160 @@ function updateGraph() {
     graphEl.style.right = '';
     graphEl.style.bottom = '';
   }
-  if (graph.extra.length) {
-    graph.layout = null;
-    drawPhase(graphCanvas, h.t, all, graph.rot, graph.hoverX, graph.hoverY);
-  } else graph.layout = drawGraph(graphCanvas, h.t, vals, m, graph.view, graph.hoverX);
+}
+
+/** A bar's diagram in the graph panel, as it is now: the range seen so far grows with it. */
+function updateBeamGraph() {
+  const g = graph!;
+  const bm = g.beam!;
+  const d = beamNow(bm.link);
+  const l = design.links.find((x) => x.id === bm.link);
+  const nowEl = graphEl.querySelector('.g-now')!;
+  if (!d || !l) {
+    nowEl.textContent = '';
+    g.layout = null;
+    bm.hoverS = null;
+    graphCanvas.getContext('2d')!.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+    return;
+  }
+  const vals = d[bm.q];
+  for (const v of vals) if (Number.isFinite(v)) [bm.lo, bm.hi] = [Math.min(bm.lo, v), Math.max(bm.hi, v)];
+  const pk = peak(vals);
+  nowEl.textContent = `peak ${fmt3(pk.v)} ${g.m.unit}`;
+  g.layout = drawBeam(graphCanvas, d, vals, g.m.unit, g.view, bm, beamScale(), g.hoverX, [pointLabel(l.a), pointLabel(l.b)]);
+  const lay = g.layout;
+  bm.hoverS = lay && g.hoverX !== null && g.hoverX >= lay.L && g.hoverX <= lay.W - lay.R ? ((g.hoverX - lay.L) / (lay.W - lay.L - lay.R)) * d.L : null;
+}
+
+/**
+ * A bar's diagram: the internal force along it (m from its end A to B), filled to the zero line in
+ * the bar's colours (green, yellow, red as its size nears `scale`), steps at the point loads
+ * (their places dashed), and the value under the mouse. Returns the layout, for the mouse.
+ */
+function drawBeam(cv: HTMLCanvasElement, d: BeamDiagram, vals: number[], unit: string, view: GraphView, seen: { lo: number; hi: number }, scale: number, hoverX: number | null, ends: [string, string]): GraphLayout | null {
+  const dpr = window.devicePixelRatio || 1;
+  const [W, H] = [cv.clientWidth, cv.clientHeight];
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) [cv.width, cv.height] = [Math.round(W * dpr), Math.round(H * dpr)];
+  const c = cv.getContext('2d')!;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+  const [L, R, T, B] = [58, 12, 8, 22];
+  const len = d.L;
+  // the value range: what it has reached since it opened (and zero), unless set by the user
+  let [lo, hi] = [view.lo, view.hi];
+  if (view.yAuto) {
+    [lo, hi] = [Math.min(0, seen.lo), Math.max(0, seen.hi)];
+    if (hi - lo < 1e-9) [lo, hi] = [-1e-3, 1e-3];
+    const pad = (hi - lo) * 0.08;
+    [lo, hi] = [lo - pad, hi + pad];
+  }
+  const pw = W - L - R;
+  const X = (s: number) => L + (s / len) * pw;
+  const Y = (v: number) => T + ((hi - v) / (hi - lo)) * (H - T - B);
+  c.font = '10px system-ui, sans-serif';
+  c.strokeStyle = '#e8e8e2';
+  c.fillStyle = '#7b7e86';
+  c.lineWidth = 1;
+  const ys = niceStep(hi - lo, 4);
+  c.textAlign = 'right';
+  c.textBaseline = 'middle';
+  for (let v = Math.ceil(lo / ys) * ys; v <= hi; v += ys) {
+    const y = Math.round(Y(v)) + 0.5;
+    c.beginPath();
+    c.moveTo(L, y);
+    c.lineTo(W - R, y);
+    c.stroke();
+    c.fillText(Math.abs(v) < ys * 1e-6 ? '0' : `${+v.toPrecision(4)}`, L - 5, y);
+  }
+  // distance along it, and the joints at its ends
+  const xs = niceStep(len, Math.max(2, Math.floor(pw / 70)));
+  c.textAlign = 'center';
+  c.textBaseline = 'top';
+  for (let s = Math.ceil(1e-9 / xs) * xs; s < len - 1e-9; s += xs) {
+    const x = Math.round(X(s)) + 0.5;
+    c.beginPath();
+    c.moveTo(x, T);
+    c.lineTo(x, H - B);
+    c.stroke();
+    if (x - L > 24 && W - R - x > 24) c.fillText(`${+s.toPrecision(4)} m`, x, H - B + 4);
+  }
+  c.font = '600 10px system-ui, sans-serif';
+  c.fillStyle = '#2b2d31';
+  c.fillText(ends[0], X(0), H - B + 4);
+  c.fillText(ends[1], X(len), H - B + 4);
+  c.save();
+  c.beginPath();
+  c.rect(L, T, pw, H - T - B);
+  c.clip();
+  // where the point loads act
+  c.strokeStyle = '#c9c9c0';
+  c.setLineDash([3, 3]);
+  for (const s of d.at) {
+    const x = Math.round(X(s)) + 0.5;
+    c.beginPath();
+    c.moveTo(x, T);
+    c.lineTo(x, H - B);
+    c.stroke();
+  }
+  c.setLineDash([]);
+  // the area to the zero line, coloured by size along it
+  const y0 = Math.min(H - B, Math.max(T, Y(0)));
+  const grad = c.createLinearGradient(L, 0, W - R, 0);
+  d.s.forEach((s, k) => grad.addColorStop(Math.min(1, Math.max(0, s / len)), stressColor(Number.isFinite(vals[k]) ? Math.min(1, Math.abs(vals[k]) / scale) : 0)));
+  c.beginPath();
+  c.moveTo(X(0), y0);
+  d.s.forEach((s, k) => c.lineTo(X(s), Y(Number.isFinite(vals[k]) ? vals[k] : 0)));
+  c.lineTo(X(len), y0);
+  c.closePath();
+  c.globalAlpha = 0.45;
+  c.fillStyle = grad;
+  c.fill();
+  c.globalAlpha = 1;
+  c.strokeStyle = '#9a9a92';
+  c.beginPath();
+  c.moveTo(L, Math.round(Y(0)) + 0.5);
+  c.lineTo(W - R, Math.round(Y(0)) + 0.5);
+  c.stroke();
+  c.strokeStyle = '#3b6ea8';
+  c.lineWidth = 1.6;
+  c.beginPath();
+  d.s.forEach((s, k) => (k ? c.lineTo(X(s), Y(vals[k])) : c.moveTo(X(s), Y(vals[k]))));
+  c.stroke();
+  c.restore();
+  // the value under the mouse
+  if (hoverX !== null && hoverX >= L && hoverX <= W - R) {
+    const s = ((hoverX - L) / pw) * len;
+    const v = valueAt(d, vals, s);
+    c.strokeStyle = '#e07b39';
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(hoverX, T);
+    c.lineTo(hoverX, H - B);
+    c.stroke();
+    const py = Y(v);
+    if (Number.isFinite(v) && py >= T && py <= H - B) {
+      c.fillStyle = '#e07b39';
+      c.beginPath();
+      c.arc(hoverX, py, 3.5, 0, Math.PI * 2);
+      c.fill();
+    }
+    const text = `s = ${s.toFixed(3)} m   ${fmt3(v)} ${unit}`;
+    c.font = '600 11px system-ui, sans-serif';
+    const w = c.measureText(text).width + 12;
+    const bx = Math.min(Math.max(hoverX + 8, L), W - R - w);
+    const by = Math.max(T, Math.min((Number.isFinite(py) ? py : T) - 26, H - B - 22));
+    c.fillStyle = 'rgba(255,255,255,0.94)';
+    c.strokeStyle = '#e07b39';
+    c.beginPath();
+    c.roundRect(bx, by, w, 20, 5);
+    c.fill();
+    c.stroke();
+    c.fillStyle = '#2b2d31';
+    c.textAlign = 'left';
+    c.textBaseline = 'middle';
+    c.fillText(text, bx + 6, by + 10);
+  }
+  return { a: 0, b: len, t0: 0, t1: len, lo, hi, L, R, T, B, W, H };
 }
 
 /** Axis label for a phase plot: the quantity's symbol (plain text) and unit. */
@@ -4664,6 +4921,7 @@ function frame(now: number) {
         : null,
     trail: trail.n > 1 ? trail : null,
     forceArrows: forceArrowsNow(),
+    beamShade: beamShadeNow(),
   });
   renderStatus();
   requestAnimationFrame(frame);

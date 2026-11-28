@@ -47,6 +47,12 @@ export interface Scene {
    * pxPerN pixels per newton, with its size; a couple as a curled arrow.
    */
   forceArrows?: { items: { at: Vec; F: Vec; M?: number; label: string; color?: string }[]; pxPerN: number } | null;
+  /**
+   * A bar coloured by the size of an internal force along it (while its diagram is shown): at
+   * fractions `s` of the way from its end A to B, sizes `f` from 0 (green) through yellow to 1
+   * (red); `marker` marks the place under the mouse in the diagram.
+   */
+  beamShade?: { link: number; s: number[]; f: number[]; marker: number | null } | null;
   /** Arrows in the world (initial velocities): from, to, colour. */
   arrows?: { from: Vec; to: Vec; color: string; width?: number }[] | null;
   /** Dimensions to show, to this many decimals (null: hidden). */
@@ -151,6 +157,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: number, h: number, v
     if (l.rack) drawRack(ctx, v, s, l, phases.racks.get(l.id) ?? 0);
     else drawBar(ctx, v, s, l);
   }
+  if (s.beamShade) drawBeamShade(ctx, v, s, s.beamShade);
   if (s.preview) {
     const a = toScreen(v, s.preview.from);
     const b = toScreen(v, s.preview.to);
@@ -556,6 +563,35 @@ function drawBar(ctx: CanvasRenderingContext2D, v: View, s: Scene, l: DLink) {
   ctx.textBaseline = 'middle';
   ctx.fillStyle = C.ink;
   if (showLabels) ctx.fillText(linkLabel(l.id), mx + nx * 18, my + ny * 18);
+  ctx.restore();
+}
+
+/** The colour of a size from 0 to 1: green, through yellow, to red. */
+export function stressColor(f: number): string {
+  const x = Math.min(1, Math.max(0, f));
+  return `hsl(${Math.round(120 * (1 - x))}, 78%, ${Math.round(44 + 6 * Math.sin(Math.PI * x))}%)`;
+}
+
+/** A bar painted by the size of its internal force along it (over its own colour), and the place the diagram's cursor is at. */
+function drawBeamShade(ctx: CanvasRenderingContext2D, v: View, s: Scene, bs: NonNullable<Scene['beamShade']>) {
+  const l = s.design.links.find((x) => x.id === bs.link);
+  if (!l || bs.s.length < 2) return;
+  const a = toScreen(v, s.pos(l.a));
+  const b = toScreen(v, s.pos(l.b));
+  const grad = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
+  bs.s.forEach((x, k) => grad.addColorStop(Math.min(1, Math.max(0, x)), stressColor(bs.f[k])));
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#1f2125';
+  ctx.lineWidth = 13;
+  line(ctx, a, b);
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 10;
+  line(ctx, a, b);
+  if (bs.marker !== null) {
+    const m: Vec = [a[0] + (b[0] - a[0]) * bs.marker, a[1] + (b[1] - a[1]) * bs.marker];
+    dot(ctx, m, 5, '#fff', C.accent, 2);
+  }
   ctx.restore();
 }
 

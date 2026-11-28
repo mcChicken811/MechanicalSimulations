@@ -66,6 +66,20 @@ export interface ForceResult {
   residual: number;
   /** Redundant supports: the split between them is the minimum-norm one, not the only one. */
   indeterminate: boolean;
+  /** Each bar's ends: positions, velocities, accelerations (rigid, so linear in between), for its internal forces. */
+  bars: BarState[];
+}
+
+/** A bar's motion: its ends A (l.a) and B (l.b), their velocities and accelerations, and its mass (spread evenly). */
+export interface BarState {
+  id: number;
+  m: number;
+  A: Vec;
+  B: Vec;
+  vA: Vec;
+  vB: Vec;
+  aA: Vec;
+  aB: Vec;
 }
 
 export interface ForceSettings {
@@ -162,10 +176,12 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     bodies.push(b);
   };
   const bodyKey = (r: DBodyRef) => `${r.kind}:${r.id}`;
+  const bars: BarState[] = [];
   for (const l of d.links) {
     const [pa, pb] = [P(l.a), P(l.b)];
     if (!pa || !pb) continue;
     const [va, vb, aa, ab] = [V(l.a), V(l.b), A(l.a), A(l.b)];
+    bars.push({ id: l.id, m: l.mass, A: pa, B: pb, vA: va, vB: vb, aA: aa, aB: ab });
     const dd = sub(pb, pa);
     const L2 = dd[0] ** 2 + dd[1] ** 2 || 1e-12;
     const w = cross(dd, sub(vb, va)) / L2;
@@ -483,8 +499,10 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     const [ka, kb] = [bodyIndex.get(bodyKey(j.a)), bodyIndex.get(bodyKey(j.b))];
     if (ka === undefined || kb === undefined || ka === kb) continue;
     const [A0, B0] = [bodies[ka], bodies[kb]];
-    const shared = [...A0.nodes].some((id) => B0.nodes.has(id));
-    const at: Vec = [(A0.G[0] + B0.G[0]) / 2, (A0.G[1] + B0.G[1]) / 2];
+    const sharedId = [...A0.nodes].find((id) => B0.nodes.has(id) && P(id));
+    const shared = sharedId !== undefined;
+    // a couple where they meet (their shared joint), else between their centres of mass
+    const at: Vec = shared ? P(sharedId)! : [(A0.G[0] + B0.G[0]) / 2, (A0.G[1] + B0.G[1]) / 2];
     const cm = col([
       [3 * ka + 2, 1],
       [3 * kb + 2, -1],
@@ -532,7 +550,7 @@ export function jointForces(d: Design, sys: NumericSystem, q: ArrayLike<number>,
     for (let i = 0; i < U; i++) s += dense[i][r] * x[i];
     res += s * s;
   }
-  return { items: readers.map((rd) => rd(x)), loads: applied, residual: Math.sqrt(res / Math.max(rows, 1)), indeterminate };
+  return { items: readers.map((rd) => rd(x)), loads: applied, residual: Math.sqrt(res / Math.max(rows, 1)), indeterminate, bars };
 }
 
 /** Whether a symmetric matrix has a pivot below tol (Gaussian elimination with partial pivoting). */

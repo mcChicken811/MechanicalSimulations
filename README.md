@@ -249,6 +249,26 @@ While the simulation runs or is paused, the inspector measures the selected part
 - **Gear teeth** carry only their tangential force, since the meshes have no pressure angle.
 - **Impacts:** joint forces spike for a few milliseconds during them.
 
+**Internal forces along a bar.** A measured bar (or rack) also lists its internal forces under *Internal forces along it*, each row showing the largest value along the bar with its sign:
+- **N**, the axial force, positive in tension;
+- **V**, the shear force;
+- **M**, the bending moment.
+
+Click one to see its diagram along the bar in the graph panel, from end A (`l.a`) to end B, which replaces whatever the panel showed.
+- **The diagram** is filled to the zero line. Point loads make steps, and their places are dashed.
+- **Hovering** shows the distance s and the value there, and marks that point on the bar.
+- **The bar is coloured** by the size of the diagram: green for none, through yellow, to red at the largest value seen since the diagram opened (or at the value axis's reach, if you set the axis yourself).
+- **Axes:** the value axis zooms and slides as in other graphs, and double-clicking starts its range, and the colour scale, again from now. The length axis is fixed.
+- **No phase plots:** these diagrams don't join phase plots. Shift-clicking another quantity while one is shown just graphs that quantity instead.
+
+*How it works.* Cut the bar at distance s from A. The piece [0, s] is held in balance, d'Alembert style, by what the rest of the bar does on it across the cut:
+- **The piece's loads:** every point force on [0, s] where it acts (joint forces, a slider on it, teeth, welds, contact, friction, the pull), plus its share of the distributed load w(x) = μ (g − c v(x) − a(x)), with μ = m / L.
+- **The distributed load** is the bar's own weight, air drag and inertia, spread along it rather than lumped at the centre. Since the bar is rigid, v and a are linear along it.
+- **The cut** carries R(s) = −[ΣF + ∫₀ˢ w dx] and the couple M(s) = −[Σ((r_i − P(s)) × F_i + M_i) + ∫₀ˢ (x − s) t × w dx].
+- **The components:** N = R·t and V = −R·n, with t running from A to B and n a quarter turn anticlockwise from it. This is the usual beam convention with A on the left: dM/ds = V, and M > 0 means sagging.
+- **A load off the bar's line** (a wheel's rim contact, say) adds its moment at the step.
+- **Closure check:** past the far end everything must balance. The tests check this for every bar of every example; it closes to round-off.
+
 **Settings…** switches to the part's usual inspector, for values that can change while it runs, such as a motor's torque. **← Measurements** switches back.
 
 **Graphs.** Click a quantity to graph it against time; one quantity is graphed at a time. The energy figures on the status bar work the same way, in the same graph: E = T + V, heat W, motor work W_m, air work W_a, and the energy budget. So does the largest constraint error max|Φ|, in scientific notation, since it is usually round-off around 1e-13. Graphing the budget shows how well the energy is accounted for over the run, and graphing max|Φ| how well the constraints hold. Click the figure again to close its graph. The simulation records its state every frame from the start, so the whole run so far can be looked back over. Angles are unwrapped, so they run on past ±180°.
